@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#1c2622" />
+    <title>Traffic: Driver Lab</title>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="tags"></div>
+
+    <header class="panel" id="top">
+      <div class="brand"><b>TRAFFIC</b><span>Driver Lab</span></div>
+      <div class="stats">
+        <div><i>Cars</i><b id="st-cars">0</b></div>
+        <div><i>Avg speed</i><b id="st-speed">0 mph</b></div>
+        <div><i>Through</i><b id="st-pass">0</b></div>
+        <div><i>Crashes</i><b id="st-crash">0</b></div>
+        <div><i>Clock</i><b id="st-clock">0:00</b></div>
+      </div>
+    </header>
+
+    <button class="panel icon" id="menu-toggle" aria-label="Show or hide controls"><svg viewBox="0 0 16 16" width="16" height="16"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+
+    <aside class="panel" id="lab">
+      <section>
+        <h2>Cars</h2>
+        <div class="row">
+          <button id="spawn1">+1</button>
+          <button id="spawn10">+10</button>
+          <button id="clear" class="ghost">Clear all</button>
+        </div>
+        <div class="row">
+          <button id="cutin">Force a cut-in</button>
+          <button id="clearcrash" class="ghost">Clear crashes</button>
+        </div>
+      </section>
+      <section>
+        <h2>Intersection</h2>
+        <div class="seg" id="mode">
+          <button data-mode="signal" class="on">Traffic light</button>
+          <button data-mode="allway">All-way stop</button>
+        </div>
+      </section>
+      <section>
+        <h2>Show</h2>
+        <label class="check"><input type="checkbox" id="show-sensors" checked /> What each car is watching</label>
+        <label class="check"><input type="checkbox" id="show-labels" checked /> What each driver is doing</label>
+      </section>
+      <section>
+        <h2>New drivers</h2>
+        <div class="chips" id="presets"></div>
+        <div id="new-sliders"></div>
+        <label class="slider"><span>Variety <em id="variation-val"></em></span><input type="range" id="variation" min="0" max="1" step="0.05" value="0.3" /></label>
+      </section>
+    </aside>
+
+    <aside class="panel" id="inspector" hidden>
+      <div class="insp-head">
+        <span class="dot" id="insp-dot"></span>
+        <b id="insp-title">Car</b>
+        <span class="tag" id="insp-state">CRUISE</span>
+        <button class="icon ghost" id="insp-close" aria-label="Close"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="readouts">
+        <div><i>Speed</i><b id="ro-speed"></b></div>
+        <div><i>Gap ahead</i><b id="ro-gap"></b></div>
+        <div><i>Next turn</i><b id="ro-turn"></b></div>
+      </div>
+      <div class="graph"><span>Speed (mph)</span><canvas id="g-speed"></canvas></div>
+      <div class="graph"><span>Gap ahead (ft)</span><canvas id="g-gap"></canvas></div>
+      <div class="graph"><span>Gas and brake</span><canvas id="g-acc"></canvas></div>
+      <div id="car-sliders"></div>
+      <div class="row">
+        <button id="insp-follow">Follow</button>
+        <button id="insp-cut">Cut in now</button>
+        <button id="insp-remove" class="ghost">Remove</button>
+      </div>
+    </aside>
+
+    <footer class="panel" id="transport">
+      <button id="play" class="icon" aria-label="Pause or play"></button>
+      <button id="step" class="icon" aria-label="Advance one step"></button>
+      <div class="seg" id="speeds">
+        <button data-speed="0.25">¼×</button>
+        <button data-speed="1" class="on">1×</button>
+        <button data-speed="2">2×</button>
+        <button data-speed="4">4×</button>
+      </div>
+    </footer>
+
+    <div id="toast"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
