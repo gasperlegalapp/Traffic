@@ -140,6 +140,16 @@ namespace Traffic.Sim
             return Math.Sqrt(x * x + y * y);
         }
 
+        /// <summary>
+        /// Height of a bridge along its length, as a share of its full height: t runs 0 to 1
+        /// from one end to the other. It climbs over the first third, is level, then comes down.
+        /// </summary>
+        public static double BridgeProfile(double t)
+        {
+            double u = Clamp(Math.Min(t, 1 - t) / 0.35, 0, 1);
+            return u * u * (3 - 2 * u);
+        }
+
         public static double Clamp(double x, double lo, double hi)
         {
             return x < lo ? lo : x > hi ? hi : x;

@@ -66,8 +66,8 @@ namespace Traffic.Sim
             {
                 T(0, Pocket, 1, Turn.Left, Turn.UTurn), T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight), T(3, Pocket, 1, Turn.Right),
             };
-            b.AddRoad(n[1, 0], center, mainIntoCenter, Two());
-            b.AddRoad(center, n[1, 2], Two(), mainIntoCenter);
+            b.AddRoad(n[1, 0], center, mainIntoCenter, Two(), null, NetworkBuilder.ArterialSpeed);
+            b.AddRoad(center, n[1, 2], Two(), mainIntoCenter, null, NetworkBuilder.ArterialSpeed);
             b.AllowUTurn(center, n[1, 0]);
             b.AllowUTurn(center, n[1, 2]);
 
@@ -76,8 +76,8 @@ namespace Traffic.Sim
             {
                 T(0, Pocket, 1, Turn.Left), T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight, Turn.Right),
             };
-            b.AddRoad(n[0, 1], center, avenueIntoCenter, Two());
-            b.AddRoad(center, n[2, 1], Two(), avenueIntoCenter);
+            b.AddRoad(n[0, 1], center, avenueIntoCenter, Two(), null, NetworkBuilder.ArterialSpeed);
+            b.AddRoad(center, n[2, 1], Two(), avenueIntoCenter, null, NetworkBuilder.ArterialSpeed);
 
             // South side: eastbound loses its right lane on the first block and its left lane on the second.
             b.AddRoad(n[0, 0], n[0, 1], new[] { T(0), T(1, 0, 0.55) }, Two());

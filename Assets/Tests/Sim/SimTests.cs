@@ -562,19 +562,21 @@ namespace Traffic.Tests
         {
             World map = Maps.HighwayTown();
             Assert.AreEqual(4, map.Entries.Count, "both ends of the highway and two roads south of town bring traffic in");
-            // Westbound traffic passes straight through: it is never offered a ramp.
+            // Highway traffic is only ever offered its own exit, never the ramps on the far side.
             foreach (Lane lane in map.Lanes)
             {
                 if (lane.Kind != LaneKind.Connector || lane.Turn == Turn.Straight || map.Nodes[lane.Node].Controlled) continue;
-                Assert.AreEqual(Turn.Right, lane.Turn, "the only turn on the highway is the eastbound exit");
+                Assert.AreEqual(Turn.Right, lane.Turn, "the only turn on the highway is an exit to the right");
             }
             Assert.IsTrue(map.Lanes.Any(l => l.IsExit));
             var sim = new Simulation(map, 3);
             sim.ArrivalsPerMinute = 8;
-            Grid.Run(sim, 240);
+            bool usedBridge = false;
+            Grid.Run(sim, 240, () => usedBridge |= sim.Cars.Any(c => c.Height > 5));
             int leftByHalfway = sim.Left;
             Grid.Run(sim, 240);
-            Assert.AreEqual(0, sim.Crashes);
+            Assert.IsTrue(usedBridge, "traffic should cross the highway on the bridge");
+            Assert.AreEqual(0, sim.Crashes, "nothing on the bridge should hit anything under it");
             Assert.Greater(leftByHalfway, 50);
             Assert.Greater(sim.Left - leftByHalfway, 50);
             Assert.Greater(sim.Passes, 100, "some traffic should take the off-ramp into town");

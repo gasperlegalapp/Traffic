@@ -52,7 +52,26 @@ namespace Traffic.Lab
             MeshKit.Spawn("Ground", ground.Build(), MeshKit.Lit(MeshKit.Hex(0x2c3d33), 0), root, false);
 
             var asphalt = new FlatBuilder();
-            foreach (Strip s in world.Surfaces) asphalt.Strip(s.Left, s.Right, 0.03f);
+            var deck = new FlatBuilder();
+            var skirt = new FlatBuilder();
+            bool anyBridge = false;
+            foreach (Strip s in world.Surfaces)
+            {
+                if (s.Peak <= 0)
+                {
+                    asphalt.Strip(s.Left, s.Right, 0.03f);
+                    continue;
+                }
+                // A bridge: a raised deck that hides and shades the road beneath, with walls down its sides.
+                anyBridge = true;
+                deck.Strip(s.Left, s.Right, 0.03f, s.Peak);
+                skirt.Skirt(s.Right, 0.03f, s.Peak);
+            }
+            if (anyBridge)
+            {
+                MeshKit.Spawn("Bridge deck", deck.Build(), MeshKit.Lit(MeshKit.Hex(0x3d424b), 0.05f), root, true);
+                MeshKit.Spawn("Bridge sides", skirt.Build(), MeshKit.Lit(MeshKit.Hex(0x7d8088), 0.05f), root, true);
+            }
             foreach (Node node in world.Nodes) if (node.Box.Count > 2) asphalt.Fan(node.Pos, node.Box, 0.03f);
             MeshKit.Spawn("Asphalt", asphalt.Build(), MeshKit.Lit(MeshKit.Hex(0x353a42), 0.05f), root, false);
 
@@ -63,6 +82,7 @@ namespace Traffic.Lab
             {
                 FlatBuilder b = m.Yellow ? yellow : white;
                 if (m.DashOn > 0) b.Dashed(m.Pts, m.Width, m.DashOn, m.DashOff, 0.07f);
+                else if (m.Peak > 0) b.Line(m.Pts, m.Width, 0.07f, m.Peak);
                 else b.Line(m.Pts, m.Width, 0.07f);
             }
             foreach (ArrowMark arrow in world.Arrows) PaintArrows(arrow, white, red);

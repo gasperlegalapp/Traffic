@@ -132,7 +132,7 @@ namespace Traffic.Lab
                     v = Make(car);
                     views[car.Id] = v;
                 }
-                v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.X, car.Y), MeshKit.Heading(car.H));
+                v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.X, car.Y, (float)car.Height), MeshKit.Heading(car.H));
                 bool braking = car.A < -0.6 || (car.V < 0.2 && !car.Crashed);
                 foreach (MeshRenderer r in v.Brakes) r.sharedMaterial = braking ? brakeOn : brakeOff;
                 bool hazard = car.Crashed && blink;
@@ -144,7 +144,7 @@ namespace Traffic.Lab
                 if (car.Id == selectedId)
                 {
                     ring.gameObject.SetActive(true);
-                    ring.position = MeshKit.ToWorld(car.X, car.Y, 0.12f);
+                    ring.position = MeshKit.ToWorld(car.X, car.Y, 0.12f + (float)car.Height);
                     float size = Mathf.Max(1, (float)car.Len / 4.5f);
                     ring.localScale = new Vector3(size, 1, size);
                 }

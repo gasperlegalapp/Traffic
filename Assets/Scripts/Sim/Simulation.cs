@@ -120,6 +120,8 @@ namespace Traffic.Sim
 
         /// <summary>World pose, refreshed every step.</summary>
         public double X, Y, H;
+        /// <summary>Height above the ground: more than 0 on a bridge.</summary>
+        public double Height;
         /// <summary>Position on the lane centerline (ignores the sideways offset).</summary>
         public double Cx, Cy;
 
@@ -346,18 +348,27 @@ namespace Traffic.Sim
                     // Wait for the mouth of the lane to clear.
                     Car ahead = null;
                     foreach (Car c in Cars) if (c.Lane == id && (ahead == null || c.S < ahead.S)) ahead = c;
-                    if (Cars.Count >= MaxCars || (ahead != null && ahead.S - ahead.Len / 2 < length + 8))
+                    // A vehicle still halfway out of this lane is in the way too.
+                    bool leaving = false;
+                    foreach (Car c in Cars) if (c.GhostLane == id && c.S + c.GhostOff - c.Len / 2 < length + 8) leaving = true;
+                    if (leaving || Cars.Count >= MaxCars || (ahead != null && ahead.S - ahead.Len / 2 < length + 8))
                     {
                         nextArrival[id] = Time + 0.5;
                         continue;
                     }
                     double speed = lane.SpeedLimit * 0.9;
-                    if (ahead != null) speed = Math.Min(speed, ahead.V + (ahead.S - length - 8) * 0.3);
+                    if (ahead != null)
+                    {
+                        // Come in no faster than can be stopped, gently, in the room there is.
+                        double room = ahead.S - ahead.Len / 2 - length - 1;
+                        speed = Math.Min(speed, ahead.V * 0.8 + Math.Sqrt(2 * 1.5 * Math.Max(room - 6, 0)));
+                    }
                     AddCar(id, length / 2 + 0.5, speed, Vary(ArrivalDriver ?? DriverParams.Normal, ArrivalVariation), null, kind);
 
                     // Faster roads carry more traffic per lane.
                     double perSecond = ArrivalsPerMinute / 60 * (lane.SpeedLimit / NetworkBuilder.CitySpeed);
                     perSecond *= 1 + 0.6 * Math.Sin(Time / 19 + id * 1.3);
+                    perSecond = Math.Min(perSecond, 0.5); // about as much as one lane can carry
                     double wait = -Math.Log(1 - Rng.Next()) / Math.Max(perSecond, 1e-3);
                     nextArrival[id] = Time + Geo.Clamp(wait, 1.2, 120);
                 }
@@ -502,6 +513,7 @@ namespace Traffic.Sim
         private void UpdatePose(Car car)
         {
             PathPose p = Lanes[car.Lane].Path.At(car.S);
+            car.Height = Lanes[car.Lane].HeightAt(car.S);
             car.Cx = p.X;
             car.Cy = p.Y;
             double side = car.Lat + car.Wobble;
@@ -735,6 +747,20 @@ namespace Traffic.Sim
                 Use(DriverModel.Idm(car.V, v0, gapNow, closing, headway, d), Binding.Leader);
             }
             car.ALead = leadGap < Lookahead ? Math.Min(free, DriverModel.Idm(car.V, v0, leadGap, car.V - leadV, drv.Headway, d)) : free;
+
+            // Halfway through a lane change the car is still partly in the lane it is leaving,
+            // so it must not run into whoever is ahead of it there.
+            if (car.GhostLane >= 0)
+            {
+                double ghostS = car.S + car.GhostOff;
+                foreach (var e in laneCars[car.GhostLane])
+                {
+                    if (e.Car == car || e.S <= ghostS) continue;
+                    double g = e.S - e.Car.Len / 2 - ghostS - half;
+                    Use(DriverModel.Idm(car.V, v0, g, car.V - e.Car.V, drv.Headway, d), Binding.Leader);
+                    break;
+                }
+            }
 
             // Fixed things to stop for: the end of the lane, the stop line, a gap to wait for.
             car.StopDist = double.PositiveInfinity;
@@ -1239,6 +1265,7 @@ namespace Traffic.Sim
 
                 if (lane.Connectors != null && World.Nodes[lane.Node].Controlled && remaining < NetworkBuilder.SolidLine) continue;
                 if (car.S < 12) continue;
+                if (lane.IsEntry && car.S < 60) continue; // settle in before changing lanes: traffic is still arriving behind
                 if (Time < car.LcCooldownUntil && urgency < 0.5) continue;
 
                 bool have = false;
@@ -1488,6 +1515,7 @@ namespace Traffic.Sim
                     double dx = b.X - a.X;
                     double dy = b.Y - a.Y;
                     if (dx * dx + dy * dy > 36) continue;
+                    if (Math.Abs(a.Height - b.Height) > 2.5) continue; // one is on a bridge over the other
                     if (!BoxesOverlap(a, b)) continue;
                     MarkCrashed(a);
                     MarkCrashed(b);

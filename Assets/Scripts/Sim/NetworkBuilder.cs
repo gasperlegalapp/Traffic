@@ -33,13 +33,22 @@ namespace Traffic.Sim
     /// </summary>
     public sealed class NetworkBuilder
     {
-        public const double LaneW = 3.5;
+        /// <summary>A standard 12-foot US lane.</summary>
+        public const double LaneW = 3.66;
         /// <summary>Lane changes are not allowed this close to a stop line.</summary>
         public const double SolidLine = 20;
         private const double Taper = 18;
         private const double CornerRadius = 5;
-        /// <summary>30 mph, the default for a city street.</summary>
-        public const double CitySpeed = 13.4;
+        /// <summary>25 mph: the default, for a side street.</summary>
+        public const double CitySpeed = 11.2;
+        /// <summary>35 mph: a main street, or a ramp.</summary>
+        public const double ArterialSpeed = 15.6;
+        /// <summary>65 mph: an urban interstate.</summary>
+        public const double HighwaySpeed = 29.1;
+        /// <summary>US lane lines: a 10-foot dash and a 30-foot gap.</summary>
+        private const double DashOn = 3.05, DashOff = 9.15;
+        /// <summary>How high a bridge stands over the road beneath it.</summary>
+        private const double BridgeHeight = 6.5;
         /// <summary>How far the stop lines sit from the center where roads split or join without a light.</summary>
         private const double FreeRadius = 8;
 
@@ -50,6 +59,7 @@ namespace Traffic.Sim
             public Vec[] Via;
             public double Speed;
             public double ShiftA, ShiftB;
+            public bool Bridge;
         }
 
         private readonly List<Vec> nodePos = new List<Vec>();
@@ -75,11 +85,12 @@ namespace Traffic.Sim
         /// meets each node, to the right of travel from a to b, so that a ramp can leave from or
         /// join at the outside lane of a highway instead of its centerline.
         /// </summary>
-        public void AddRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] via = null, double speed = CitySpeed, double shiftA = 0, double shiftB = 0)
+        /// <remarks>A bridge rises over whatever it crosses; traffic on it and under it does not interact.</remarks>
+        public void AddRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] via = null, double speed = CitySpeed, double shiftA = 0, double shiftB = 0, bool bridge = false)
         {
             roads.Add(new RoadSpec
             {
-                A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = via ?? new Vec[0], Speed = speed, ShiftA = shiftA, ShiftB = shiftB,
+                A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = via ?? new Vec[0], Speed = speed, ShiftA = shiftA, ShiftB = shiftB, Bridge = bridge,
             });
         }
 
@@ -162,8 +173,9 @@ namespace Traffic.Sim
                 Approach armB = AddArm(r.B, Math.Atan2(-by, -bx), r.A);
                 armA.Shift = r.ShiftA;
                 armB.Shift = -r.ShiftB;
-                BuildDirection(center, r.Fwd, armB, armA, r.Speed);
-                BuildDirection(reversed, r.Back, armA, armB, r.Speed);
+                double peak = r.Bridge ? BridgeHeight : 0;
+                BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak);
+                BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak);
             }
             world.Extent = extent + 30;
 
@@ -188,7 +200,7 @@ namespace Traffic.Sim
 
         // ------------------------------------------------------------ roads
 
-        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed)
+        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed, double peak)
         {
             if (specs.Length == 0) return;
             int n = center.Count - 1;
@@ -222,6 +234,7 @@ namespace Traffic.Sim
                     Path = path,
                     Length = path.Length,
                     SpeedLimit = speed,
+                    Peak = peak,
                     Slot = spec.Slot,
                     ApproachNode = to.Node,
                     ApproachArm = to.Arm,
@@ -298,9 +311,9 @@ namespace Traffic.Sim
             to.InRight = right[n];
             from.OutLeft = left[0];
             from.OutRight = right[0];
-            world.Surfaces.Add(new Strip { Left = center.ToArray(), Right = Geo.Offset(center, i => right[i]) });
-            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14 });
-            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true });
+            world.Surfaces.Add(new Strip { Left = center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak });
+            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14, Peak = peak });
+            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true, Peak = peak });
 
             bool controlled = EndsAt(to.Node) > 2 && nodeMode[to.Node] != JunctionMode.Free;
             for (int slot = 0; slot < maxSlot; slot++)
@@ -354,7 +367,7 @@ namespace Traffic.Sim
             if (to - from < 1) return;
             var part = new Vec[to - from + 1];
             Array.Copy(pts, from, part, 0, part.Length);
-            world.Markings.Add(new Marking { Pts = part, Width = 0.14, DashOn = dashed ? 3 : 0, DashOff = dashed ? 6 : 0 });
+            world.Markings.Add(new Marking { Pts = part, Width = 0.14, DashOn = dashed ? DashOn : 0, DashOff = dashed ? DashOff : 0 });
         }
 
         // ------------------------------------------------------------ intersections
@@ -377,6 +390,7 @@ namespace Traffic.Sim
                     world.Lanes[id].Connectors = null;
                     world.Lanes[id].IsExit = true;
                 }
+                foreach (int id in edge.Outbound) world.Lanes[id].IsEntry = true;
                 if (edge.Outbound.Count > 0) world.Entries.Add(edge);
                 return;
             }
@@ -507,7 +521,7 @@ namespace Traffic.Sim
                     if (o.Kind == LaneKind.Road && o.ApproachNode == to.ApproachNode && o.ApproachArm == to.ApproachArm && o.Preds.Count > 0 && o.Slot < to.Slot) leftmost = false;
                 }
                 Vec[] pts = c.Path.Pts;
-                if (leftNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2), Width = 0.14, DashOn = 3, DashOff = 6 });
+                if (leftNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2), Width = 0.14, DashOn = DashOn, DashOff = DashOff });
                 else if (leftmost) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.16), Width = 0.12, Yellow = true });
                 else world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.2), Width = 0.14 });
                 if (!rightNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, LaneW / 2 - 0.25), Width = 0.14 });

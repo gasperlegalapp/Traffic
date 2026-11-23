@@ -62,8 +62,19 @@ namespace Traffic.Sim
         /// <summary>For a lane that ends before the intersection: the side to merge to (-1 left, 1 right).</summary>
         public int MergeSide;
 
+        /// <summary>Height of the middle of the lane above the ground, for a lane on a bridge; 0 on the ground.</summary>
+        public double Peak;
+
+        /// <summary>Height above the ground at a distance along the lane.</summary>
+        public double HeightAt(double s)
+        {
+            return Peak <= 0 ? 0 : Peak * Geo.BridgeProfile(s / Length);
+        }
+
         /// <summary>The lane runs off the edge of the map: vehicles that reach its end leave.</summary>
         public bool IsExit;
+        /// <summary>The lane comes in from the edge of the map: new vehicles appear at its start.</summary>
+        public bool IsEntry;
 
         /// <summary>The intersection a lane belongs to: set for road lanes that reach a stop line, and for connectors.</summary>
         public int Node = -1;
@@ -155,6 +166,8 @@ namespace Traffic.Sim
     {
         public Vec[] Left;
         public Vec[] Right;
+        /// <summary>For a bridge: its height in the middle. The points run its whole length.</summary>
+        public double Peak;
     }
 
     public sealed class Marking
@@ -162,6 +175,8 @@ namespace Traffic.Sim
         public Vec[] Pts;
         public double Width;
         public bool Yellow;
+        /// <summary>For paint on a bridge: the bridge's height in the middle. The points run its whole length.</summary>
+        public double Peak;
         /// <summary>Meters painted and meters skipped; both 0 for a solid line.</summary>
         public double DashOn, DashOff;
     }

@@ -72,68 +72,91 @@ namespace Traffic.Sim
         }
 
         /// <summary>
-        /// A small town of six intersections south of a divided highway. The ramps serve the
-        /// eastbound side, which is the one next to town; westbound traffic only passes through. An off-ramp brings highway traffic into the north-west corner of town
-        /// and an on-ramp takes it back out from the north-east corner. Vehicles arrive
-        /// at the west end of the highway and at two roads on the south edge of town,
-        /// and leave the map at the east end of the highway or by those same two roads.
+        /// A small town of six intersections south of a divided highway, joined to it by a
+        /// diamond interchange: a crossroad from the middle of town goes over the highway on
+        /// a bridge, and on each side of the highway an off-ramp comes up to the crossroad
+        /// and an on-ramp goes back down, meeting it at a traffic light. Vehicles arrive at
+        /// both ends of the highway and on two roads at the south edge of town, and leave
+        /// the map the same ways.
         /// </summary>
         public static World HighwayTown()
         {
             const double highwayY = 215;
-            const double highwaySpeed = 26.8; // 60 mph
-            const double rampSpeed = 15.6; // 35 mph
+            const double highwaySpeed = NetworkBuilder.HighwaySpeed;
+            const double rampSpeed = NetworkBuilder.ArterialSpeed;
+            const double main = NetworkBuilder.ArterialSpeed;
             var b = new NetworkBuilder();
 
-            // Town: columns at x = -140, 0, 140; rows at y = 70 (north) and -70 (south).
-            int nw = b.AddNode(-140, 70, JunctionMode.Signal);
-            int n = b.AddNode(0, 70, JunctionMode.Signal);
-            int ne = b.AddNode(140, 70, JunctionMode.Signal);
-            int sw = b.AddNode(-140, -70, JunctionMode.AllWay);
-            int s = b.AddNode(0, -70, JunctionMode.Signal);
-            int se = b.AddNode(140, -70, JunctionMode.AllWay);
-            b.AddRoad(nw, n, Two(), Two());
-            b.AddRoad(n, ne, Two(), Two());
+            // Town: columns at x = -140, 0, 140; rows at y = -30 (north) and -170 (south).
+            int nw = b.AddNode(-140, -30, JunctionMode.Free);
+            int n = b.AddNode(0, -30, JunctionMode.Signal);
+            int ne = b.AddNode(140, -30, JunctionMode.Free);
+            int sw = b.AddNode(-140, -170, JunctionMode.AllWay);
+            int s = b.AddNode(0, -170, JunctionMode.Signal);
+            int se = b.AddNode(140, -170, JunctionMode.AllWay);
+            b.AddRoad(nw, n, Two(), Two(), null, main);
+            b.AddRoad(n, ne, Two(), Two(), null, main);
             b.AddRoad(sw, s, One(), One());
             b.AddRoad(s, se, One(), One());
-            // Both westbound lanes of the north street turn down this one, so it starts with two lanes and narrows.
+            // The two lanes of the north street carry on round each corner, then narrow to one.
             b.AddRoad(sw, nw, One(), new[] { T(0), T(1, 0, 0.6) });
+            b.AddRoad(se, ne, One(), new[] { T(0), T(1, 0, 0.6) });
             b.AddRoad(s, n, One(), One());
-            b.AddRoad(se, ne, One(), One());
 
             // Two roads out of town to the south.
-            int southWest = b.AddNode(-140, -215, JunctionMode.Free);
-            int southEast = b.AddNode(140, -215, JunctionMode.Free);
+            int southWest = b.AddNode(-140, -300, JunctionMode.Free);
+            int southEast = b.AddNode(140, -300, JunctionMode.Free);
             b.AddRoad(southWest, sw, One(), One());
             b.AddRoad(southEast, se, One(), One());
 
-            // The highway: in at the west end, past the off-ramp, past the on-ramp, out at the east end.
+            // The crossroad: north out of town, over the highway on a bridge. It meets the
+            // ramps at a traffic light on each side of the highway.
+            int southRamps = b.AddNode(0, highwayY - 85, JunctionMode.Signal);
+            int northRamps = b.AddNode(0, highwayY + 85, JunctionMode.Signal);
+            b.AddRoad(n, southRamps, One(), One(), null, main);
+            b.AddRoad(southRamps, northRamps, One(), One(), null, main, 0, 0, true);
+
+            // The highway. Each direction keeps the slot next to the centerline empty, which
+            // leaves a median. Through lanes may only go straight on, so that they are never
+            // offered the ramps on the far side; an extra lane opens on the right before each
+            // exit, and traffic joining gets a lane of its own before it has to merge.
             int westEnd = b.AddNode(-430, highwayY, JunctionMode.Free);
-            int offRamp = b.AddNode(-250, highwayY, JunctionMode.Free);
-            int onRamp = b.AddNode(250, highwayY, JunctionMode.Free);
+            int west = b.AddNode(-250, highwayY, JunctionMode.Free);
+            int east = b.AddNode(250, highwayY, JunctionMode.Free);
             int eastEnd = b.AddNode(430, highwayY, JunctionMode.Free);
-            // A third lane opens before the off-ramp for traffic leaving.
-            // Each direction keeps the slot next to the centerline empty, which leaves a median between them.
-            // Westbound lanes may only go straight on: they must not be offered the ramps on the far side.
-            TrackSpec[] westbound = { T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight) };
-            b.AddRoad(westEnd, offRamp, new[] { T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight), T(3, -110, 1, Turn.Right) }, westbound, null, highwaySpeed);
-            b.AddRoad(offRamp, onRamp, new[] { T(1), T(2) }, westbound, null, highwaySpeed);
-            // Traffic from the on-ramp gets a lane of its own to get up to speed, then has to merge.
-            b.AddRoad(onRamp, eastEnd, new[] { T(1), T(2), T(3, 0, 0.75) }, westbound, null, highwaySpeed);
+            TrackSpec[] through = { T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight) };
+            TrackSpec[] toExit = { T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight), T(3, -110, 1, Turn.Right) };
+            TrackSpec[] fromEntry = { T(1), T(2), T(3, 0, 0.75) };
+            b.AddRoad(westEnd, west, toExit, fromEntry, null, highwaySpeed);
+            b.AddRoad(west, east, through, through, null, highwaySpeed);
+            b.AddRoad(east, eastEnd, fromEntry, toExit, null, highwaySpeed);
 
-            // Off-ramp: peels away to the right, then curves down into the north-west corner of town.
-            // Both ramps hang off the outside of the two through lanes, not the highway's centerline.
-            double tilt = 12 * Math.PI / 180;
+            // Ramps hang off the outside of the through lanes, not the highway's centerline.
             const double outside = 3 * NetworkBuilder.LaneW;
-            double cos = Math.Cos(tilt), sin = Math.Sin(tilt);
-            var leave = new PathPose { X = -250 + 24 * cos - outside * sin, Y = highwayY - 24 * sin - outside * cos, H = -tilt };
-            var arrive = new PathPose { X = -140, Y = 70 + 32, H = -Math.PI / 2 };
-            b.AddRoad(offRamp, nw, One(), null, Geo.Bezier(leave, arrive, 70, 24), rampSpeed, outside, 0);
+            const double tilt = 12 * Math.PI / 180;
+            TrackSpec[] ramp = { T(0) };
+            TrackSpec[] rampOn = { T(0, 0, 1, Turn.Straight) };
+            // A point 24 m from a highway node along a heading, moved to the right of that heading by the ramp offset.
+            PathPose Off(double x, double heading, double along)
+            {
+                return new PathPose
+                {
+                    X = x + along * Math.Cos(heading) + outside * Math.Sin(heading),
+                    Y = highwayY + along * Math.Sin(heading) - outside * Math.Cos(heading),
+                    H = heading,
+                };
+            }
+            PathPose At(double x, double y, double heading)
+            {
+                return new PathPose { X = x, Y = y, H = heading };
+            }
 
-            // On-ramp: north out of the north-east corner, then curves right to join the highway.
-            var depart = new PathPose { X = 140, Y = 70 + 32, H = Math.PI / 2 };
-            var join = new PathPose { X = 250 - 24 * cos + outside * sin, Y = highwayY - 24 * sin - outside * cos, H = tilt };
-            b.AddRoad(ne, onRamp, new[] { T(0, 0, 1, Turn.Straight) }, null, Geo.Bezier(depart, join, 70, 24), rampSpeed, 0, outside);
+            // Eastbound side, south of the highway.
+            b.AddRoad(west, southRamps, ramp, null, Geo.Bezier(Off(-250, -tilt, 24), At(-34, highwayY - 85, 0), 70, 24), rampSpeed, outside, 0);
+            b.AddRoad(southRamps, east, rampOn, null, Geo.Bezier(At(34, highwayY - 85, 0), Off(250, tilt, -24), 70, 24), rampSpeed, 0, outside);
+            // Westbound side, north of the highway.
+            b.AddRoad(east, northRamps, ramp, null, Geo.Bezier(Off(250, Math.PI - tilt, 24), At(34, highwayY + 85, Math.PI), 70, 24), rampSpeed, outside, 0);
+            b.AddRoad(northRamps, west, rampOn, null, Geo.Bezier(At(-34, highwayY + 85, Math.PI), Off(-250, Math.PI + tilt, -24), 70, 24), rampSpeed, 0, outside);
 
             return b.Build();
         }

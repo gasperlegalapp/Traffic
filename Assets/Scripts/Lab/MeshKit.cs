@@ -138,6 +138,48 @@ namespace Traffic.Lab
             tris.Add(a); tris.Add(c); tris.Add(b);
         }
 
+        /// <summary>A strip on a bridge: it rises to peak in the middle of its length.</summary>
+        public void Strip(IList<Vec> left, IList<Vec> right, float y, double peak)
+        {
+            int n = left.Count - 1;
+            int l0 = Vertex(left[0], y);
+            int r0 = Vertex(right[0], y);
+            for (int i = 1; i <= n; i++)
+            {
+                float h = y + (float)(peak * Geo.BridgeProfile((double)i / n));
+                int l1 = Vertex(left[i], h);
+                int r1 = Vertex(right[i], h);
+                Tri(l0, r0, l1);
+                Tri(r0, r1, l1);
+                l0 = l1;
+                r0 = r1;
+            }
+        }
+
+        /// <summary>A wall from the ground up to the edge of a bridge.</summary>
+        public void Skirt(IList<Vec> edge, float y, double peak)
+        {
+            int n = edge.Count - 1;
+            int top0 = Vertex(edge[0], y);
+            int bottom0 = Vertex(edge[0], 0);
+            for (int i = 1; i <= n; i++)
+            {
+                int top1 = Vertex(edge[i], y + (float)(peak * Geo.BridgeProfile((double)i / n)));
+                int bottom1 = Vertex(edge[i], 0);
+                Tri(bottom0, top0, bottom1);
+                Tri(top0, top1, bottom1);
+                top0 = top1;
+                bottom0 = bottom1;
+            }
+        }
+
+        public void Line(IList<Vec> pts, double width, float y, double peak)
+        {
+            if (pts.Count < 2) return;
+            var list = new List<Vec>(pts);
+            Strip(Geo.Offset(list, -width / 2), Geo.Offset(list, width / 2), y, peak);
+        }
+
         public void Strip(IList<Vec> left, IList<Vec> right, float y)
         {
             int l0 = Vertex(left[0], y);

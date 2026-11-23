@@ -304,28 +304,28 @@ namespace Traffic.Lab
                 {
                     double timeGap = car.Gap / System.Math.Max(car.V, 1);
                     Color c = timeGap < 0.8 ? new Color(1, 0.3f, 0.3f, 0.9f) : timeGap < 1.5 ? new Color(1, 0.78f, 0.25f, 0.9f) : new Color(0.3f, 0.9f, 0.55f, 0.9f);
-                    Segment(fx, fy, lead.X - System.Math.Cos(lead.H) * lead.Len * 0.5, lead.Y - System.Math.Sin(lead.H) * lead.Len * 0.5, c);
+                    Segment(fx, fy, lead.X - System.Math.Cos(lead.H) * lead.Len * 0.5, lead.Y - System.Math.Sin(lead.H) * lead.Len * 0.5, c, car.Height);
                 }
                 RoutePoint pt;
                 if (car.StopDist < 70 && Sim.Ahead(car, System.Math.Max(car.StopDist, 0) + car.Len / 2, out pt))
                 {
                     PathPose p = pt.Lane.Path.At(pt.S);
                     Color c = car.StopKind == Binding.Yield ? new Color(0.95f, 0.45f, 1, 0.9f) : new Color(0.55f, 0.8f, 1, 0.9f);
-                    Segment(fx, fy, p.X, p.Y, c);
+                    Segment(fx, fy, p.X, p.Y, c, car.Height);
                     double nx = System.Math.Sin(p.H) * 1.4;
                     double ny = -System.Math.Cos(p.H) * 1.4;
-                    Segment(p.X - nx, p.Y - ny, p.X + nx, p.Y + ny, c);
+                    Segment(p.X - nx, p.Y - ny, p.X + nx, p.Y + ny, c, car.Height);
                 }
             }
             GL.End();
             GL.PopMatrix();
         }
 
-        private static void Segment(double x1, double y1, double x2, double y2, Color c)
+        private static void Segment(double x1, double y1, double x2, double y2, Color c, double height)
         {
             GL.Color(c);
-            GL.Vertex(MeshKit.ToWorld(x1, y1, 1.7f));
-            GL.Vertex(MeshKit.ToWorld(x2, y2, 1.7f));
+            GL.Vertex(MeshKit.ToWorld(x1, y1, 1.7f + (float)height));
+            GL.Vertex(MeshKit.ToWorld(x2, y2, 1.7f + (float)height));
         }
     }
 }

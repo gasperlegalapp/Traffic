@@ -412,7 +412,7 @@ namespace Traffic.Lab
                 // From far away only the interesting states get a tag.
                 bool dull = car.State == CarState.Cruise || car.State == CarState.Follow;
                 if (zoomedOut && car.Id != selected && car.Special == null && dull) continue;
-                Vector3 p = cam.WorldToScreenPoint(MeshKit.ToWorld(car.X, car.Y, 2.4f));
+                Vector3 p = cam.WorldToScreenPoint(MeshKit.ToWorld(car.X, car.Y, 2.4f + (float)car.Height));
                 if (p.z <= 0 || p.x < -40 || p.x > Screen.width + 40 || p.y < -40 || p.y > Screen.height + 40) continue;
                 string text = StateNames[(int)car.State];
                 if (car.Special != null) text = dull ? car.Special : car.Special + " - " + text;
