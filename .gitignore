@@ -17,4 +17,5 @@ obj/
 *.csproj
 *.sln
 !Tools/SimTests/SimTests.csproj
+!Tools/LabCompile/LabCompile.csproj
 .vs/

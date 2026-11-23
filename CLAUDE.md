@@ -27,4 +27,11 @@ Headless Chromium in a cloud container renders slowly. When scripting checks, pa
 
 ## Unity port (in progress)
 
-The game is moving to Unity on Windows. `Assets/Scripts/Sim/` is a line-for-line C# translation of `src/sim/` (namespace `Traffic.Sim`, class `Simulation`), with no Unity references, and gives identical results to the TypeScript version for the same seed. `Assets/Tests/Sim/` holds the same tests in NUnit. Run them without the Unity editor with `dotnet test Tools/SimTests` (needs the .NET 8 SDK). Keep the C# to language version 9 so Unity can compile it. The Unity project settings and the rendering are not created yet; the web version stays until the Unity driver lab replaces it.
+The game is moving to Unity 6 (project version 6000.3.26f1) on Windows 11. The web version stays until the Unity driver lab is confirmed working.
+
+- `Assets/Scripts/Sim/`: a line-for-line C# translation of `src/sim/` (namespace `Traffic.Sim`, class `Simulation`), with no Unity references. It gives identical results to the TypeScript version for the same seed. `SignalLight` and `PathPose` are named to avoid clashing with `UnityEngine.Light` and `UnityEngine.Pose`.
+- `Assets/Scripts/Lab/`: the Unity driver lab. `LabBootstrap` creates a `LabApp` object when Play is pressed, in any scene, so there is no scene file to maintain. Everything (meshes, materials, camera, light) is built in code. The UI is immediate-mode GUI (`LabUi.cs`) and reads mouse and keyboard from GUI events, so it does not depend on the Input Manager or Input System setting. Sim (x east, y north) maps to Unity (x, height, z = y); models face +x.
+- `Assets/Tests/Sim/`: the sim tests in NUnit.
+- Only `ProjectSettings/ProjectVersion.txt` is checked in. Unity generates the rest of `ProjectSettings/`, `Packages/` and the `.meta` files on first open; commit them once that has happened. The code assumes the Built-in Render Pipeline.
+
+Checks without the Unity editor (need the .NET 8 SDK): `dotnet test Tools/SimTests` runs the sim tests, and `dotnet build Tools/LabCompile` type-checks all scripts against older Unity reference assemblies (2021.3), which catches typos but does not prove they compile or look right in the installed Unity. Keep the C# to language version 9.

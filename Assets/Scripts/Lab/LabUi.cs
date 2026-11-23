@@ -22,7 +22,7 @@ namespace Traffic.Lab
         private static readonly Color Bad = MeshKit.Hex(0xff5d5d);
 
         private Texture2D white;
-        private GUIStyle panel, heading, label, value, big, tag, button, buttonOn;
+        private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn;
         private Vector2 labScroll;
         private bool dragging;
         private float dragMoved;
@@ -49,7 +49,10 @@ namespace Traffic.Lab
             value = new GUIStyle(label) { alignment = TextAnchor.MiddleRight };
             value.normal.textColor = Accent;
             big = new GUIStyle(label) { fontSize = 15, fontStyle = FontStyle.Bold };
-            tag = new GUIStyle(label) { fontSize = 9, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter, padding = new RectOffset(4, 4, 1, 1) };
+            sub = new GUIStyle(label) { fontSize = 11 };
+            sub.normal.textColor = Accent;
+            tagStyle = new GUIStyle(label) { fontSize = 9, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter, padding = new RectOffset(4, 4, 1, 1) };
+            stateStyle = new GUIStyle(tagStyle) { fontSize = 11 };
             button = new GUIStyle(GUI.skin.button) { fontSize = 13, fontStyle = FontStyle.Bold };
             buttonOn = new GUIStyle(button);
             buttonOn.normal.textColor = Accent;
@@ -99,7 +102,7 @@ namespace Traffic.Lab
             GUILayout.BeginVertical(GUILayout.Width(96));
             GUILayout.Label("T R A F F I C", big);
             GUILayout.Space(-6);
-            GUILayout.Label("Driver Lab", value == null ? label : new GUIStyle(label) { fontSize = 11, normal = { textColor = Accent } });
+            GUILayout.Label("Driver Lab", sub);
             GUILayout.EndVertical();
             double v = 0;
             int moving = 0;
@@ -239,8 +242,8 @@ namespace Traffic.Lab
             Fill(new Rect(dot.x, dot.y + 4, 12, 12), MeshKit.Hex(car.Color));
             GUILayout.Label("Car " + car.Id, big);
             GUILayout.FlexibleSpace();
-            Color sc = StateColor(car.State);
-            GUILayout.Label(StateNames[(int)car.State], new GUIStyle(tag) { fontSize = 11, normal = { textColor = sc } });
+            stateStyle.normal.textColor = StateColor(car.State);
+            GUILayout.Label(StateNames[(int)car.State], stateStyle);
             if (GUILayout.Button("X", button, GUILayout.Width(26))) Select(-1);
             GUILayout.EndHorizontal();
 
@@ -342,12 +345,12 @@ namespace Traffic.Lab
                 Vector3 p = cam.WorldToScreenPoint(MeshKit.ToWorld(car.X, car.Y, 2.4f));
                 if (p.z <= 0 || p.x < -40 || p.x > Screen.width + 40 || p.y < -40 || p.y > Screen.height + 40) continue;
                 string text = StateNames[(int)car.State];
-                Vector2 size = tag.CalcSize(new GUIContent(text));
+                Vector2 size = tagStyle.CalcSize(new GUIContent(text));
                 var r = new Rect(p.x / scale - size.x / 2, (Screen.height - p.y) / scale - size.y - 12, size.x, size.y);
                 bool bad = car.State == CarState.Brake || car.State == CarState.Startled || car.State == CarState.Crash;
                 Fill(r, bad ? new Color(0.84f, 0.19f, 0.19f, 0.92f) : new Color(0.04f, 0.055f, 0.063f, 0.78f));
-                tag.normal.textColor = bad ? Color.white : StateColor(car.State);
-                GUI.Label(r, text, tag);
+                tagStyle.normal.textColor = bad ? Color.white : StateColor(car.State);
+                GUI.Label(r, text, tagStyle);
             }
         }
 
