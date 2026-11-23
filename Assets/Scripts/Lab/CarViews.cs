@@ -24,6 +24,14 @@ namespace Traffic.Lab
 
         private readonly Mesh body = MeshKit.Box(4.5f, 0.8f, 1.9f);
         private readonly Mesh cabin = MeshKit.Box(2.3f, 0.6f, 1.62f);
+        private readonly Mesh truckCab = MeshKit.Box(2.0f, 2.0f, 2.4f);
+        private readonly Mesh truckBox = MeshKit.Box(6.1f, 2.7f, 2.5f);
+        private readonly Mesh truckGlass = MeshKit.Box(0.5f, 0.7f, 2.2f);
+        private readonly Mesh bikeBody = MeshKit.Box(2.0f, 0.5f, 0.4f);
+        private readonly Mesh bikeRider = MeshKit.Box(0.6f, 0.8f, 0.6f);
+        private readonly Mesh bikeLamp = MeshKit.Box(0.14f, 0.18f, 0.24f);
+        private readonly Material cargo = MeshKit.Lit(MeshKit.Hex(0xdfe3e8), 0.2f);
+        private readonly Material leather = MeshKit.Lit(MeshKit.Hex(0x22262b), 0.3f);
         private readonly Mesh lamp = MeshKit.Box(0.14f, 0.2f, 0.46f);
         private readonly Mesh corner = MeshKit.Box(0.3f, 0.2f, 0.3f);
         private readonly Material glass = MeshKit.Lit(MeshKit.Hex(0x161d26), 0.7f);
@@ -58,21 +66,47 @@ namespace Traffic.Lab
             var go = new GameObject("Car " + car.Id);
             go.transform.SetParent(root, false);
             var v = new View { Root = go, Paint = MeshKit.Lit(MeshKit.Hex(car.Color), 0.5f) };
-            MeshKit.Spawn("Body", body, v.Paint, go.transform).transform.localPosition = new Vector3(0, 0.6f, 0);
-            MeshKit.Spawn("Cabin", cabin, glass, go.transform).transform.localPosition = new Vector3(-0.3f, 1.15f, 0);
+            float halfLen = (float)car.Len / 2;
+            float halfWid = (float)car.Wid / 2;
+            float lampY = 0.86f;
+            Mesh lampMesh = lamp;
+            if (car.Vehicle.Kind == VehicleKind.Truck)
+            {
+                // A painted cab in front of a pale cargo box.
+                MeshKit.Spawn("Cab", truckCab, v.Paint, go.transform).transform.localPosition = new Vector3(halfLen - 1.0f, 1.25f, 0);
+                MeshKit.Spawn("Windshield", truckGlass, glass, go.transform).transform.localPosition = new Vector3(halfLen - 0.3f, 1.75f, 0);
+                MeshKit.Spawn("Cargo", truckBox, cargo, go.transform).transform.localPosition = new Vector3(-1.15f, 1.65f, 0);
+                lampY = 0.7f;
+            }
+            else if (car.Vehicle.Kind == VehicleKind.Motorcycle)
+            {
+                MeshKit.Spawn("Body", bikeBody, v.Paint, go.transform).transform.localPosition = new Vector3(0, 0.55f, 0);
+                MeshKit.Spawn("Rider", bikeRider, leather, go.transform).transform.localPosition = new Vector3(-0.15f, 1.15f, 0);
+                lampY = 0.75f;
+                lampMesh = bikeLamp;
+            }
+            else
+            {
+                MeshKit.Spawn("Body", body, v.Paint, go.transform).transform.localPosition = new Vector3(0, 0.6f, 0);
+                MeshKit.Spawn("Cabin", cabin, glass, go.transform).transform.localPosition = new Vector3(-0.3f, 1.15f, 0);
+            }
 
             // The model faces +x, so the driver's left is +z.
             MeshRenderer Lamp(Mesh mesh, Material mat, float x, float z)
             {
                 GameObject l = MeshKit.Spawn("Lamp", mesh, mat, go.transform, false);
-                l.transform.localPosition = new Vector3(x, 0.86f, z);
+                l.transform.localPosition = new Vector3(x, lampY, z);
                 return l.GetComponent<MeshRenderer>();
             }
-            v.Brakes = new[] { Lamp(lamp, brakeOff, -2.2f, 0.42f), Lamp(lamp, brakeOff, -2.2f, -0.42f) };
-            v.Left = new[] { Lamp(corner, blinkOff, 2.08f, 0.8f), Lamp(corner, blinkOff, -2.08f, 0.8f) };
-            v.Right = new[] { Lamp(corner, blinkOff, 2.08f, -0.8f), Lamp(corner, blinkOff, -2.08f, -0.8f) };
-            Lamp(lamp, headlight, 2.2f, 0.36f);
-            Lamp(lamp, headlight, 2.2f, -0.36f);
+            float back = -halfLen + 0.05f;
+            float front = halfLen - 0.05f;
+            float inset = halfWid * 0.45f;
+            float edge = halfWid - 0.15f;
+            v.Brakes = new[] { Lamp(lampMesh, brakeOff, back, inset), Lamp(lampMesh, brakeOff, back, -inset) };
+            v.Left = new[] { Lamp(corner, blinkOff, front - 0.12f, edge), Lamp(corner, blinkOff, back + 0.12f, edge) };
+            v.Right = new[] { Lamp(corner, blinkOff, front - 0.12f, -edge), Lamp(corner, blinkOff, back + 0.12f, -edge) };
+            Lamp(lampMesh, headlight, front, inset);
+            Lamp(lampMesh, headlight, front, -inset);
             return v;
         }
 
@@ -103,6 +137,8 @@ namespace Traffic.Lab
                 {
                     ring.gameObject.SetActive(true);
                     ring.position = MeshKit.ToWorld(car.X, car.Y, 0.12f);
+                    float size = Mathf.Max(1, (float)car.Len / 4.5f);
+                    ring.localScale = new Vector3(size, 1, size);
                 }
             }
             gone.Clear();

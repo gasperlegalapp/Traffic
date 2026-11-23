@@ -166,6 +166,12 @@ namespace Traffic.Lab
             }
             if (GUILayout.Button("Clear crashes", button)) Sim.ClearCrashes();
             GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("+ Truck", button) && Sim.Spawn(newDriver, variation, VehicleKind.Truck) == null) Toast("The road is full.");
+            if (GUILayout.Button("+ Motorcycle", button) && Sim.Spawn(newDriver, variation, VehicleKind.Motorcycle) == null) Toast("The road is full.");
+            GUILayout.EndHorizontal();
+            truckShare = Slider("Trucks among new vehicles", Mathf.RoundToInt(truckShare * 100) + "%", truckShare, 0, 0.6f);
+            bikeShare = Slider("Motorcycles among new vehicles", Mathf.RoundToInt(bikeShare * 100) + "%", bikeShare, 0, 0.6f);
 
             GUILayout.Space(10);
             GUILayout.Label("SPECIAL DRIVERS", heading);
@@ -179,7 +185,7 @@ namespace Traffic.Lab
                     bool pressed = GUILayout.Button("+ " + kind.Name, button);
                     GUI.contentColor = Color.white;
                     if (!pressed) continue;
-                    Car special = Sim.SpawnSpecial(kind);
+                    Car special = Sim.SpawnSpecial(kind, PickVehicle());
                     if (special == null) Toast("The road is full.");
                     else
                     {
@@ -283,7 +289,7 @@ namespace Traffic.Lab
             Rect dot = GUILayoutUtility.GetRect(14, 14, GUILayout.Width(14));
             Fill(new Rect(dot.x, dot.y + 4, 12, 12), MeshKit.Hex(car.Color));
             if (car.Special != null) big.normal.textColor = MeshKit.Hex(car.Color);
-            GUILayout.Label(car.Special ?? "Car " + car.Id, big);
+            GUILayout.Label((car.Special != null ? car.Special + " " : "") + car.Vehicle.Name.ToLower() + " " + car.Id, big);
             big.normal.textColor = MeshKit.Hex(0xe7edf0);
             GUILayout.FlexibleSpace();
             stateStyle.normal.textColor = StateColor(car.State);

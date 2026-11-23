@@ -65,6 +65,7 @@ namespace Traffic.Sim
         public int Id;
         /// <summary>Paint color as 0xRRGGBB.</summary>
         public int Color;
+        public VehicleSpec Vehicle = VehicleSpec.Of(VehicleKind.Car);
         public double Len = 4.5;
         public double Wid = 1.9;
         public DriverParams Drv;
@@ -165,7 +166,6 @@ namespace Traffic.Sim
         /// <summary>A car counts as inside an intersection once its nose is this far past the stop line. Overshooting by less does not.</summary>
         private const double Committed = 0.5;
 
-        private static readonly int[] CarColors = { 0xf25f5c, 0xffe066, 0x70c1b3, 0x4ea8de, 0xf4a261, 0xe9ecef, 0xb388eb, 0x8ac926, 0xff8fab, 0x90e0ef };
 
         public readonly World World;
         public readonly List<Lane> Lanes;
@@ -248,19 +248,23 @@ namespace Traffic.Sim
         // ---------------------------------------------------------------- cars
 
         /// <summary>Place a car. A null turn picks one at random.</summary>
-        public Car AddCar(int lane, double s, double v = 0, DriverParams drv = null, Turn? turn = null)
+        public Car AddCar(int lane, double s, double v = 0, DriverParams drv = null, Turn? turn = null, VehicleKind kind = VehicleKind.Car)
         {
             int id = nextId++;
+            VehicleSpec spec = VehicleSpec.Of(kind);
             var car = new Car
             {
                 Id = id,
-                Color = CarColors[id % CarColors.Length],
+                Vehicle = spec,
+                Len = spec.Len,
+                Wid = spec.Wid,
+                Color = spec.Colors[id % spec.Colors.Length],
                 Drv = (drv ?? DriverParams.Normal).Clone(),
                 Lane = lane,
                 S = s,
                 V = v,
             };
-            car.Turn = turn ?? PickTurn(Lanes[lane]);
+            car.Turn = turn ?? PickTurn(car, Lanes[lane]);
             car.NextLcCheck = Time + Rng.Next() * 0.4;
             for (int i = 0; i < ObsN; i++) car.ObsGap[i] = 1e6f;
             Cars.Add(car);
@@ -269,7 +273,7 @@ namespace Traffic.Sim
         }
 
         /// <summary>Drop a car onto a free stretch of road. Returns null when the track is full.</summary>
-        public Car Spawn(DriverParams baseDriver = null, double variation = 0)
+        public Car Spawn(DriverParams baseDriver = null, double variation = 0, VehicleKind kind = VehicleKind.Car)
         {
             if (baseDriver == null) baseDriver = DriverParams.Normal;
             var roads = Lanes.FindAll(l => l.Kind == LaneKind.Road && l.Length > 50);
@@ -277,11 +281,13 @@ namespace Traffic.Sim
             {
                 Lane lane = Rng.Pick(roads);
                 double s = Rng.Range(15, lane.Length - 30);
+                double length = VehicleSpec.Of(kind).Len;
                 bool free = true;
                 foreach (var c in Cars)
                 {
-                    if (c.Lane == lane.Id && Math.Abs(c.S - s) < 16) free = false;
-                    if (c.GhostLane == lane.Id && Math.Abs(c.S + c.GhostOff - s) < 16) free = false;
+                    double room = 11.5 + (c.Len + length) / 2;
+                    if (c.Lane == lane.Id && Math.Abs(c.S - s) < room) free = false;
+                    if (c.GhostLane == lane.Id && Math.Abs(c.S + c.GhostOff - s) < room) free = false;
                 }
                 if (!free) continue;
                 DriverParams drv = baseDriver.Clone();
@@ -294,20 +300,32 @@ namespace Traffic.Sim
                         drv.Set(k, Geo.Clamp(drv.Get(k) + (Rng.Next() - 0.5) * variation * (hi - lo), lo, hi));
                     }
                 }
-                return AddCar(lane.Id, s, 6, drv);
+                return AddCar(lane.Id, s, 6, drv, null, kind);
             }
             return null;
         }
 
         /// <summary>Drop one special driver onto the road. Returns null when the track is full.</summary>
-        public Car SpawnSpecial(SpecialDriver kind)
+        public Car SpawnSpecial(SpecialDriver kind, VehicleKind vehicle = VehicleKind.Car)
         {
-            Car car = Spawn(kind.Make(), 0);
+            Car car = Spawn(kind.Make(), 0, vehicle);
             if (car == null) return null;
             car.Special = kind.Name;
             car.Color = kind.Color;
             car.Flash = kind.Flash;
             return car;
+        }
+
+        /// <summary>What this driver can do in this vehicle.</summary>
+        private static Derived DeriveFor(Car car)
+        {
+            Derived d = DriverModel.Derive(car.Drv);
+            VehicleSpec v = car.Vehicle;
+            d.A *= v.Accel;
+            d.B *= v.Brake;
+            d.ALat *= v.Corner;
+            d.LcTime *= v.LaneChange;
+            return d;
         }
 
         /// <summary>Pushy enough to force a way through once committed to breaking a rule.</summary>
@@ -359,17 +377,19 @@ namespace Traffic.Sim
         private static readonly double[] TurnWeights = { 0.22, 0.5, 0.22, 0.06 };
 
         /// <summary>Choose the turn a car will make at the intersection its lane leads to.</summary>
-        private Turn PickTurn(Lane lane)
+        private Turn PickTurn(Car car, Lane lane)
         {
             bool[] offered = lane.ApproachTurns;
             if (offered == null) return Turn.Straight;
             double total = 0;
-            for (int t = 0; t < Lane.Turns; t++) if (offered[t]) total += TurnWeights[t];
+            // A truck cannot get round a U-turn.
+            bool noUTurn = !car.Vehicle.CanUTurn;
+            for (int t = 0; t < Lane.Turns; t++) if (offered[t] && !(noUTurn && t == (int)Turn.UTurn)) total += TurnWeights[t];
             double r = Rng.Next() * total;
             Turn last = Turn.Straight;
             for (int t = 0; t < Lane.Turns; t++)
             {
-                if (!offered[t]) continue;
+                if (!offered[t] || (noUTurn && t == (int)Turn.UTurn)) continue;
                 last = (Turn)t;
                 r -= TurnWeights[t];
                 if (r < 0) break;
@@ -425,6 +445,23 @@ namespace Traffic.Sim
             car.Cx = p.X;
             car.Cy = p.Y;
             double side = car.Lat + car.Wobble;
+            if (car.Len > 6)
+            {
+                // A long vehicle keeps both ends on its path: the body lies along the line
+                // from its tail to its nose, so it cuts the inside of a turn instead of
+                // swinging its ends into the next lane.
+                double half = car.Len / 2;
+                RoutePoint ahead;
+                PathPose nose = Ahead(car, half, out ahead) ? ahead.Lane.Path.At(ahead.S) : Lanes[car.Lane].Path.At(car.S + half);
+                PathPose tail;
+                if (car.S >= half || car.PrevLane < 0) tail = Lanes[car.Lane].Path.At(car.S - half);
+                else tail = Lanes[car.PrevLane].Path.At(Lanes[car.PrevLane].Length + car.S - half);
+                double h = Math.Atan2(nose.Y - tail.Y, nose.X - tail.X);
+                car.X = (nose.X + tail.X) / 2 + Math.Sin(h) * side;
+                car.Y = (nose.Y + tail.Y) / 2 - Math.Cos(h) * side;
+                car.H = h;
+                return;
+            }
             car.X = p.X + Math.Sin(p.H) * side;
             car.Y = p.Y - Math.Cos(p.H) * side;
             car.H = p.H;
@@ -580,13 +617,13 @@ namespace Traffic.Sim
         /// <summary>Decide this car's acceleration for the step from what its driver can see.</summary>
         private void Perceive(Car car)
         {
-            Derived d = DriverModel.Derive(car.Drv);
+            Derived d = DeriveFor(car);
             DriverParams drv = car.Drv;
             Lane lane = Lanes[car.Lane];
             double half = car.Len / 2;
 
             // Desired speed: the limit, scaled by the driver, slowed for curves ahead.
-            double v0 = lane.SpeedLimit * drv.Speed;
+            double v0 = lane.SpeedLimit * drv.Speed * car.Vehicle.Speed;
             foreach (double look in CurveLook)
             {
                 RoutePoint pt;
@@ -850,7 +887,7 @@ namespace Traffic.Sim
                     // A car sitting in the intersection: stay out until it has gone, rather than nosing in after it.
                     bool sitting = fFront > Committed && foe.V < 1.5;
                     if (!inZone && !IsActive(foe, foeConn, uf)) return;
-                    Derived fd = DriverModel.Derive(foe.Drv);
+                    Derived fd = DeriveFor(foe);
                     double fvc = Math.Min(foeConn.SpeedLimit * foe.Drv.Speed, ConnSpeed(foeConn, fd));
                     double fOut = DriverModel.TravelTime(cz.FoeOut - fRear, foe.V, fd.A, fvc);
                     if (inZone)
@@ -1109,7 +1146,7 @@ namespace Traffic.Sim
                 }
                 if (Time < car.NextLcCheck) continue;
                 car.NextLcCheck = Time + 0.4 * (1 - 0.5 * car.Drv.Weave);
-                Derived d = DriverModel.Derive(car.Drv);
+                Derived d = DeriveFor(car);
                 double half = car.Len / 2;
                 double remaining = lane.Length - car.S - half;
 
@@ -1175,7 +1212,7 @@ namespace Traffic.Sim
                     if (fol != null && !fol.Car.Crashed)
                     {
                         Car f = fol.Car;
-                        aFol = DriverModel.Idm(f.V, Math.Max(f.V0, 1), fol.Gap, f.V - car.V, f.Drv.Headway, DriverModel.Derive(f.Drv));
+                        aFol = DriverModel.Idm(f.V, Math.Max(f.V0, 1), fol.Gap, f.V - car.V, f.Drv.Headway, DeriveFor(f));
                         // Slowing the car behind counts against the move, but not if it is already stopped.
                         folCost = f.V < 0.5 ? 0 : Math.Min(0, aFol - f.ANext);
                     }
@@ -1200,7 +1237,7 @@ namespace Traffic.Sim
 
         private void ChangeLane(Car car, int side, Target target, Neighbor fol)
         {
-            Derived d = DriverModel.Derive(car.Drv);
+            Derived d = DeriveFor(car);
             Lane t = target.Lane;
             double s = target.S;
             car.GhostLane = car.Lane;
@@ -1336,7 +1373,7 @@ namespace Traffic.Sim
                     if (lane.Kind == LaneKind.Connector)
                     {
                         car.Junc = new JunctionMemo();
-                        car.Turn = PickTurn(Lanes[next]);
+                        car.Turn = PickTurn(car, Lanes[next]);
                         if (World.Nodes[lane.Node].Controlled) Passes++; // bends don't count
                     }
                     lane = Lanes[next];

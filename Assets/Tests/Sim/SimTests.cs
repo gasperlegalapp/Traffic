@@ -481,6 +481,69 @@ namespace Traffic.Tests
         }
 
         [Test]
+        public void ATruckIsSlowerOffTheLineThanACarAndAMotorcycleIsQuicker()
+        {
+            var sim = new Simulation(W, 1);
+            Lane lane = Grid.Inbound(Grid.NodeAt(1, 0), 'S')[0];
+            Lane other = Grid.Inbound(Grid.NodeAt(1, 0), 'N')[0];
+            Lane third = Grid.Inbound(Grid.NodeAt(0, 1), 'E')[0];
+            Car truck = sim.AddCar(lane.Id, 10, 0, null, Turn.Straight, VehicleKind.Truck);
+            Car car = sim.AddCar(other.Id, 10, 0, null, Turn.Straight);
+            Car bike = sim.AddCar(third.Id, 10, 0, null, Turn.Straight, VehicleKind.Motorcycle);
+            truck.LcCooldownUntil = car.LcCooldownUntil = bike.LcCooldownUntil = 1e9;
+            Grid.Run(sim, 4);
+            Assert.Less(truck.V, car.V - 1);
+            Assert.Greater(bike.V, car.V + 1);
+            Assert.Greater(truck.Len, car.Len);
+            Assert.Less(bike.Len, car.Len);
+        }
+
+        [Test]
+        public void ATruckNeverPicksAUTurn()
+        {
+            var sim = new Simulation(W, 2);
+            Lane pocket = Grid.Inbound(Grid.Center, 'W')[0]; // left turn or U-turn
+            for (int i = 0; i < 200; i++)
+            {
+                Car truck = sim.AddCar(pocket.Id, 10, 0, null, null, VehicleKind.Truck);
+                Assert.AreNotEqual(Turn.UTurn, truck.Turn);
+                sim.RemoveCar(truck.Id);
+            }
+        }
+
+        [Test]
+        public void AMixOfCarsTrucksAndMotorcyclesRunsWithoutACrashOrGridlock()
+        {
+            var sim = new Simulation(W, 31);
+            for (int i = 0; i < 60; i++)
+            {
+                VehicleKind kind = i % 5 == 0 ? VehicleKind.Truck : i % 7 == 0 ? VehicleKind.Motorcycle : VehicleKind.Car;
+                Assert.IsNotNull(sim.Spawn(DriverParams.Normal, 0.4, kind));
+            }
+            foreach (var c in sim.Cars) c.Drv.Compliance = 1;
+            var stopped = new Dictionary<int, double>();
+            double longestStop = 0;
+            Action watch = () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    double t;
+                    stopped.TryGetValue(c.Id, out t);
+                    t = c.V < 0.1 ? t + Simulation.Dt : 0;
+                    stopped[c.Id] = t;
+                    longestStop = Math.Max(longestStop, t);
+                }
+            };
+            Grid.Run(sim, 240, watch);
+            int halfway = sim.Passes;
+            Grid.Run(sim, 240, watch);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(halfway, 150);
+            Assert.Greater(sim.Passes - halfway, 150);
+            Assert.Less(longestStop, 120, "a vehicle sat still for two minutes");
+        }
+
+        [Test]
         public void ReplaysExactlyFromTheSameSeed()
         {
             Assert.AreEqual(Snapshot(), Snapshot());

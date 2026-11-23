@@ -44,6 +44,8 @@ namespace Traffic.Lab
         private bool follow;
         private DriverParams newDriver = DriverParams.Normal;
         private float variation = 0.3f;
+        private float truckShare = 0.12f;
+        private float bikeShare = 0.06f;
         private bool showSensors = true;
         private bool showLabels = true;
 
@@ -121,8 +123,17 @@ namespace Traffic.Lab
         private void SpawnCars(int n)
         {
             int made = 0;
-            for (int i = 0; i < n; i++) if (Sim.Spawn(newDriver, variation) != null) made++;
+            for (int i = 0; i < n; i++) if (Sim.Spawn(newDriver, variation, PickVehicle()) != null) made++;
             if (made < n) Toast(made == 0 ? "The road is full." : "Only room for " + made + " more.");
+        }
+
+        /// <summary>Choose a vehicle for a new arrival, following the mix set in the control panel.</summary>
+        private VehicleKind PickVehicle()
+        {
+            float r = Random.value;
+            if (r < truckShare) return VehicleKind.Truck;
+            if (r < truckShare + bikeShare) return VehicleKind.Motorcycle;
+            return VehicleKind.Car;
         }
 
         private void Toast(string text)
