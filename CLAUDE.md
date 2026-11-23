@@ -27,7 +27,7 @@ Headless Chromium in a cloud container renders slowly. When scripting checks, pa
 
 ## Unity port (in progress)
 
-The game is moving to Unity 6 (project version 6000.3.26f1) on Windows 11. The web version stays until the Unity driver lab is confirmed working.
+The game is moving to Unity 6 (project version 6000.6.3f1) on Windows 11. The web version stays until the Unity driver lab is confirmed working.
 
 - `Assets/Scripts/Sim/`: a line-for-line C# translation of `src/sim/` (namespace `Traffic.Sim`, class `Simulation`), with no Unity references. It gives identical results to the TypeScript version for the same seed. `SignalLight` and `PathPose` are named to avoid clashing with `UnityEngine.Light` and `UnityEngine.Pose`.
 - `Assets/Scripts/Lab/`: the Unity driver lab. `LabBootstrap` creates a `LabApp` object when Play is pressed, in any scene, so there is no scene file to maintain. Everything (meshes, materials, camera, light) is built in code. The UI is immediate-mode GUI (`LabUi.cs`) and reads mouse and keyboard from GUI events, so it does not depend on the Input Manager or Input System setting. Sim (x east, y north) maps to Unity (x, height, z = y); models face +x.
