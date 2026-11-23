@@ -26,6 +26,9 @@ namespace Traffic.Lab
             return new Color(((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f, alpha);
         }
 
+        /// <summary>True when the project uses a scriptable render pipeline (URP or HDRP) instead of the built-in one.</summary>
+        public static bool Scriptable => UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline != null;
+
         private static Shader Find(params string[] names)
         {
             foreach (string name in names)
@@ -39,8 +42,13 @@ namespace Traffic.Lab
         /// <summary>A material that reacts to light and shadow.</summary>
         public static Material Lit(Color color, float smoothness = 0.1f)
         {
-            var m = new Material(Find("Standard", "Universal Render Pipeline/Lit", "Legacy Shaders/Diffuse", "Sprites/Default"));
+            // Each pipeline has its own lit shader, and the other pipeline's draws solid pink.
+            Shader shader = Scriptable
+                ? Find("Universal Render Pipeline/Lit", "Universal Render Pipeline/Simple Lit", "HDRP/Lit", "Sprites/Default")
+                : Find("Standard", "Legacy Shaders/Diffuse", "Sprites/Default");
+            var m = new Material(shader);
             m.color = color;
+            if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color);
             if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", smoothness);
             if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", smoothness);
             return m;
@@ -49,9 +57,10 @@ namespace Traffic.Lab
         /// <summary>A flat, glowing color that ignores lighting (lamps, paint highlights).</summary>
         public static Material Unlit(Color color)
         {
-            var m = new Material(Find("Unlit/Color", "Universal Render Pipeline/Unlit", "Sprites/Default"));
-            m.color = color;
-            return m;
+            Shader shader = Scriptable
+                ? Find("Universal Render Pipeline/Unlit", "HDRP/Unlit", "Unlit/Color", "Sprites/Default")
+                : Find("Unlit/Color", "Sprites/Default");
+            return new Material(shader) { color = color };
         }
 
         public static GameObject Spawn(string name, Mesh mesh, Material material, Transform parent, bool shadows = true)

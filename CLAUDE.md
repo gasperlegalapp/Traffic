@@ -1,6 +1,6 @@
 # CLAUDE.md: Traffic
 
-A traffic game built in Unity 6 (project version 6000.6.3f1, Built-in Render Pipeline) on Windows 11. The current build is the Driver Lab, a small street grid for testing individual driver behavior. Zones, road building and events come later. The earlier web version (TypeScript and three.js) was removed once the Unity lab worked; it is in the git history.
+A traffic game built in Unity 6 (project version 6000.6.3f1) on Windows 11. The scripts run under the Built-in Render Pipeline or URP: `MeshKit` picks each pipeline's own shaders, and the debug lines are a mesh, not `GL` calls, because URP does not call `OnRenderObject`. The current build is the Driver Lab, a small street grid for testing individual driver behavior. Zones, road building and events come later. The earlier web version (TypeScript and three.js) was removed once the Unity lab worked; it is in the git history.
 
 ## Layout
 

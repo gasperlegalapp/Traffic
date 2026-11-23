@@ -124,7 +124,16 @@ namespace Traffic.Lab
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
             RenderSettings.ambientLight = MeshKit.Hex(0x4a5258);
             RenderSettings.fog = false;
+            // Shadows should reach across the whole map. The setting lives in a different place under each pipeline.
             QualitySettings.shadowDistance = 3000;
+            UnityEngine.Rendering.RenderPipelineAsset pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            if (pipeline != null)
+            {
+                // The Universal Render Pipeline keeps it on its own asset; set it by name so this
+                // script still compiles in a project that does not have that package.
+                System.Reflection.PropertyInfo distance = pipeline.GetType().GetProperty("shadowDistance");
+                if (distance != null && distance.CanWrite) distance.SetValue(pipeline, 3000f, null);
+            }
         }
 
         /// <summary>Pull back far enough to see the whole track.</summary>
@@ -231,6 +240,7 @@ namespace Traffic.Lab
 
             roads.Update(Sim.Junctions, Sim.Time);
             carViews.Sync(Sim.Cars, Sim.Time, selected);
+            UpdateSensorLines();
 
             cam.transform.position = target + new Vector3(0, dist * Mathf.Cos(Tilt), -dist * Mathf.Sin(Tilt));
             cam.transform.LookAt(target, Vector3.forward);
@@ -280,23 +290,41 @@ namespace Traffic.Lab
 
         // ------------------------------------------------------------ debug lines
 
-        private void OnRenderObject()
+        private Mesh lineMesh;
+        private GameObject lineObject;
+        private readonly List<Vector3> linePoints = new List<Vector3>();
+        private readonly List<Color> lineColors = new List<Color>();
+        private readonly List<int> lineIndices = new List<int>();
+
+        /// <summary>
+        /// Draw a line from each car to whatever it is reacting to. The lines are an ordinary
+        /// mesh, so they draw the same under either render pipeline.
+        /// </summary>
+        private void UpdateSensorLines()
         {
-            if (!showSensors || Sim == null || Camera.current != cam) return;
-            if (lineMaterial == null)
+            if (lineObject == null)
             {
-                lineMaterial = new Material(Shader.Find("Hidden/Internal-Colored"));
-                lineMaterial.hideFlags = HideFlags.HideAndDontSave;
+                Shader shader = Shader.Find("Hidden/Internal-Colored");
+                if (shader == null) shader = Shader.Find("Sprites/Default");
+                lineMaterial = new Material(shader);
+                // Blend over the scene and ignore depth, so the lines show on top of everything.
                 lineMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
                 lineMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
                 lineMaterial.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
                 lineMaterial.SetInt("_ZWrite", 0);
                 lineMaterial.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+                lineMaterial.renderQueue = 4000;
+                lineMesh = new Mesh();
+                lineMesh.MarkDynamic();
+                lineObject = MeshKit.Spawn("Sensor lines", lineMesh, lineMaterial, transform, false);
+                lineObject.GetComponent<MeshRenderer>().receiveShadows = false;
             }
-            lineMaterial.SetPass(0);
-            GL.PushMatrix();
-            GL.MultMatrix(Matrix4x4.identity);
-            GL.Begin(GL.LINES);
+            lineObject.SetActive(showSensors);
+            if (!showSensors) return;
+
+            linePoints.Clear();
+            lineColors.Clear();
+            lineIndices.Clear();
             var byId = new Dictionary<int, Car>();
             foreach (Car c in Sim.Cars) byId[c.Id] = c;
             foreach (Car car in Sim.Cars)
@@ -322,15 +350,22 @@ namespace Traffic.Lab
                     Segment(p.X - nx, p.Y - ny, p.X + nx, p.Y + ny, c, car.Height);
                 }
             }
-            GL.End();
-            GL.PopMatrix();
+            lineMesh.Clear();
+            lineMesh.SetVertices(linePoints);
+            lineMesh.SetColors(lineColors);
+            lineMesh.SetIndices(lineIndices, MeshTopology.Lines, 0);
+            // Never cull the lines: they span the whole map.
+            lineMesh.bounds = new Bounds(Vector3.zero, new Vector3(1e5f, 1e5f, 1e5f));
         }
 
-        private static void Segment(double x1, double y1, double x2, double y2, Color c, double height)
+        private void Segment(double x1, double y1, double x2, double y2, Color c, double height)
         {
-            GL.Color(c);
-            GL.Vertex(MeshKit.ToWorld(x1, y1, 1.7f + (float)height));
-            GL.Vertex(MeshKit.ToWorld(x2, y2, 1.7f + (float)height));
+            lineIndices.Add(linePoints.Count);
+            lineIndices.Add(linePoints.Count + 1);
+            linePoints.Add(MeshKit.ToWorld(x1, y1, 1.7f + (float)height));
+            linePoints.Add(MeshKit.ToWorld(x2, y2, 1.7f + (float)height));
+            lineColors.Add(c);
+            lineColors.Add(c);
         }
     }
 }
