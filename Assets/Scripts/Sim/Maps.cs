@@ -72,8 +72,8 @@ namespace Traffic.Sim
         }
 
         /// <summary>
-        /// A small town of six intersections south of a one-way highway running west to
-        /// east. An off-ramp brings highway traffic into the north-west corner of town
+        /// A small town of six intersections south of a divided highway. The ramps serve the
+        /// eastbound side, which is the one next to town; westbound traffic only passes through. An off-ramp brings highway traffic into the north-west corner of town
         /// and an on-ramp takes it back out from the north-east corner. Vehicles arrive
         /// at the west end of the highway and at two roads on the south edge of town,
         /// and leave the map at the east end of the highway or by those same two roads.
@@ -113,15 +113,18 @@ namespace Traffic.Sim
             int onRamp = b.AddNode(250, highwayY, JunctionMode.Free);
             int eastEnd = b.AddNode(430, highwayY, JunctionMode.Free);
             // A third lane opens before the off-ramp for traffic leaving.
-            b.AddRoad(westEnd, offRamp, new[] { T(0, 0, 1, Turn.Straight), T(1, 0, 1, Turn.Straight), T(2, -110, 1, Turn.Right) }, null, null, highwaySpeed);
-            b.AddRoad(offRamp, onRamp, Two(), null, null, highwaySpeed);
+            // Each direction keeps the slot next to the centerline empty, which leaves a median between them.
+            // Westbound lanes may only go straight on: they must not be offered the ramps on the far side.
+            TrackSpec[] westbound = { T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight) };
+            b.AddRoad(westEnd, offRamp, new[] { T(1, 0, 1, Turn.Straight), T(2, 0, 1, Turn.Straight), T(3, -110, 1, Turn.Right) }, westbound, null, highwaySpeed);
+            b.AddRoad(offRamp, onRamp, new[] { T(1), T(2) }, westbound, null, highwaySpeed);
             // Traffic from the on-ramp gets a lane of its own to get up to speed, then has to merge.
-            b.AddRoad(onRamp, eastEnd, new[] { T(0), T(1), T(2, 0, 0.75) }, null, null, highwaySpeed);
+            b.AddRoad(onRamp, eastEnd, new[] { T(1), T(2), T(3, 0, 0.75) }, westbound, null, highwaySpeed);
 
             // Off-ramp: peels away to the right, then curves down into the north-west corner of town.
             // Both ramps hang off the outside of the two through lanes, not the highway's centerline.
             double tilt = 12 * Math.PI / 180;
-            const double outside = 2 * NetworkBuilder.LaneW;
+            const double outside = 3 * NetworkBuilder.LaneW;
             double cos = Math.Cos(tilt), sin = Math.Sin(tilt);
             var leave = new PathPose { X = -250 + 24 * cos - outside * sin, Y = highwayY - 24 * sin - outside * cos, H = -tilt };
             var arrive = new PathPose { X = -140, Y = 70 + 32, H = -Math.PI / 2 };
@@ -130,7 +133,7 @@ namespace Traffic.Sim
             // On-ramp: north out of the north-east corner, then curves right to join the highway.
             var depart = new PathPose { X = 140, Y = 70 + 32, H = Math.PI / 2 };
             var join = new PathPose { X = 250 - 24 * cos + outside * sin, Y = highwayY - 24 * sin - outside * cos, H = tilt };
-            b.AddRoad(ne, onRamp, One(), null, Geo.Bezier(depart, join, 70, 24), rampSpeed, 0, outside);
+            b.AddRoad(ne, onRamp, new[] { T(0, 0, 1, Turn.Straight) }, null, Geo.Bezier(depart, join, 70, 24), rampSpeed, 0, outside);
 
             return b.Build();
         }

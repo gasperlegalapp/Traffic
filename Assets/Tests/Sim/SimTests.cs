@@ -561,7 +561,13 @@ namespace Traffic.Tests
         public void TheHighwayTownTakesTrafficInAndLetsItLeave()
         {
             World map = Maps.HighwayTown();
-            Assert.AreEqual(3, map.Entries.Count, "the highway and two roads south of town bring traffic in");
+            Assert.AreEqual(4, map.Entries.Count, "both ends of the highway and two roads south of town bring traffic in");
+            // Westbound traffic passes straight through: it is never offered a ramp.
+            foreach (Lane lane in map.Lanes)
+            {
+                if (lane.Kind != LaneKind.Connector || lane.Turn == Turn.Straight || map.Nodes[lane.Node].Controlled) continue;
+                Assert.AreEqual(Turn.Right, lane.Turn, "the only turn on the highway is the eastbound exit");
+            }
             Assert.IsTrue(map.Lanes.Any(l => l.IsExit));
             var sim = new Simulation(map, 3);
             sim.ArrivalsPerMinute = 8;

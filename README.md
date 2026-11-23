@@ -6,7 +6,7 @@ A traffic game in the making, built in Unity 6. The first piece is the **Driver 
 
 - **Street grid:** nine blocks, described below.
 - **Figure eight:** one intersection joined to itself by two loops, with a pinch where two lanes become one.
-- **City and highway:** six intersections beside a one-way highway. Vehicles arrive at the west end of the highway and on two roads south of town, in waves. Some take the off-ramp into town, town traffic takes the on-ramp out, and everything that reaches the east end of the highway or the south edge leaves the map.
+- **City and highway:** six intersections beside a divided highway. Vehicles arrive at both ends of the highway and on two roads south of town, in waves. Some eastbound traffic takes the off-ramp into town, town traffic takes the on-ramp out, and everything that reaches the far end of the highway or the south edge leaves the map. Westbound traffic passes straight through.
 
 ## Driver Lab
 

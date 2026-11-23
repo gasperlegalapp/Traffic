@@ -476,6 +476,42 @@ namespace Traffic.Sim
             Connectors.Link(conns);
             BuildBox(node);
             if (node.Arms.Count == 2) PaintBend(node);
+            else if (!node.Controlled) PaintJunction(conns);
+        }
+
+        /// <summary>
+        /// Carry the lane lines through a place where a ramp leaves or joins: a dashed line
+        /// between lanes that run on side by side, and solid lines along the outside of each
+        /// stream, which meet in a point where the ramp splits off or comes in.
+        /// </summary>
+        private void PaintJunction(List<Lane> conns)
+        {
+            foreach (Lane c in conns)
+            {
+                Lane from = world.Lanes[c.From];
+                Lane to = world.Lanes[c.Next];
+                bool leftNeighbor = false, rightNeighbor = false;
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.FromArm != c.FromArm) continue;
+                    Lane oFrom = world.Lanes[o.From];
+                    Lane oTo = world.Lanes[o.Next];
+                    if (oTo.ApproachNode != to.ApproachNode || oTo.ApproachArm != to.ApproachArm) continue;
+                    if (oFrom.Slot == from.Slot - 1 && oTo.Slot == to.Slot - 1) leftNeighbor = true;
+                    if (oFrom.Slot == from.Slot + 1 && oTo.Slot == to.Slot + 1) rightNeighbor = true;
+                }
+                // The leftmost lane of the road it joins gets a yellow left edge, like the road itself.
+                bool leftmost = true;
+                foreach (Lane o in world.Lanes)
+                {
+                    if (o.Kind == LaneKind.Road && o.ApproachNode == to.ApproachNode && o.ApproachArm == to.ApproachArm && o.Preds.Count > 0 && o.Slot < to.Slot) leftmost = false;
+                }
+                Vec[] pts = c.Path.Pts;
+                if (leftNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2), Width = 0.14, DashOn = 3, DashOff = 6 });
+                else if (leftmost) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.16), Width = 0.12, Yellow = true });
+                else world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.2), Width = 0.14 });
+                if (!rightNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, LaneW / 2 - 0.25), Width = 0.14 });
+            }
         }
 
         /// <summary>Carry the edge lines, the center line and the lane lines round a bend.</summary>
