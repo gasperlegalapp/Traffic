@@ -258,6 +258,10 @@ namespace Traffic.Sim
                 right[i] = r;
                 left[i] = double.IsInfinity(l) ? 0 : l;
             }
+            to.InLeft = left[n];
+            to.InRight = right[n];
+            from.OutLeft = left[0];
+            from.OutRight = right[0];
             world.Surfaces.Add(new Strip { Left = center.ToArray(), Right = Geo.Offset(center, i => right[i]) });
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14 });
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true });
@@ -406,6 +410,45 @@ namespace Traffic.Sim
             }
             Connectors.Link(conns);
             BuildBox(node);
+            if (node.Arms.Count == 2) PaintBend(node);
+        }
+
+        /// <summary>Carry the edge lines, the center line and the lane lines round a bend.</summary>
+        private void PaintBend(Node node)
+        {
+            foreach (Approach arm in node.Arms)
+            {
+                // Traffic arrives on this arm and leaves on the other one.
+                Approach other = node.Arms[1 - arm.Arm];
+                double hIn = arm.H;
+                double hOut = other.Angle;
+                double inX = node.Pos.X + Math.Cos(arm.Angle) * node.Radius, inY = node.Pos.Y + Math.Sin(arm.Angle) * node.Radius;
+                double outX = node.Pos.X + Math.Cos(other.Angle) * node.Radius, outY = node.Pos.Y + Math.Sin(other.Angle) * node.Radius;
+                // A curve that starts offIn to the right of the arriving road's centerline
+                // and ends offOut to the right of the leaving road's centerline.
+                Vec[] Curve(double offIn, double offOut)
+                {
+                    var a = new PathPose { X = inX + Math.Sin(hIn) * offIn, Y = inY - Math.Cos(hIn) * offIn, H = hIn };
+                    var b = new PathPose { X = outX + Math.Sin(hOut) * offOut, Y = outY - Math.Cos(hOut) * offOut, H = hOut };
+                    double chord = Geo.Hypot(b.X - a.X, b.Y - a.Y);
+                    return Geo.Bezier(a, b, 0.5523 * chord / Math.Sqrt(2));
+                }
+                world.Markings.Add(new Marking { Pts = Curve(arm.InRight - 0.25, other.OutRight - 0.25), Width = 0.14 });
+                world.Markings.Add(new Marking { Pts = Curve(arm.InLeft + 0.16, other.OutLeft + 0.16), Width = 0.12, Yellow = true });
+                // A solid line between lanes that go round side by side: no lane changes in the bend.
+                for (int i = 0; i + 1 < arm.Inbound.Count; i++)
+                {
+                    Lane inner = world.Lanes[arm.Inbound[i]];
+                    Lane outer = world.Lanes[arm.Inbound[i + 1]];
+                    int innerConn = inner.Connectors[(int)Turn.Straight];
+                    int outerConn = outer.Connectors[(int)Turn.Straight];
+                    if (innerConn < 0 || outerConn < 0) continue;
+                    Lane innerOut = world.Lanes[world.Lanes[innerConn].Next];
+                    Lane outerOut = world.Lanes[world.Lanes[outerConn].Next];
+                    if (outer.Slot != inner.Slot + 1 || outerOut.Slot != innerOut.Slot + 1) continue;
+                    world.Markings.Add(new Marking { Pts = Curve(outer.Slot * LaneW, outerOut.Slot * LaneW), Width = 0.14 });
+                }
+            }
         }
 
         /// <summary>Decide which turns each arriving lane may make.</summary>

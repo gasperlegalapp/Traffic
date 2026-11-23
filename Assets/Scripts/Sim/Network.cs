@@ -117,6 +117,12 @@ namespace Traffic.Sim
         /// <summary>Heading of arriving traffic, and a roadside spot for the signal or stop sign.</summary>
         public double H;
         public Vec Post;
+        /// <summary>
+        /// Where the paint sits as this road meets the intersection, measured to the right of
+        /// the road's centerline in the direction of travel: the yellow-line side and the
+        /// outer edge, for the arriving lanes and for the leaving lanes.
+        /// </summary>
+        public double InLeft, InRight, OutLeft, OutRight;
     }
 
     public sealed class Node
