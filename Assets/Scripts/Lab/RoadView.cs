@@ -20,17 +20,21 @@ namespace Traffic.Lab
             public Material Material;
         }
 
+        /// <summary>One signal head, hung over the lane it controls.</summary>
+        private sealed class LaneHead
+        {
+            public Lane Lane;
+            /// <summary>Red, yellow, green; or a single arrow lamp for a lane that only turns left.</summary>
+            public Material[] Lamps;
+            public Material Arrow;
+        }
+
         private sealed class SignalView
         {
             public Approach Arm;
-            /// <summary>The movement the main lamps show.</summary>
-            public Turn Main;
-            public bool HasLeft;
-            public GameObject Head;
-            public GameObject ArrowHead;
+            public GameObject Heads;
             public GameObject StopSign;
-            public Material[] Lamps;
-            public Material ArrowLamp;
+            public List<LaneHead> Lanes = new List<LaneHead>();
         }
 
         private readonly World world;
@@ -38,6 +42,7 @@ namespace Traffic.Lab
         private readonly List<SignalView> signals = new List<SignalView>();
         private readonly Transform nodeRing;
         private readonly GameObject rootObject;
+        private readonly Material face = MeshKit.Lit(MeshKit.Hex(0xc9ced6), 0.2f);
 
         public RoadView(World world, Transform parent)
         {
@@ -124,57 +129,71 @@ namespace Traffic.Lab
             AddTrees(world, root);
         }
 
+        /// <summary>
+        /// The signal for one approach, the American way: a pole on the far side of the
+        /// intersection with an arm reaching over the road, and one signal head hung from it
+        /// in line with each lane, so a driver waiting at the stop line looks across at it.
+        /// The stop sign that replaces it stands at the roadside by the stop line.
+        /// </summary>
         private SignalView BuildSignal(Approach arm, Material dark, Transform root)
         {
             var view = new SignalView { Arm = arm };
-            bool[] offered = world.Lanes[arm.Inbound[0]].ApproachTurns; // callers skip arms nothing arrives on
-            view.Main = offered[(int)Turn.Straight] ? Turn.Straight : offered[(int)Turn.Right] ? Turn.Right : Turn.Left;
-            view.HasLeft = (offered[(int)Turn.Left] || offered[(int)Turn.UTurn]) && view.Main != Turn.Left;
 
-            // The post stands on the right of the road. Its local +x is the direction of
-            // travel and local +z points left, across the road.
-            var post = new GameObject("Signal post").transform;
-            post.SetParent(root, false);
-            post.position = MeshKit.ToWorld(arm.Post.X, arm.Post.Y);
-            post.rotation = MeshKit.Heading(arm.H);
-            MeshKit.Spawn("Pole", MeshKit.Box(0.28f, 4.4f, 0.28f), dark, post).transform.localPosition = new Vector3(0, 2.2f, 0);
-
-            // How far across the road the leftmost and rightmost arriving lanes are.
-            Lane leftLane = world.Lanes[arm.Inbound[0]];
-            Lane rightLane = world.Lanes[arm.Inbound[arm.Inbound.Count - 1]];
-            PathPose leftEnd = leftLane.Path.At(leftLane.Length);
-            PathPose rightEnd = rightLane.Path.At(rightLane.Length);
-            float toLeft = (float)Geo.Hypot(leftEnd.X - arm.Post.X, leftEnd.Y - arm.Post.Y);
-            float toRight = (float)Geo.Hypot(rightEnd.X - arm.Post.X, rightEnd.Y - arm.Post.Y);
-
-            // Signal heads on an arm reaching over the road, lamps facing up so they read from above.
-            view.Head = new GameObject("Signal head");
-            view.Head.transform.SetParent(post, false);
-            float reach = view.HasLeft ? toLeft : toRight;
-            MeshKit.Spawn("Arm", MeshKit.Box(0.16f, 0.16f, reach), dark, view.Head.transform).transform.localPosition = new Vector3(0, 4.3f, reach / 2);
-            MeshKit.Spawn("Housing", MeshKit.Box(3.3f, 0.5f, 1.15f), dark, view.Head.transform).transform.localPosition = new Vector3(0, 4.5f, toRight);
-            view.Lamps = new Material[3];
-            for (int i = 0; i < 3; i++)
+            // Both poles stand on the right of the road: local +x is the direction of travel
+            // and local +z points left, across the road. The signal pole is across the
+            // intersection from the stop line; the stop sign is beside the stop line.
+            double far = 2 * world.Nodes[arm.Node].Radius;
+            view.Heads = new GameObject("Signal");
+            view.Heads.transform.SetParent(root, false);
+            view.Heads.transform.position = MeshKit.ToWorld(arm.Post.X + System.Math.Cos(arm.H) * far, arm.Post.Y + System.Math.Sin(arm.H) * far);
+            view.Heads.transform.rotation = MeshKit.Heading(arm.H);
+            MeshKit.Spawn("Pole", MeshKit.Box(0.28f, 4.4f, 0.28f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 2.2f, 0);
+            float reach = 0;
+            foreach (int id in arm.Inbound)
             {
-                view.Lamps[i] = MeshKit.Unlit(DimRed);
-                MeshKit.Spawn("Lamp", MeshKit.Box(0.8f, 0.06f, 0.8f), view.Lamps[i], view.Head.transform, false).transform.localPosition = new Vector3(-1.05f + i * 1.05f, 4.78f, toRight);
+                Lane lane = world.Lanes[id];
+                PathPose end = lane.Path.At(lane.Length);
+                float across = (float)Geo.Hypot(end.X - arm.Post.X, end.Y - arm.Post.Y);
+                reach = Mathf.Max(reach, across);
+                var head = new LaneHead { Lane = lane };
+                bool leftOnly = (lane.Allows(Turn.Left) || lane.Allows(Turn.UTurn)) && !lane.Allows(Turn.Straight) && !lane.Allows(Turn.Right);
+                // Lamps face up so they read from above.
+                if (leftOnly)
+                {
+                    // A lane that only turns left gets a single arrow.
+                    MeshKit.Spawn("Housing", MeshKit.Box(1.5f, 0.5f, 1.5f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 4.5f, across);
+                    MeshKit.Spawn("Face", MeshKit.Box(0.12f, 0.52f, 1.5f), face, view.Heads.transform, false).transform.localPosition = new Vector3(-0.81f, 4.5f, across);
+                    head.Arrow = MeshKit.Unlit(DimRed);
+                    var arrow = new FlatBuilder();
+                    arrow.Fan(new Vec(0, 0), new[] { new Vec(-0.5, 0), new Vec(0.2, 0.55), new Vec(0.2, 0.2), new Vec(0.5, 0.2), new Vec(0.5, -0.2), new Vec(0.2, -0.2), new Vec(0.2, -0.55) }, 0);
+                    // The arrow mesh points along local -x; turn it to point left across the road (+z).
+                    Transform lamp = MeshKit.Spawn("Arrow", arrow.Build(), head.Arrow, view.Heads.transform, false).transform;
+                    lamp.localPosition = new Vector3(0, 4.78f, across);
+                    lamp.localRotation = Quaternion.Euler(0, 90, 0);
+                    lamp.localScale = new Vector3(1.2f, 1, 1.2f);
+                }
+                else
+                {
+                    MeshKit.Spawn("Housing", MeshKit.Box(3.3f, 0.5f, 1.15f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 4.5f, across);
+                    // A pale strip on the edge facing the drivers it controls, to tell it from the signal for the other direction.
+                    MeshKit.Spawn("Face", MeshKit.Box(0.12f, 0.52f, 1.15f), face, view.Heads.transform, false).transform.localPosition = new Vector3(-1.71f, 4.5f, across);
+                    head.Lamps = new Material[3];
+                    for (int i = 0; i < 3; i++)
+                    {
+                        head.Lamps[i] = MeshKit.Unlit(DimRed);
+                        MeshKit.Spawn("Lamp", MeshKit.Box(0.8f, 0.06f, 0.8f), head.Lamps[i], view.Heads.transform, false).transform.localPosition = new Vector3(-1.05f + i * 1.05f, 4.78f, across);
+                    }
+                }
+                view.Lanes.Add(head);
             }
-
-            // A separate lamp over the left-turn lane, used when left turns have their own arrow.
-            view.ArrowHead = new GameObject("Left arrow");
-            view.ArrowHead.transform.SetParent(view.Head.transform, false);
-            view.ArrowLamp = MeshKit.Unlit(DimRed);
-            MeshKit.Spawn("Housing", MeshKit.Box(1.5f, 0.5f, 1.5f), dark, view.ArrowHead.transform).transform.localPosition = new Vector3(0, 4.5f, toLeft);
-            var arrow = new FlatBuilder();
-            arrow.Fan(new Vec(0, 0), new[] { new Vec(-0.5, 0), new Vec(0.2, 0.55), new Vec(0.2, 0.2), new Vec(0.5, 0.2), new Vec(0.5, -0.2), new Vec(0.2, -0.2), new Vec(0.2, -0.55) }, 0);
-            // The arrow mesh points along local -x; turn it to point left across the road (+z).
-            Transform lamp = MeshKit.Spawn("Lamp", arrow.Build(), view.ArrowLamp, view.ArrowHead.transform, false).transform;
-            lamp.localPosition = new Vector3(0, 4.78f, toLeft);
-            lamp.localRotation = Quaternion.Euler(0, 90, 0);
-            lamp.localScale = new Vector3(1.2f, 1, 1.2f);
+            // The arm reaches out over the farthest lane.
+            MeshKit.Spawn("Arm", MeshKit.Box(0.16f, 0.16f, reach), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 4.3f, reach / 2);
 
             view.StopSign = new GameObject("Stop sign");
-            view.StopSign.transform.SetParent(post, false);
+            view.StopSign.transform.SetParent(root, false);
+            view.StopSign.transform.position = MeshKit.ToWorld(arm.Post.X, arm.Post.Y);
+            view.StopSign.transform.rotation = MeshKit.Heading(arm.H);
+            MeshKit.Spawn("Pole", MeshKit.Box(0.28f, 4.4f, 0.28f), dark, view.StopSign.transform).transform.localPosition = new Vector3(0, 2.2f, 0);
             MeshKit.Spawn("Rim", Octagon(1.15f), MeshKit.Unlit(Color.white), view.StopSign.transform, false).transform.localPosition = new Vector3(0, 4.42f, 0);
             MeshKit.Spawn("Plate", Octagon(1.0f), MeshKit.Unlit(MeshKit.Hex(0xe5383b)), view.StopSign.transform, false).transform.localPosition = new Vector3(0, 4.5f, 0);
             view.StopSign.SetActive(false);
@@ -296,41 +315,51 @@ namespace Traffic.Lab
             return st == SignalLight.Green ? Green : st == SignalLight.Yellow ? Yellow : Red;
         }
 
+        /// <summary>The light a lane shows: the best of the turns it allows.</summary>
+        private static SignalLight LaneLight(Junction jn, Lane lane)
+        {
+            SignalLight best = SignalLight.Red;
+            for (int t = 0; t < Lane.Turns; t++)
+            {
+                if (lane.Connectors[t] < 0) continue;
+                SignalLight st = jn.State(lane.Arm, (Turn)t);
+                if (st == SignalLight.Stop) return SignalLight.Stop;
+                if (st == SignalLight.Green) best = SignalLight.Green;
+                else if (st == SignalLight.Yellow && best == SignalLight.Red) best = SignalLight.Yellow;
+            }
+            return best;
+        }
+
         /// <summary>Show the current lights.</summary>
         public void Update(List<Junction> junctions, double time)
         {
             bool flash = time % 1 < 0.5;
             foreach (LineView line in lines)
             {
-                Junction jn = junctions[line.Lane.Node];
-                // A lane shows the best light of the turns it allows.
-                SignalLight best = SignalLight.Red;
-                for (int t = 0; t < Lane.Turns; t++)
-                {
-                    if (line.Lane.Connectors[t] < 0) continue;
-                    SignalLight st = jn.State(line.Lane.Arm, (Turn)t);
-                    if (st == SignalLight.Stop) best = SignalLight.Stop;
-                    else if (st == SignalLight.Green) best = SignalLight.Green;
-                    else if (st == SignalLight.Yellow && best == SignalLight.Red) best = SignalLight.Yellow;
-                }
-                Color c = LampColor(best);
-                if (best == SignalLight.Stop && !flash) c *= 0.45f;
+                SignalLight light = LaneLight(junctions[line.Lane.Node], line.Lane);
+                Color c = LampColor(light);
+                if (light == SignalLight.Stop && !flash) c *= 0.45f;
                 line.Material.color = c;
             }
             foreach (SignalView s in signals)
             {
                 Junction jn = junctions[s.Arm.Node];
                 bool stop = jn.Mode == JunctionMode.AllWay;
-                s.Head.SetActive(!stop);
+                s.Heads.SetActive(!stop);
                 s.StopSign.SetActive(stop);
                 if (stop) continue;
-                SignalLight st = jn.State(s.Arm.Arm, s.Main);
-                s.Lamps[0].color = st == SignalLight.Red ? Red : DimRed;
-                s.Lamps[1].color = st == SignalLight.Yellow ? Yellow : DimYellow;
-                s.Lamps[2].color = st == SignalLight.Green ? Green : DimGreen;
-                bool arrow = s.HasLeft && jn.HasArrow(s.Arm.Arm);
-                s.ArrowHead.SetActive(arrow);
-                if (arrow) s.ArrowLamp.color = LampColor(jn.State(s.Arm.Arm, Turn.Left));
+                foreach (LaneHead head in s.Lanes)
+                {
+                    SignalLight st = LaneLight(jn, head.Lane);
+                    if (head.Arrow != null)
+                    {
+                        head.Arrow.color = LampColor(st);
+                        continue;
+                    }
+                    head.Lamps[0].color = st == SignalLight.Red ? Red : DimRed;
+                    head.Lamps[1].color = st == SignalLight.Yellow ? Yellow : DimYellow;
+                    head.Lamps[2].color = st == SignalLight.Green ? Green : DimGreen;
+                }
             }
         }
     }
