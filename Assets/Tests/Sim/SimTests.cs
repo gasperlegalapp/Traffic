@@ -544,6 +544,47 @@ namespace Traffic.Tests
         }
 
         [Test]
+        public void TheFigureEightKeepsCirculating()
+        {
+            World map = Maps.FigureEight();
+            Assert.AreEqual(1, map.Nodes.Count);
+            Assert.AreEqual(4, map.Nodes[0].Arms.Count);
+            var sim = new Simulation(map, 3);
+            for (int i = 0; i < 14; i++) Assert.IsNotNull(sim.Spawn(DriverParams.Normal, 0.3));
+            Grid.Run(sim, 300);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.AreEqual(14, sim.Cars.Count);
+            Assert.Greater(sim.Passes, 50);
+        }
+
+        [Test]
+        public void TheHighwayTownTakesTrafficInAndLetsItLeave()
+        {
+            World map = Maps.HighwayTown();
+            Assert.AreEqual(3, map.Entries.Count, "the highway and two roads south of town bring traffic in");
+            Assert.IsTrue(map.Lanes.Any(l => l.IsExit));
+            var sim = new Simulation(map, 3);
+            sim.ArrivalsPerMinute = 8;
+            Grid.Run(sim, 240);
+            int leftByHalfway = sim.Left;
+            Grid.Run(sim, 240);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(leftByHalfway, 50);
+            Assert.Greater(sim.Left - leftByHalfway, 50);
+            Assert.Greater(sim.Passes, 100, "some traffic should take the off-ramp into town");
+            Assert.Less(sim.Cars.Count, 200, "the map should not fill up");
+        }
+
+        [Test]
+        public void NoArrivalsWhenTheRateIsZero()
+        {
+            var sim = new Simulation(Maps.HighwayTown(), 3);
+            sim.ArrivalsPerMinute = 0;
+            Grid.Run(sim, 30);
+            Assert.AreEqual(0, sim.Cars.Count);
+        }
+
+        [Test]
         public void ReplaysExactlyFromTheSameSeed()
         {
             Assert.AreEqual(Snapshot(), Snapshot());

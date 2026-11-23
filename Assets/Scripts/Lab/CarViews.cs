@@ -110,6 +110,14 @@ namespace Traffic.Lab
             return v;
         }
 
+        /// <summary>Remove everything this view created, before loading another map.</summary>
+        public void Destroy()
+        {
+            foreach (View v in views.Values) Object.Destroy(v.Paint);
+            views.Clear();
+            Object.Destroy(root.gameObject);
+        }
+
         public void Sync(List<Car> cars, double time, int selectedId)
         {
             seen.Clear();

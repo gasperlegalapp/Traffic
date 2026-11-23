@@ -2,6 +2,12 @@
 
 A traffic game in the making, built in Unity 6. The first piece is the **Driver Lab**: a small street grid for building and tuning how individual drivers behave, before any city building.
 
+## Maps
+
+- **Street grid:** nine blocks, described below.
+- **Figure eight:** one intersection joined to itself by two loops, with a pinch where two lanes become one.
+- **City and highway:** six intersections beside a one-way highway. Vehicles arrive at the west end of the highway and on two roads south of town, in waves. Some take the off-ramp into town, town traffic takes the on-ramp out, and everything that reaches the east end of the highway or the south edge leaves the map.
+
 ## Driver Lab
 
 A three-by-three grid of streets where each road and intersection tests something different:

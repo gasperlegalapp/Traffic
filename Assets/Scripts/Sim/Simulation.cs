@@ -113,6 +113,8 @@ namespace Traffic.Sim
         public double NextBump;
         /// <summary>Seconds spent stopped inside an intersection.</summary>
         public double BoxWait;
+        /// <summary>Has driven off the edge of the map.</summary>
+        public bool Gone;
         public bool Crashed;
         public double CrashedAt;
 
@@ -180,6 +182,17 @@ namespace Traffic.Sim
         public int Bumps;
         /// <summary>When false, cars that touch are not wrecked: a car is held behind the one it hit, and cars that cross paths pass through each other.</summary>
         public bool CrashesEnabled = true;
+        /// <summary>Vehicles that have driven off the edge of the map.</summary>
+        public int Left;
+        /// <summary>New vehicles per minute on each city-street lane that enters the map; faster roads get proportionally more.</summary>
+        public double ArrivalsPerMinute = 6;
+        /// <summary>The kind of driver that arrives, how much they vary, and the share of trucks and motorcycles.</summary>
+        public DriverParams ArrivalDriver;
+        public double ArrivalVariation = 0.3;
+        public double ArrivalTrucks = 0.12;
+        public double ArrivalMotorcycles = 0.06;
+        /// <summary>No new arrivals while this many vehicles are on the map.</summary>
+        public int MaxCars = 320;
         /// <summary>Allow turning right at a red light after stopping.</summary>
         public bool RightOnRed = true;
         /// <summary>Cars that have made it through an intersection.</summary>
@@ -194,6 +207,7 @@ namespace Traffic.Sim
         private readonly List<ActiveCar> active = new List<ActiveCar>();
         private readonly double[] minRad;
         private Car foundLeader;
+        private readonly double[] nextArrival;
         private bool scareSeen;
 
         private struct Entry
@@ -231,6 +245,7 @@ namespace Traffic.Sim
             Rng = new Rng(seed);
             laneCars = new List<Entry>[Lanes.Count];
             minRad = new double[Lanes.Count];
+            nextArrival = new double[Lanes.Count];
             for (int i = 0; i < Lanes.Count; i++)
             {
                 laneCars[i] = new List<Entry>();
@@ -290,19 +305,63 @@ namespace Traffic.Sim
                     if (c.GhostLane == lane.Id && Math.Abs(c.S + c.GhostOff - s) < room) free = false;
                 }
                 if (!free) continue;
-                DriverParams drv = baseDriver.Clone();
-                if (variation > 0)
-                {
-                    for (int k = 0; k < DriverParams.Count; k++)
-                    {
-                        double lo = DriverParams.Ranges[k, 0];
-                        double hi = DriverParams.Ranges[k, 1];
-                        drv.Set(k, Geo.Clamp(drv.Get(k) + (Rng.Next() - 0.5) * variation * (hi - lo), lo, hi));
-                    }
-                }
-                return AddCar(lane.Id, s, 6, drv, null, kind);
+                return AddCar(lane.Id, s, 6, Vary(baseDriver, variation), null, kind);
             }
             return null;
+        }
+
+        /// <summary>A copy of a driver with each main dial nudged at random.</summary>
+        private DriverParams Vary(DriverParams baseDriver, double variation)
+        {
+            DriverParams drv = baseDriver.Clone();
+            if (variation <= 0) return drv;
+            for (int k = 0; k < DriverParams.Count; k++)
+            {
+                double lo = DriverParams.Ranges[k, 0];
+                double hi = DriverParams.Ranges[k, 1];
+                drv.Set(k, Geo.Clamp(drv.Get(k) + (Rng.Next() - 0.5) * variation * (hi - lo), lo, hi));
+            }
+            return drv;
+        }
+
+        /// <summary>
+        /// Bring new vehicles in on the roads that enter from the edge of the map. Each lane has
+        /// its own clock: arrivals come at random, and the rate itself rises and falls over a
+        /// minute or so, so traffic comes in waves.
+        /// </summary>
+        private void Arrivals()
+        {
+            if (World.Entries.Count == 0 || ArrivalsPerMinute <= 0) return;
+            foreach (Approach entry in World.Entries)
+            {
+                foreach (int id in entry.Outbound)
+                {
+                    if (Time < nextArrival[id]) continue;
+                    Lane lane = Lanes[id];
+                    VehicleKind kind = VehicleKind.Car;
+                    double pick = Rng.Next();
+                    if (pick < ArrivalTrucks) kind = VehicleKind.Truck;
+                    else if (pick < ArrivalTrucks + ArrivalMotorcycles) kind = VehicleKind.Motorcycle;
+                    double length = VehicleSpec.Of(kind).Len;
+                    // Wait for the mouth of the lane to clear.
+                    Car ahead = null;
+                    foreach (Car c in Cars) if (c.Lane == id && (ahead == null || c.S < ahead.S)) ahead = c;
+                    if (Cars.Count >= MaxCars || (ahead != null && ahead.S - ahead.Len / 2 < length + 8))
+                    {
+                        nextArrival[id] = Time + 0.5;
+                        continue;
+                    }
+                    double speed = lane.SpeedLimit * 0.9;
+                    if (ahead != null) speed = Math.Min(speed, ahead.V + (ahead.S - length - 8) * 0.3);
+                    AddCar(id, length / 2 + 0.5, speed, Vary(ArrivalDriver ?? DriverParams.Normal, ArrivalVariation), null, kind);
+
+                    // Faster roads carry more traffic per lane.
+                    double perSecond = ArrivalsPerMinute / 60 * (lane.SpeedLimit / NetworkBuilder.CitySpeed);
+                    perSecond *= 1 + 0.6 * Math.Sin(Time / 19 + id * 1.3);
+                    double wait = -Math.Log(1 - Rng.Next()) / Math.Max(perSecond, 1e-3);
+                    nextArrival[id] = Time + Geo.Clamp(wait, 1.2, 120);
+                }
+            }
         }
 
         /// <summary>Drop one special driver onto the road. Returns null when the track is full.</summary>
@@ -402,6 +461,7 @@ namespace Traffic.Sim
         public void Step()
         {
             foreach (Junction junction in Junctions) junction.Update(Dt, Time);
+            Arrivals();
             BuildLists();
             foreach (var car in Cars) if (!car.Crashed) Perceive(car);
             LaneChanges();
@@ -690,7 +750,7 @@ namespace Traffic.Sim
                 }
                 return a;
             }
-            if (lane.Kind == LaneKind.Road && lane.Connectors == null)
+            if (lane.Kind == LaneKind.Road && lane.Connectors == null && !lane.IsExit)
             {
                 // The lane ends ahead: be ready to stop at the end if nobody lets us in.
                 double a = StopFor(lane.Length - car.S - half - 0.5, Binding.End);
@@ -1154,7 +1214,11 @@ namespace Traffic.Sim
                 int need = 0;
                 double urgency = 0;
                 double insistOver = Math.Min(MandatoryDist, lane.Length * 0.8);
-                if (lane.Connectors == null)
+                if (lane.IsExit)
+                {
+                    // Running off the edge of the map: any lane will do.
+                }
+                else if (lane.Connectors == null)
                 {
                     need = lane.MergeSide;
                     urgency = Geo.Clamp(1 - (remaining - 5) / insistOver, 0, 1);
@@ -1195,7 +1259,7 @@ namespace Traffic.Sim
                     }
                     else
                     {
-                        if (t.Connectors == null && t.Length - tgt.S < 220) continue; // don't hop into a lane that is about to end
+                        if (t.Connectors == null && !t.IsExit && t.Length - tgt.S < 220) continue; // don't hop into a lane that is about to end
                         if (t.Connectors != null && !t.Allows(car.Turn) && remaining < 170) continue;
                     }
                     Neighbor lead = LeaderIn(t, tgt.S, car);
@@ -1363,6 +1427,14 @@ namespace Traffic.Sim
                     int next = RouteNext(car, lane);
                     if (next < 0)
                     {
+                        if (lane.IsExit)
+                        {
+                            // Drove off the edge of the map.
+                            car.Gone = true;
+                            Left++;
+                            removed = true;
+                            break;
+                        }
                         car.S = lane.Length;
                         car.V = 0;
                         break;
@@ -1400,7 +1472,7 @@ namespace Traffic.Sim
                     car.HistCount = Math.Min(car.HistCount + 1, HistN);
                 }
             }
-            if (removed) Cars.RemoveAll(c => c.Crashed && Time - c.CrashedAt > CrashClearAfter);
+            if (removed) Cars.RemoveAll(c => c.Gone || (c.Crashed && Time - c.CrashedAt > CrashClearAfter));
         }
 
         private void DetectCrashes()

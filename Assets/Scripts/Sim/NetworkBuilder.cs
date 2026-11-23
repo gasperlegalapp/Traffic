@@ -38,13 +38,18 @@ namespace Traffic.Sim
         public const double SolidLine = 20;
         private const double Taper = 18;
         private const double CornerRadius = 5;
-        /// <summary>30 mph.</summary>
-        private const double SpeedLimit = 13.4;
+        /// <summary>30 mph, the default for a city street.</summary>
+        public const double CitySpeed = 13.4;
+        /// <summary>How far the stop lines sit from the center where roads split or join without a light.</summary>
+        private const double FreeRadius = 8;
 
         private sealed class RoadSpec
         {
             public int A, B;
             public TrackSpec[] Fwd, Back;
+            public Vec[] Via;
+            public double Speed;
+            public double ShiftA, ShiftB;
         }
 
         private readonly List<Vec> nodePos = new List<Vec>();
@@ -63,9 +68,19 @@ namespace Traffic.Sim
         }
 
         /// <summary>A road from node a to node b. fwd are the lanes going a to b, back the lanes going b to a.</summary>
-        public void AddRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back)
+        /// <summary>
+        /// Either set of lanes may be empty for a one-way road. via are points the centerline passes
+        /// through between the two nodes, for a curved road; a and b may then be the same node.
+        /// speed is the limit in meters per second. shiftA and shiftB move the road sideways where it
+        /// meets each node, to the right of travel from a to b, so that a ramp can leave from or
+        /// join at the outside lane of a highway instead of its centerline.
+        /// </summary>
+        public void AddRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] via = null, double speed = CitySpeed, double shiftA = 0, double shiftB = 0)
         {
-            roads.Add(new RoadSpec { A = a, B = b, Fwd = fwd, Back = back });
+            roads.Add(new RoadSpec
+            {
+                A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = via ?? new Vec[0], Speed = speed, ShiftA = shiftA, ShiftB = shiftB,
+            });
         }
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
@@ -81,7 +96,7 @@ namespace Traffic.Sim
 
         private static int MaxSlot(TrackSpec[] tracks, bool atEnd)
         {
-            int max = 0;
+            int max = -1;
             foreach (TrackSpec t in tracks)
             {
                 bool touches = atEnd ? t.To == 1 : t.From == 0;
@@ -107,25 +122,50 @@ namespace Traffic.Sim
             }
             for (int i = 0; i < nodePos.Count; i++)
             {
+                int ends = EndsAt(i);
+                if (ends == 1) radius[i] = 0; // the edge of the map
+                else if (ends > 2 && nodeMode[i] == JunctionMode.Free) radius[i] = FreeRadius; // a ramp leaving or joining
                 world.Nodes.Add(new Node { Id = i, Pos = nodePos[i], Radius = radius[i], DefaultMode = nodeMode[i] });
                 extent = Math.Max(extent, Math.Max(Math.Abs(nodePos[i].X), Math.Abs(nodePos[i].Y)));
             }
-            world.Extent = extent + 30;
 
             foreach (RoadSpec r in roads)
             {
                 Vec a = nodePos[r.A];
                 Vec b = nodePos[r.B];
-                double len = Geo.Hypot(b.X - a.X, b.Y - a.Y);
-                double dx = (b.X - a.X) / len;
-                double dy = (b.Y - a.Y) / len;
-                var p0 = new Vec(a.X + dx * radius[r.A], a.Y + dy * radius[r.A]);
-                var p1 = new Vec(b.X - dx * radius[r.B], b.Y - dy * radius[r.B]);
-                Approach armA = AddArm(r.A, Math.Atan2(dy, dx), r.B);
-                Approach armB = AddArm(r.B, Math.Atan2(-dy, -dx), r.A);
-                BuildDirection(p0, p1, r.Fwd, armB, armA);
-                BuildDirection(p1, p0, r.Back, armA, armB);
+                // A straight road runs node to node. A curved one leaves a in the direction its via
+                // points start out in, and arrives at b in the direction they end in.
+                int m = r.Via.Length;
+                Vec from0 = m >= 2 ? r.Via[0] : a, from1 = m >= 2 ? r.Via[1] : m == 1 ? r.Via[0] : b;
+                Vec to0 = m >= 2 ? r.Via[m - 2] : m == 1 ? r.Via[0] : a, to1 = m >= 2 ? r.Via[m - 1] : b;
+                double la = Geo.Hypot(from1.X - from0.X, from1.Y - from0.Y);
+                double lb = Geo.Hypot(to1.X - to0.X, to1.Y - to0.Y);
+                double ax = (from1.X - from0.X) / la, ay = (from1.Y - from0.Y) / la;
+                double bx = (to1.X - to0.X) / lb, by = (to1.Y - to0.Y) / lb;
+                var line = new List<Vec> { new Vec(a.X + ax * radius[r.A] + ay * r.ShiftA, a.Y + ay * radius[r.A] - ax * r.ShiftA) };
+                line.AddRange(r.Via);
+                line.Add(new Vec(b.X - bx * radius[r.B] + by * r.ShiftB, b.Y - by * radius[r.B] - bx * r.ShiftB));
+                // Resample to about a meter between points.
+                var path = new LanePath(line);
+                int n = (int)Math.Ceiling(path.Length);
+                var center = new List<Vec>();
+                for (int i = 0; i <= n; i++)
+                {
+                    Vec p = path.At(path.Length * i / n).Point;
+                    center.Add(p);
+                    extent = Math.Max(extent, Math.Max(Math.Abs(p.X), Math.Abs(p.Y)));
+                }
+                var reversed = new List<Vec>(center);
+                reversed.Reverse();
+
+                Approach armA = AddArm(r.A, Math.Atan2(ay, ax), r.B);
+                Approach armB = AddArm(r.B, Math.Atan2(-by, -bx), r.A);
+                armA.Shift = r.ShiftA;
+                armB.Shift = -r.ShiftB;
+                BuildDirection(center, r.Fwd, armB, armA, r.Speed);
+                BuildDirection(reversed, r.Back, armA, armB, r.Speed);
             }
+            world.Extent = extent + 30;
 
             foreach (Node node in world.Nodes) BuildNode(node);
             return world;
@@ -148,18 +188,14 @@ namespace Traffic.Sim
 
         // ------------------------------------------------------------ roads
 
-        private void BuildDirection(Vec p0, Vec p1, TrackSpec[] specs, Approach to, Approach from)
+        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed)
         {
-            double len = Geo.Hypot(p1.X - p0.X, p1.Y - p0.Y);
-            int n = (int)Math.Ceiling(len);
-            var center = new List<Vec>();
+            if (specs.Length == 0) return;
+            int n = center.Count - 1;
             var st = new double[n + 1];
-            for (int i = 0; i <= n; i++)
-            {
-                double t = (double)i / n;
-                center.Add(new Vec(p0.X + (p1.X - p0.X) * t, p0.Y + (p1.Y - p0.Y) * t));
-                st[i] = len * t;
-            }
+            for (int i = 1; i <= n; i++) st[i] = st[i - 1] + Geo.Hypot(center[i].X - center[i - 1].X, center[i].Y - center[i - 1].Y);
+            double len = st[n];
+            Vec p1 = center[n];
 
             var sorted = new List<TrackSpec>(specs);
             sorted.Sort((x, y) => x.Slot != y.Slot ? x.Slot.CompareTo(y.Slot) : x.From.CompareTo(y.From));
@@ -185,7 +221,7 @@ namespace Traffic.Sim
                     Kind = LaneKind.Road,
                     Path = path,
                     Length = path.Length,
-                    SpeedLimit = SpeedLimit,
+                    SpeedLimit = speed,
                     Slot = spec.Slot,
                     ApproachNode = to.Node,
                     ApproachArm = to.Arm,
@@ -228,7 +264,7 @@ namespace Traffic.Sim
                 }
             }
 
-            double h = Math.Atan2(p1.Y - p0.Y, p1.X - p0.X);
+            double h = Math.Atan2(p1.Y - center[n - 1].Y, p1.X - center[n - 1].X);
             double rx = Math.Sin(h);
             double ry = -Math.Cos(h);
             to.H = h;
@@ -266,7 +302,7 @@ namespace Traffic.Sim
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14 });
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true });
 
-            bool controlled = roadsAt(to.Node) > 2;
+            bool controlled = EndsAt(to.Node) > 2 && nodeMode[to.Node] != JunctionMode.Free;
             for (int slot = 0; slot < maxSlot; slot++)
             {
                 Vec[] divider = Geo.Offset(center, (slot + 1) * LaneW);
@@ -292,10 +328,15 @@ namespace Traffic.Sim
             }
         }
 
-        private int roadsAt(int node)
+        /// <summary>How many road ends meet at a node. A loop that starts and ends there counts twice.</summary>
+        private int EndsAt(int node)
         {
             int count = 0;
-            foreach (RoadSpec r in roads) if (r.A == node || r.B == node) count++;
+            foreach (RoadSpec r in roads)
+            {
+                if (r.A == node) count++;
+                if (r.B == node) count++;
+            }
             return count;
         }
 
@@ -327,24 +368,48 @@ namespace Traffic.Sim
 
         private void BuildNode(Node node)
         {
+            if (node.Terminal)
+            {
+                // The edge of the map: arriving lanes run off it, leaving lanes bring new vehicles in.
+                Approach edge = node.Arms[0];
+                foreach (int id in edge.Inbound)
+                {
+                    world.Lanes[id].Connectors = null;
+                    world.Lanes[id].IsExit = true;
+                }
+                if (edge.Outbound.Count > 0) world.Entries.Add(edge);
+                return;
+            }
+
             var conns = new List<Lane>();
             foreach (Approach arm in node.Arms)
             {
-                // Which arm each turn leads to.
+                if (arm.Inbound.Count == 0) continue; // nothing arrives on this arm
+
+                // Which arm each turn leads to. The way most nearly straight on is "straight";
+                // anything else is a left or a right, however slight.
                 var target = new int[Lane.Turns];
+                var bend = new double[Lane.Turns];
                 for (int t = 0; t < Lane.Turns; t++) target[t] = -1;
                 double heading = arm.Angle + Math.PI;
+                Approach straight = null;
                 foreach (Approach other in node.Arms)
                 {
-                    if (other == arm) continue;
-                    Turn turn;
-                    if (node.Arms.Count == 2) turn = Turn.Straight; // a bend in the road, not a turn
-                    else
+                    if (other == arm || other.Outbound.Count == 0) continue;
+                    double d = Math.Abs(Wrap(other.Angle - heading));
+                    bool ahead = node.Arms.Count == 2 || d < Math.PI / 4; // with two arms it is a bend in the road, not a turn
+                    if (ahead && (straight == null || d < Math.Abs(Wrap(straight.Angle - heading)))) straight = other;
+                }
+                foreach (Approach other in node.Arms)
+                {
+                    if (other == arm || other.Outbound.Count == 0) continue;
+                    double d = Wrap(other.Angle - heading);
+                    Turn turn = other == straight ? Turn.Straight : d > 0 ? Turn.Left : Turn.Right;
+                    if (target[(int)turn] < 0)
                     {
-                        double d = Wrap(other.Angle - heading);
-                        turn = Math.Abs(d) < Math.PI / 4 ? Turn.Straight : d > 0 ? Turn.Left : Turn.Right;
+                        target[(int)turn] = other.Arm;
+                        bend[(int)turn] = d;
                     }
-                    if (target[(int)turn] < 0) target[(int)turn] = other.Arm;
                 }
                 if (arm.AllowUTurn && node.Controlled) target[(int)Turn.UTurn] = arm.Arm;
 
@@ -369,7 +434,7 @@ namespace Traffic.Sim
                             if (k > 0) break;
                             to = outs[outs.Count - 1];
                         }
-                        else if (turn == Turn.Right) to = outs[outs.Count - src.Count + k];
+                        else if (turn == Turn.Right || (turn == Turn.Straight && node.Arms.Count > 2 && bend[t] < -0.1)) to = outs[outs.Count - src.Count + k]; // joining from the right: keep right
                         else to = outs[k];
                         conns.Add(Connect(node, src[k], to, turn));
                     }
@@ -420,6 +485,7 @@ namespace Traffic.Sim
             {
                 // Traffic arrives on this arm and leaves on the other one.
                 Approach other = node.Arms[1 - arm.Arm];
+                if (arm.Inbound.Count == 0 || other.Outbound.Count == 0) continue;
                 double hIn = arm.H;
                 double hOut = other.Angle;
                 double inX = node.Pos.X + Math.Cos(arm.Angle) * node.Radius, inY = node.Pos.Y + Math.Sin(arm.Angle) * node.Radius;
@@ -541,7 +607,7 @@ namespace Traffic.Sim
                 Kind = LaneKind.Connector,
                 Path = path,
                 Length = path.Length,
-                SpeedLimit = SpeedLimit,
+                SpeedLimit = Math.Min(from.SpeedLimit, to.SpeedLimit),
                 Node = node.Id,
                 From = fromId,
                 Next = toId,
@@ -567,11 +633,13 @@ namespace Traffic.Sim
             {
                 Approach arm = arms[i];
                 double dx = Math.Cos(arm.Angle), dy = Math.Sin(arm.Angle);
-                double wIn = (MaxLaneSlot(arm.Inbound) + 1) * LaneW;
-                double wOut = (MaxLaneSlot(arm.Outbound) + 1) * LaneW;
+                double wIn = arm.Inbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Inbound) + 1) * LaneW;
+                double wOut = arm.Outbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Outbound) + 1) * LaneW;
                 double mx = node.Pos.X + dx * node.Radius, my = node.Pos.Y + dy * node.Radius;
-                cw[i] = new Vec(mx + dy * wOut, my - dx * wOut);
-                ccw[i] = new Vec(mx - dy * wIn, my + dx * wIn);
+                double toCw = wOut + arm.Shift;
+                double toCcw = wIn - arm.Shift;
+                cw[i] = new Vec(mx + dy * toCw, my - dx * toCw);
+                ccw[i] = new Vec(mx - dy * toCcw, my + dx * toCcw);
             }
             for (int i = 0; i < n; i++)
             {
@@ -584,7 +652,7 @@ namespace Traffic.Sim
                 double d1x = Math.Cos(arms[i].Angle), d1y = Math.Sin(arms[i].Angle);
                 double d2x = Math.Cos(arms[j].Angle), d2y = Math.Sin(arms[j].Angle);
                 double cross = d1x * d2y - d1y * d2x;
-                if (Math.Abs(cross) < 1e-6) continue;
+                if (Math.Abs(cross) < 0.05) continue; // the two edges run nearly side by side: join them straight
                 double t = ((q.X - p.X) * d2y - (q.Y - p.Y) * d2x) / cross;
                 var c = new Vec(p.X + d1x * t, p.Y + d1y * t);
                 for (int k = 1; k < 8; k++)

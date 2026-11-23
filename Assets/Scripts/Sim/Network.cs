@@ -62,6 +62,9 @@ namespace Traffic.Sim
         /// <summary>For a lane that ends before the intersection: the side to merge to (-1 left, 1 right).</summary>
         public int MergeSide;
 
+        /// <summary>The lane runs off the edge of the map: vehicles that reach its end leave.</summary>
+        public bool IsExit;
+
         /// <summary>The intersection a lane belongs to: set for road lanes that reach a stop line, and for connectors.</summary>
         public int Node = -1;
         /// <summary>Road lanes that reach the stop line: which arm of the intersection.</summary>
@@ -123,6 +126,8 @@ namespace Traffic.Sim
         /// outer edge, for the arriving lanes and for the leaving lanes.
         /// </summary>
         public double InLeft, InRight, OutLeft, OutRight;
+        /// <summary>How far this road's centerline is moved sideways where it meets the node, toward the clockwise side looking outward. Used to hang a ramp off the edge of a highway.</summary>
+        public double Shift;
     }
 
     public sealed class Node
@@ -136,8 +141,14 @@ namespace Traffic.Sim
         /// <summary>Outline of the pavement inside the intersection.</summary>
         public List<Vec> Box = new List<Vec>();
 
-        /// <summary>A real intersection, as opposed to a bend where two roads meet.</summary>
-        public bool Controlled => Arms.Count > 2;
+        /// <summary>
+        /// A real intersection with a light or stop signs, as opposed to a bend, a place where a
+        /// ramp leaves or joins a highway, or the edge of the map.
+        /// </summary>
+        public bool Controlled => Arms.Count > 2 && DefaultMode != JunctionMode.Free;
+
+        /// <summary>The edge of the map: vehicles leave here and new ones arrive.</summary>
+        public bool Terminal => Arms.Count == 1;
     }
 
     public sealed class Strip
@@ -183,6 +194,8 @@ namespace Traffic.Sim
         public List<Marking> Markings = new List<Marking>();
         public List<StopLine> StopLines = new List<StopLine>();
         public List<ArrowMark> Arrows = new List<ArrowMark>();
+        /// <summary>Roads that come in from the edge of the map, where new vehicles arrive.</summary>
+        public List<Approach> Entries = new List<Approach>();
         /// <summary>Half the width of the square that contains everything.</summary>
         public double Extent;
     }

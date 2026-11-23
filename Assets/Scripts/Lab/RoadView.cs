@@ -37,11 +37,13 @@ namespace Traffic.Lab
         private readonly List<LineView> lines = new List<LineView>();
         private readonly List<SignalView> signals = new List<SignalView>();
         private readonly Transform nodeRing;
+        private readonly GameObject rootObject;
 
         public RoadView(World world, Transform parent)
         {
             this.world = world;
-            var root = new GameObject("Roads").transform;
+            rootObject = new GameObject("Roads");
+            Transform root = rootObject.transform;
             root.SetParent(parent, false);
 
             var ground = new FlatBuilder();
@@ -51,7 +53,7 @@ namespace Traffic.Lab
 
             var asphalt = new FlatBuilder();
             foreach (Strip s in world.Surfaces) asphalt.Strip(s.Left, s.Right, 0.03f);
-            foreach (Node node in world.Nodes) asphalt.Fan(node.Pos, node.Box, 0.03f);
+            foreach (Node node in world.Nodes) if (node.Box.Count > 2) asphalt.Fan(node.Pos, node.Box, 0.03f);
             MeshKit.Spawn("Asphalt", asphalt.Build(), MeshKit.Lit(MeshKit.Hex(0x353a42), 0.05f), root, false);
 
             var white = new FlatBuilder();
@@ -82,7 +84,7 @@ namespace Traffic.Lab
             foreach (Node node in world.Nodes)
             {
                 if (!node.Controlled) continue;
-                foreach (Approach arm in node.Arms) signals.Add(BuildSignal(arm, dark, root));
+                foreach (Approach arm in node.Arms) if (arm.Inbound.Count > 0) signals.Add(BuildSignal(arm, dark, root));
             }
 
             // Ring that marks the selected intersection.
@@ -105,7 +107,7 @@ namespace Traffic.Lab
         private SignalView BuildSignal(Approach arm, Material dark, Transform root)
         {
             var view = new SignalView { Arm = arm };
-            bool[] offered = world.Lanes[arm.Inbound[0]].ApproachTurns;
+            bool[] offered = world.Lanes[arm.Inbound[0]].ApproachTurns; // callers skip arms nothing arrives on
             view.Main = offered[(int)Turn.Straight] ? Turn.Straight : offered[(int)Turn.Right] ? Turn.Right : Turn.Left;
             view.HasLeft = (offered[(int)Turn.Left] || offered[(int)Turn.UTurn]) && view.Main != Turn.Left;
 
@@ -251,6 +253,12 @@ namespace Traffic.Lab
                 t.localScale = new Vector3(scale, scale, scale);
                 placed++;
             }
+        }
+
+        /// <summary>Remove everything this view created, before loading another map.</summary>
+        public void Destroy()
+        {
+            Object.Destroy(rootObject);
         }
 
         /// <summary>Show or hide the ring around the selected intersection.</summary>

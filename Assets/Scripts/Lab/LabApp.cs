@@ -41,6 +41,8 @@ namespace Traffic.Lab
         private float speed = 1;
         private int selected = -1;
         private int selectedNode = -1;
+        private int mapIndex;
+        private float arrivals = 6;
         private bool follow;
         private DriverParams newDriver = DriverParams.Normal;
         private float variation = 0.3f;
@@ -58,15 +60,30 @@ namespace Traffic.Lab
         private void Awake()
         {
             Instance = this;
-            world = LabWorld.Build();
+            SetUpScene();
+            LoadMap(0);
+        }
+
+        /// <summary>Throw away the current map and traffic and start another.</summary>
+        private void LoadMap(int index)
+        {
+            bool crashes = Sim != null && Sim.CrashesEnabled; // crashes are a later feature, so they start off
+            bool rightOnRed = Sim == null || Sim.RightOnRed;
+            if (roads != null) roads.Destroy();
+            if (carViews != null) carViews.Destroy();
+            mapIndex = index;
+            selected = -1;
+            selectedNode = -1;
+            follow = false;
+            world = Maps.All[index].Build();
             Sim = new Simulation(world, (uint)(System.DateTime.Now.Ticks & 0xffff));
-            Sim.CrashesEnabled = false; // crashes are a later feature; the control panel can turn them on
+            Sim.CrashesEnabled = crashes;
+            Sim.RightOnRed = rightOnRed;
             Sim.OnCrash = (a, b) => Toast("Crash: car " + a.Id + " and car " + b.Id + ".");
             roads = new RoadView(world, transform);
             carViews = new CarViews(transform);
-            SetUpScene();
             Fit();
-            SpawnCars(20);
+            SpawnCars(Maps.All[index].StartingCars);
         }
 
         private void SetUpScene()
@@ -83,7 +100,7 @@ namespace Traffic.Lab
             cam.orthographic = false;
             cam.fieldOfView = 30;
             cam.nearClipPlane = 5;
-            cam.farClipPlane = 4000;
+            cam.farClipPlane = 6000;
 
             // Turn off whatever lights the open scene came with; the lab brings its own sun.
             foreach (UnityEngine.Light existing in Resources.FindObjectsOfTypeAll<UnityEngine.Light>())
@@ -102,7 +119,7 @@ namespace Traffic.Lab
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
             RenderSettings.ambientLight = MeshKit.Hex(0x4a5258);
             RenderSettings.fog = false;
-            QualitySettings.shadowDistance = 1000;
+            QualitySettings.shadowDistance = 3000;
         }
 
         /// <summary>Pull back far enough to see the whole track.</summary>
@@ -183,6 +200,13 @@ namespace Traffic.Lab
 
         private void Update()
         {
+            // New arrivals at the edge of the map follow the same settings as cars added by hand.
+            Sim.ArrivalsPerMinute = arrivals;
+            Sim.ArrivalDriver = newDriver;
+            Sim.ArrivalVariation = variation;
+            Sim.ArrivalTrucks = truckShare;
+            Sim.ArrivalMotorcycles = bikeShare;
+
             if (!paused)
             {
                 owed += Mathf.Min(Time.unscaledDeltaTime, 0.1f) * speed;
@@ -211,7 +235,7 @@ namespace Traffic.Lab
 
         private void Zoom(float factor)
         {
-            dist = Mathf.Clamp(dist * factor, 35, 900);
+            dist = Mathf.Clamp(dist * factor, 35, 2600);
         }
 
         /// <summary>Drag the view. dx and dy are in screen pixels, y down.</summary>

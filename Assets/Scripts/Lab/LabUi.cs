@@ -74,7 +74,7 @@ namespace Traffic.Lab
             if (showLabels && e.type == EventType.Repaint) DrawTags(scale);
 
             var top = new Rect(12, 12, 430, 54);
-            var lab = new Rect(12, 76, 300, Mathf.Min(800, h - 150));
+            var lab = new Rect(12, 76, 300, Mathf.Min(900, h - 150));
             var transport = new Rect(w / 2 - 150, h - 58, 300, 46);
             float inspectorHeight = Mathf.Min(612, h - 24);
             var inspector = new Rect(w - 300, h - 12 - inspectorHeight, 288, inspectorHeight);
@@ -118,7 +118,8 @@ namespace Traffic.Lab
             int t = (int)Sim.Time;
             Stat("CARS", Sim.Cars.Count.ToString());
             Stat("AVG SPEED", (moving > 0 ? Mathf.RoundToInt((float)(v / moving) * Mph) : 0) + " mph");
-            Stat("THROUGH", Sim.Passes.ToString());
+            if (world.Entries.Count > 0) Stat("LEFT MAP", Sim.Left.ToString());
+            else Stat("THROUGH", Sim.Passes.ToString());
             if (Sim.CrashesEnabled) Stat("CRASHES", Sim.Crashes.ToString());
             else Stat("BUMPS", Sim.Bumps.ToString());
             Stat("CLOCK", t / 60 + ":" + (t % 60).ToString("00"));
@@ -143,6 +144,21 @@ namespace Traffic.Lab
             labScroll = GUILayout.BeginScrollView(labScroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar);
             GUILayout.BeginVertical(GUILayout.Width(r.width - 50));
 
+            GUILayout.Label("MAP", heading);
+            for (int i = 0; i < Maps.All.Length; i++)
+            {
+                if (GUILayout.Button(Maps.All[i].Name, i == mapIndex ? buttonOn : button) && i != mapIndex)
+                {
+                    LoadMap(i);
+                    Toast(Maps.All[i].Name + ": " + Maps.All[i].Blurb + ".");
+                }
+            }
+            if (world.Entries.Count > 0)
+            {
+                arrivals = Slider("New arrivals per entry lane", arrivals.ToString("0") + " a minute", arrivals, 0, 20);
+            }
+
+            GUILayout.Space(10);
             GUILayout.Label("CARS", heading);
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("+1", button)) SpawnCars(1);
