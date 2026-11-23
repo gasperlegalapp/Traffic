@@ -8,6 +8,7 @@ namespace Traffic.Sim
         Left = 0,
         Straight = 1,
         Right = 2,
+        UTurn = 3,
     }
 
     public enum LaneKind
@@ -16,7 +17,7 @@ namespace Traffic.Sim
         Connector,
     }
 
-    /// <summary>Where two paths through the intersection come too close to share.</summary>
+    /// <summary>Where two paths through an intersection come too close to share.</summary>
     public sealed class Conflict
     {
         /// <summary>Lane id of the other connector.</summary>
@@ -35,21 +36,37 @@ namespace Traffic.Sim
 
     public sealed class Lane
     {
+        public const int Turns = 4;
+
         public int Id;
         public LaneKind Kind;
         public LanePath Path;
         public double Length;
         /// <summary>Meters per second.</summary>
         public double SpeedLimit;
+        /// <summary>Sideways position on its road: 0 is next to the centerline, counting up to the right.</summary>
+        public int Slot;
         /// <summary>Neighbor lanes going the same way. A lane can have several along its length.</summary>
         public List<int> Lefts = new List<int>();
         public List<int> Rights = new List<int>();
         /// <summary>Lanes that feed into the start of this one.</summary>
         public List<int> Preds = new List<int>();
 
-        /// <summary>Road lanes that end at the stop line: which arm (-1 if none).</summary>
+        /// <summary>The intersection this road lane is heading for, and the arm it arrives on.</summary>
+        public int ApproachNode = -1;
+        public int ApproachArm = -1;
+        /// <summary>Turns that can be made from some lane of this approach, indexed by Turn.</summary>
+        public bool[] ApproachTurns;
+        /// <summary>For each turn, which way to change lanes to reach a lane that allows it (-1 left, 1 right, 0 here or impossible).</summary>
+        public int[] TurnSide = new int[Turns];
+        /// <summary>For a lane that ends before the intersection: the side to merge to (-1 left, 1 right).</summary>
+        public int MergeSide;
+
+        /// <summary>The intersection a lane belongs to: set for road lanes that reach a stop line, and for connectors.</summary>
+        public int Node = -1;
+        /// <summary>Road lanes that reach the stop line: which arm of the intersection.</summary>
         public int Arm = -1;
-        /// <summary>Turns allowed from the end of this lane, indexed by Turn; -1 where not allowed. Null if the lane does not reach the intersection.</summary>
+        /// <summary>Turns allowed from the end of this lane, indexed by Turn; -1 where not allowed. Null if the lane ends before the intersection.</summary>
         public int[] Connectors;
 
         // Connector lanes (paths through the intersection).
@@ -72,7 +89,8 @@ namespace Traffic.Sim
             if (Connectors[(int)turn] >= 0) return Connectors[(int)turn];
             if (Connectors[(int)Turn.Straight] >= 0) return Connectors[(int)Turn.Straight];
             if (Connectors[(int)Turn.Left] >= 0) return Connectors[(int)Turn.Left];
-            return Connectors[(int)Turn.Right];
+            if (Connectors[(int)Turn.Right] >= 0) return Connectors[(int)Turn.Right];
+            return Connectors[(int)Turn.UTurn];
         }
 
         public Conflict ConflictWith(int otherId)
@@ -81,6 +99,39 @@ namespace Traffic.Sim
             foreach (var c in Conflicts) if (c.Foe == otherId) return c;
             return null;
         }
+    }
+
+    /// <summary>One road arriving at (and leaving) an intersection.</summary>
+    public sealed class Approach
+    {
+        public int Node;
+        public int Arm;
+        /// <summary>Direction pointing away from the intersection along this road, radians.</summary>
+        public double Angle;
+        /// <summary>0 for the north-south street, 1 for east-west. Opposite arms share a street and a green.</summary>
+        public int Street;
+        /// <summary>Lanes arriving at the stop line and lanes leaving, each left to right.</summary>
+        public List<int> Inbound = new List<int>();
+        public List<int> Outbound = new List<int>();
+        public bool AllowUTurn;
+        /// <summary>Heading of arriving traffic, and a roadside spot for the signal or stop sign.</summary>
+        public double H;
+        public Vec Post;
+    }
+
+    public sealed class Node
+    {
+        public int Id;
+        public Vec Pos;
+        /// <summary>Distance from the center to the stop lines.</summary>
+        public double Radius;
+        public List<Approach> Arms = new List<Approach>();
+        public JunctionMode DefaultMode;
+        /// <summary>Outline of the pavement inside the intersection.</summary>
+        public List<Vec> Box = new List<Vec>();
+
+        /// <summary>A real intersection, as opposed to a bend where two roads meet.</summary>
+        public bool Controlled => Arms.Count > 2;
     }
 
     public sealed class Strip
@@ -98,27 +149,34 @@ namespace Traffic.Sim
         public double DashOn, DashOff;
     }
 
+    /// <summary>The stop line across one lane.</summary>
     public sealed class StopLine
     {
-        public int Arm;
+        public int Lane;
         public Vec A, B;
-        /// <summary>Roadside spot for the signal head or stop sign.</summary>
-        public Vec Post;
         /// <summary>Heading of traffic arriving at this line.</summary>
         public double H;
+    }
+
+    /// <summary>Arrows painted in a lane before the stop line.</summary>
+    public sealed class ArrowMark
+    {
+        /// <summary>End of the lane at the stop line; the paint goes just before it.</summary>
+        public PathPose At;
+        public bool[] Turns;
+        /// <summary>Paint a "no U-turn" symbol.</summary>
+        public bool NoUTurn;
     }
 
     public sealed class World
     {
         public List<Lane> Lanes = new List<Lane>();
+        public List<Node> Nodes = new List<Node>();
         public double LaneWidth;
-        /// <summary>Inbound and outbound lane ids for each arm (0 north, 1 east, 2 south, 3 west), left lane first.</summary>
-        public int[][] Inbound = new int[4][];
-        public int[][] Outbound = new int[4][];
         public List<Strip> Surfaces = new List<Strip>();
-        public List<Vec> Box = new List<Vec>();
         public List<Marking> Markings = new List<Marking>();
         public List<StopLine> StopLines = new List<StopLine>();
+        public List<ArrowMark> Arrows = new List<ArrowMark>();
         /// <summary>Half the width of the square that contains everything.</summary>
         public double Extent;
     }
@@ -129,10 +187,9 @@ namespace Traffic.Sim
         private const double ConflictDist = 2.6;
         private const double DivergeDist = 2.2;
 
-        /// <summary>Fill in conflicts and siblings for every connector.</summary>
-        public static void Link(List<Lane> lanes)
+        /// <summary>Fill in conflicts and siblings for the connectors of one intersection.</summary>
+        public static void Link(List<Lane> conns)
         {
-            var conns = lanes.FindAll(l => l.Kind == LaneKind.Connector);
             foreach (var a in conns)
             {
                 a.Conflicts = new List<Conflict>();
@@ -156,8 +213,9 @@ namespace Traffic.Sim
                     }
                 }
                 // Stable order by where each conflict starts.
-                var sorted = new List<Conflict>(a.Conflicts);
-                sorted.Sort((p, q) => p.SIn != q.SIn ? p.SIn.CompareTo(q.SIn) : a.Conflicts.IndexOf(p).CompareTo(a.Conflicts.IndexOf(q)));
+                var original = a.Conflicts;
+                var sorted = new List<Conflict>(original);
+                sorted.Sort((p, q) => p.SIn != q.SIn ? p.SIn.CompareTo(q.SIn) : original.IndexOf(p).CompareTo(original.IndexOf(q)));
                 a.Conflicts = sorted;
             }
         }

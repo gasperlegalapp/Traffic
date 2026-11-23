@@ -40,6 +40,7 @@ namespace Traffic.Lab
         private bool paused;
         private float speed = 1;
         private int selected = -1;
+        private int selectedNode = -1;
         private bool follow;
         private DriverParams newDriver = DriverParams.Normal;
         private float variation = 0.3f;
@@ -62,7 +63,7 @@ namespace Traffic.Lab
             carViews = new CarViews(transform);
             SetUpScene();
             Fit();
-            SpawnCars(10);
+            SpawnCars(20);
         }
 
         private void SetUpScene()
@@ -133,6 +134,39 @@ namespace Traffic.Lab
         {
             selected = id;
             if (id < 0) follow = false;
+            else SelectNode(-1);
+        }
+
+        private void SelectNode(int id)
+        {
+            selectedNode = id;
+            roads.ShowSelected(id >= 0 ? world.Nodes[id] : null);
+        }
+
+        /// <summary>The intersection under a point on the ground, or -1. Bends don't count.</summary>
+        private int NodeAt(Vector3 ground)
+        {
+            foreach (Node node in world.Nodes)
+            {
+                if (!node.Controlled) continue;
+                if (Geo.Hypot(ground.x - node.Pos.X, ground.z - node.Pos.Y) < node.Radius + 2) return node.Id;
+            }
+            return -1;
+        }
+
+        /// <summary>Handle a click on the scene: a car first, otherwise an intersection.</summary>
+        private void ClickAt(Vector2 pixel)
+        {
+            int car = CarAt(pixel);
+            if (car >= 0)
+            {
+                Select(car);
+                return;
+            }
+            Select(-1);
+            Ray ray = cam.ScreenPointToRay(new Vector3(pixel.x, Screen.height - pixel.y, 0));
+            if (Mathf.Abs(ray.direction.y) < 1e-4f) return;
+            SelectNode(NodeAt(ray.origin - ray.direction * (ray.origin.y / ray.direction.y)));
         }
 
         private void Update()
@@ -154,7 +188,7 @@ namespace Traffic.Lab
             if (car == null && selected >= 0) Select(-1);
             if (follow && car != null) target = Vector3.Lerp(target, MeshKit.ToWorld(car.X, car.Y), 0.12f);
 
-            roads.Update(Sim.Junction, Sim.Time);
+            roads.Update(Sim.Junctions, Sim.Time);
             carViews.Sync(Sim.Cars, Sim.Time, selected);
 
             cam.transform.position = target + new Vector3(0, dist * Mathf.Cos(Tilt), -dist * Mathf.Sin(Tilt));

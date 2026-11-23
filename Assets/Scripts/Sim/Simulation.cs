@@ -139,12 +139,14 @@ namespace Traffic.Sim
 
         public readonly World World;
         public readonly List<Lane> Lanes;
-        public readonly Junction Junction = new Junction();
+        /// <summary>One controller per intersection, in the same order as World.Nodes.</summary>
+        public readonly List<Junction> Junctions = new List<Junction>();
         public List<Car> Cars = new List<Car>();
         public double Time;
         public int Tick;
         public Rng Rng;
         public int Crashes;
+        /// <summary>Cars that have made it through an intersection.</summary>
         public int Passes;
         /// <summary>Remove crashed cars after CrashClearAfter seconds.</summary>
         public bool AutoClear = true;
@@ -196,6 +198,13 @@ namespace Traffic.Sim
                 laneCars[i] = new List<Entry>();
                 minRad[i] = Lanes[i].Path.MinRadius();
             }
+            foreach (Node node in world.Nodes)
+            {
+                var junction = new Junction(node, Lanes);
+                // Start the lights out of step with each other.
+                if (junction.PhaseCount > 0) junction.PhaseT = node.Id * 3 % 11;
+                Junctions.Add(junction);
+            }
         }
 
         // ---------------------------------------------------------------- cars
@@ -213,7 +222,7 @@ namespace Traffic.Sim
                 S = s,
                 V = v,
             };
-            car.Turn = turn ?? PickTurn();
+            car.Turn = turn ?? PickTurn(Lanes[lane]);
             car.NextLcCheck = Time + Rng.Next() * 0.4;
             for (int i = 0; i < ObsN; i++) car.ObsGap[i] = 1e6f;
             Cars.Add(car);
@@ -225,7 +234,7 @@ namespace Traffic.Sim
         public Car Spawn(DriverParams baseDriver = null, double variation = 0)
         {
             if (baseDriver == null) baseDriver = DriverParams.Normal;
-            var roads = Lanes.FindAll(l => l.Kind == LaneKind.Road && l.Length > 60);
+            var roads = Lanes.FindAll(l => l.Kind == LaneKind.Road && l.Length > 50);
             for (int attempt = 0; attempt < 60; attempt++)
             {
                 Lane lane = Rng.Pick(roads);
@@ -273,24 +282,51 @@ namespace Traffic.Sim
             return null;
         }
 
-        public void SetMode(JunctionMode mode)
+        /// <summary>Change how one intersection is controlled.</summary>
+        public void SetMode(int node, JunctionMode mode)
         {
-            if (Junction.Mode == mode) return;
-            Junction.Mode = mode;
-            foreach (var c in Cars) c.Junc = new JunctionMemo();
+            Junction junction = Junctions[node];
+            if (junction.Mode == mode || !World.Nodes[node].Controlled) return;
+            junction.SetMode(mode, Time);
+            foreach (var c in Cars)
+            {
+                Lane lane = Lanes[c.Lane];
+                if (lane.Node == node || lane.ApproachNode == node) c.Junc = new JunctionMemo();
+            }
         }
 
-        private Turn PickTurn()
+        /// <summary>Change every real intersection at once.</summary>
+        public void SetAllModes(JunctionMode mode)
         {
-            double r = Rng.Next();
-            return r < 0.25 ? Turn.Left : r < 0.75 ? Turn.Straight : Turn.Right;
+            foreach (Node node in World.Nodes) SetMode(node.Id, mode);
+        }
+
+        private static readonly double[] TurnWeights = { 0.22, 0.5, 0.22, 0.06 };
+
+        /// <summary>Choose the turn a car will make at the intersection its lane leads to.</summary>
+        private Turn PickTurn(Lane lane)
+        {
+            bool[] offered = lane.ApproachTurns;
+            if (offered == null) return Turn.Straight;
+            double total = 0;
+            for (int t = 0; t < Lane.Turns; t++) if (offered[t]) total += TurnWeights[t];
+            double r = Rng.Next() * total;
+            Turn last = Turn.Straight;
+            for (int t = 0; t < Lane.Turns; t++)
+            {
+                if (!offered[t]) continue;
+                last = (Turn)t;
+                r -= TurnWeights[t];
+                if (r < 0) break;
+            }
+            return last;
         }
 
         // ---------------------------------------------------------------- step
 
         public void Step()
         {
-            Junction.Update(Dt, Time);
+            foreach (Junction junction in Junctions) junction.Update(Dt, Time);
             BuildLists();
             foreach (var car in Cars) if (!car.Crashed) Perceive(car);
             LaneChanges();
@@ -555,6 +591,7 @@ namespace Traffic.Sim
             }
             if (lane.Kind == LaneKind.Road && lane.Connectors == null)
             {
+                // The lane ends ahead: be ready to stop at the end if nobody lets us in.
                 double a = StopFor(lane.Length - car.S - half - 0.5, Binding.End);
                 car.ALead = Math.Min(car.ALead, a);
             }
@@ -617,7 +654,7 @@ namespace Traffic.Sim
                 Turn turn = Turn.Straight;
                 if (lane.Kind == LaneKind.Connector) turn = lane.Turn;
                 else if (lane.Connectors != null && lane.Length - car.S < 55) turn = PlannedConn(car, lane).Turn;
-                car.Blinker = turn == Turn.Left ? -1 : turn == Turn.Right ? 1 : 0;
+                car.Blinker = turn == Turn.Left || turn == Turn.UTurn ? -1 : turn == Turn.Right ? 1 : 0;
             }
         }
 
@@ -715,7 +752,8 @@ namespace Traffic.Sim
         private bool MayEnter(Car car, Lane lane, Lane conn, double dLine, Derived d)
         {
             JunctionMemo j = car.Junc;
-            Junction jn = Junction;
+            Junction jn = Junctions[conn.Node];
+            if (jn.Mode == JunctionMode.Free) return true;
 
             if (jn.Mode == JunctionMode.AllWay)
             {
@@ -726,7 +764,7 @@ namespace Traffic.Sim
                 if (Time - j.Arrival < (0.4 + 0.6 * d.Nerves) * car.Drv.Compliance) return false;
                 foreach (var o in active)
                 {
-                    if (o.Car == car || o.Conn.Id == conn.Id) continue;
+                    if (o.Car == car || o.Conn.Id == conn.Id || o.Conn.Node != conn.Node) continue;
                     Conflict cz = conn.ConflictWith(o.Conn.Id);
                     if (cz != null && o.U - o.Car.Len / 2 < cz.FoeOut) return false;
                 }
@@ -735,7 +773,7 @@ namespace Traffic.Sim
                     JunctionMemo oj = o.Junc;
                     if (o == car || o.Crashed || oj.Arrival < 0 || oj.Released) continue;
                     Lane ol = Lanes[o.Lane];
-                    if (ol.Connectors == null) continue;
+                    if (ol.Connectors == null || ol.Node != conn.Node) continue;
                     if (oj.Arrival < j.Arrival || (oj.Arrival == j.Arrival && o.Id < car.Id))
                     {
                         if (conn.ConflictWith(PlannedConn(o, ol).Id) != null) return false;
@@ -749,7 +787,7 @@ namespace Traffic.Sim
             }
 
             if (j.Run) return true;
-            SignalLight light = jn.ArmState(lane.Arm, Time - car.Drv.Reaction);
+            SignalLight light = jn.State(lane.Arm, conn.Turn, Time - car.Drv.Reaction);
             bool ok;
             if (light == SignalLight.Green)
             {
@@ -798,9 +836,11 @@ namespace Traffic.Sim
         private bool IsActive(Car foe, Lane foeConn, double uf)
         {
             if (uf + foe.Len / 2 > 0) return true;
-            if (Junction.Mode == JunctionMode.AllWay) return foe.Junc.Released;
+            Junction jn = Junctions[foeConn.Node];
+            if (jn.Mode == JunctionMode.Free) return true;
+            if (jn.Mode == JunctionMode.AllWay) return foe.Junc.Released;
             if (foe.Junc.Run) return true;
-            SignalLight light = Junction.ArmState(foeConn.FromArm);
+            SignalLight light = jn.State(foeConn.FromArm, foeConn.Turn);
             if (light == SignalLight.Green) return true;
             if (light == SignalLight.Yellow) return foe.Junc.Yellow == YellowChoice.Go || (foe.Junc.Yellow == YellowChoice.Undecided && -uf - foe.Len / 2 < 40);
             return foe.Junc.Yellow == YellowChoice.Go && foe.V > 2;
@@ -809,10 +849,14 @@ namespace Traffic.Sim
         /// <summary>Right of way: the higher rank goes first.</summary>
         private double Rank(Car car, Lane conn, double u)
         {
-            if (Junction.Mode == JunctionMode.AllWay) return 1e6 - (car.Junc.Order >= 0 ? car.Junc.Order : 1e5);
+            Junction jn = Junctions[conn.Node];
+            if (jn.Mode == JunctionMode.Free) return 3;
+            if (jn.Mode == JunctionMode.AllWay) return 1e6 - (car.Junc.Order >= 0 ? car.Junc.Order : 1e5);
             bool crossed = u + car.Len / 2 > 0;
-            if (crossed && Junction.ArmState(conn.FromArm) != SignalLight.Green) return 4; // clearing the box
+            if (crossed && jn.State(conn.FromArm, conn.Turn) != SignalLight.Green) return 4; // clearing the box
             if (car.Junc.Run) return 0; // red-light runner
+            if (jn.IsProtected(conn.FromArm, conn.Turn)) return 3; // green arrow
+            if (conn.Turn == Turn.UTurn) return 1; // U-turns give way to everyone
             return conn.Turn == Turn.Left ? 2 : 3; // left turns give way to oncoming traffic
         }
 
@@ -892,12 +936,6 @@ namespace Traffic.Sim
             return best;
         }
 
-        private bool AnyAllows(List<int> ids, Turn turn)
-        {
-            foreach (int id in ids) if (Lanes[id].Allows(turn)) return true;
-            return false;
-        }
-
         private static readonly int[] Sides = { -1, 1 };
 
         private void LaneChanges()
@@ -923,29 +961,27 @@ namespace Traffic.Sim
                 // Does the driver have to leave this lane?
                 int need = 0;
                 double urgency = 0;
+                double insistOver = Math.Min(MandatoryDist, lane.Length * 0.8);
                 if (lane.Connectors == null)
                 {
-                    need = lane.Lefts.Count > 0 ? -1 : 1;
-                    urgency = Geo.Clamp(1 - (remaining - 5) / MandatoryDist, 0, 1);
+                    need = lane.MergeSide;
+                    urgency = Geo.Clamp(1 - (remaining - 5) / insistOver, 0, 1);
                 }
                 else if (!lane.Allows(car.Turn))
                 {
-                    double toSolid = remaining - LabWorld.SolidLine;
-                    if (toSolid < 5)
+                    double toSolid = remaining - NetworkBuilder.SolidLine;
+                    need = lane.TurnSide[(int)car.Turn];
+                    if (toSolid < 5 || need == 0)
                     {
-                        car.Turn = PlannedConn(car, lane).Turn; // too late: take what this lane allows
+                        car.Turn = PlannedConn(car, lane).Turn; // too late, or no such lane: take what this one allows
+                        need = 0;
                     }
-                    else
-                    {
-                        if (AnyAllows(lane.Lefts, car.Turn)) need = -1;
-                        else if (AnyAllows(lane.Rights, car.Turn)) need = 1;
-                        urgency = Geo.Clamp(1 - toSolid / MandatoryDist, 0, 1);
-                    }
+                    else urgency = Geo.Clamp(1 - toSolid / insistOver, 0, 1);
                 }
                 car.WantSide = urgency > 0.05 ? need : 0;
                 car.Urgency = need != 0 ? urgency : 0;
 
-                if (lane.Connectors != null && remaining < LabWorld.SolidLine) continue;
+                if (lane.Connectors != null && World.Nodes[lane.Node].Controlled && remaining < NetworkBuilder.SolidLine) continue;
                 if (car.S < 12) continue;
                 if (Time < car.LcCooldownUntil && urgency < 0.5) continue;
 
@@ -962,7 +998,8 @@ namespace Traffic.Sim
                     Lane t = tgt.Lane;
                     if (side == need)
                     {
-                        if (lane.Connectors != null && !t.Allows(car.Turn)) continue;
+                        // Moving over for a turn: the next lane must allow it or be on the way to one that does.
+                        if (lane.Connectors != null && (t.Connectors == null || !(t.Allows(car.Turn) || t.TurnSide[(int)car.Turn] == need))) continue;
                     }
                     else
                     {
@@ -971,8 +1008,9 @@ namespace Traffic.Sim
                     }
                     Neighbor lead = LeaderIn(t, tgt.S, car);
                     Neighbor fol = FollowerIn(t, tgt.S, car);
-                    if (lead != null && lead.Gap < 1.0) continue;
-                    if (fol != null && fol.Gap < 1.5) continue;
+                    // Room needed at each end: less when crawling, so stopped traffic can still zip together.
+                    if (lead != null && lead.Gap < Math.Min(1.0, 0.4 + car.V * 0.3)) continue;
+                    if (fol != null && fol.Gap < Math.Min(1.5, 0.4 + fol.Car.V * 0.5)) continue;
 
                     double v0 = car.V0;
                     double aNew = DriverModel.FreeAccel(car.V, v0, d);
@@ -985,8 +1023,10 @@ namespace Traffic.Sim
                         aFol = DriverModel.Idm(f.V, Math.Max(f.V0, 1), fol.Gap, f.V - car.V, f.Drv.Headway, DriverModel.Derive(f.Drv));
                         folCost = Math.Min(0, aFol - f.ANext);
                     }
+                    // A car that is already stopped cannot be made to brake any harder.
                     double bSafe = d.BSafe + urgency * 2.5;
-                    if (aFol < -bSafe || aNew < -bSafe) continue;
+                    bool folStopped = fol != null && fol.Car.V < 0.5;
+                    if ((!folStopped && aFol < -bSafe) || (car.V >= 0.5 && aNew < -bSafe)) continue;
                     double bias = side == need ? 0.3 + urgency * 3 : 0;
                     double score = aNew - car.ALead + car.Drv.Politeness * folCost + bias;
                     if (score > d.LcThreshold && (!have || score > bestScore))
@@ -1128,8 +1168,8 @@ namespace Traffic.Sim
                     if (lane.Kind == LaneKind.Connector)
                     {
                         car.Junc = new JunctionMemo();
-                        car.Turn = PickTurn();
-                        Passes++;
+                        car.Turn = PickTurn(Lanes[next]);
+                        if (World.Nodes[lane.Node].Controlled) Passes++; // bends don't count
                     }
                     lane = Lanes[next];
                 }

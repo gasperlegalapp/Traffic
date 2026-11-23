@@ -167,11 +167,17 @@ namespace Traffic.Lab
 
             GUILayout.Space(10);
             GUILayout.Label("INTERSECTION", heading);
-            GUILayout.BeginHorizontal();
-            bool signal = Sim.Junction.Mode == JunctionMode.Signal;
-            if (GUILayout.Button("Traffic light", signal ? buttonOn : button)) Sim.SetMode(JunctionMode.Signal);
-            if (GUILayout.Button("All-way stop", signal ? button : buttonOn)) Sim.SetMode(JunctionMode.AllWay);
-            GUILayout.EndHorizontal();
+            if (selectedNode < 0)
+            {
+                GUILayout.Label("Click an intersection to change it.", label);
+            }
+            else
+            {
+                JunctionMode mode = Sim.Junctions[selectedNode].Mode;
+                if (GUILayout.Button("Traffic light", mode == JunctionMode.Signal ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.Signal);
+                if (GUILayout.Button("Traffic light with left arrows", mode == JunctionMode.ProtectedLeft ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.ProtectedLeft);
+                if (GUILayout.Button("All-way stop", mode == JunctionMode.AllWay ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.AllWay);
+            }
 
             GUILayout.Space(10);
             GUILayout.Label("SHOW", heading);
@@ -385,7 +391,7 @@ namespace Traffic.Lab
                     }
                     break;
                 case EventType.MouseUp:
-                    if (dragging && dragMoved < 6) Select(CarAt(pixel));
+                    if (dragging && dragMoved < 6) ClickAt(pixel);
                     dragging = false;
                     break;
                 case EventType.ScrollWheel:
@@ -398,7 +404,11 @@ namespace Traffic.Lab
                         paused = true;
                         Sim.Step();
                     }
-                    else if (e.keyCode == KeyCode.Escape) Select(-1);
+                    else if (e.keyCode == KeyCode.Escape)
+                    {
+                        Select(-1);
+                        SelectNode(-1);
+                    }
                     break;
             }
         }

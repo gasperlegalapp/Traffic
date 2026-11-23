@@ -1,27 +1,41 @@
 # Traffic
 
-A traffic game in the making. The first piece is the **Driver Lab**: a small test track for building and tuning how individual drivers behave, before any city building.
+A traffic game in the making, built in Unity 6. The first piece is the **Driver Lab**: a small street grid for building and tuning how individual drivers behave, before any city building.
 
 ## Driver Lab
 
-One four-way intersection whose arms are joined by two loops, so cars circulate forever. One loop has a stretch where the right lane ends and traffic has to merge.
+A three-by-three grid of streets where each road and intersection tests something different:
+
+- **Center:** a traffic light with left-turn arrows. Main St arrives with a left-turn pocket, two through lanes and a right-turn pocket, and allows U-turns. Center Ave has a left-turn pocket and does not allow U-turns.
+- **West and south:** plain traffic lights, where left turns give way to oncoming traffic.
+- **East and north:** all-way stops.
+- **Around the edge:** roads with one or two lanes each way, a right lane that ends, a left lane that ends, and a road that gains a lane.
 
 Every car drives itself:
 
 - follows the car ahead, keeping a time gap (Intelligent Driver Model)
 - reacts late, by its own reaction time
-- changes lanes when it gains something and the gap is safe, and merges out of a lane that ends
-- obeys the traffic light or the all-way stop, and waits for a gap before turning left across oncoming traffic
+- changes lanes when it gains something and the gap is safe, gets into the right lane for its next turn, and merges out of a lane that ends
+- obeys lights, arrows and stop signs, and waits for a gap before turning across traffic
 - brakes too hard when someone cuts it off
 - crashes if all that fails, and blocks the road until cleared
 
-Controls: add cars, pick or tune the driver for new cars, click any car to inspect and retune it live, force a cut-in, switch the intersection between a traffic light and an all-way stop, pause, step and change speed. Drag to pan, scroll or pinch to zoom.
+Controls: add cars, pick or tune the driver for new cars, click a car to inspect and retune it live, click an intersection to change how it is controlled, force a cut-in, pause, step and change speed. Drag to pan, scroll to zoom.
 
 ## Run it
 
+Open the folder in Unity Hub (Add, then Add project from disk) with Unity 6000.6.3f1 and press Play. Everything is created by code, so any scene works.
+
+## Check it without Unity
+
+With the .NET 8 SDK installed:
+
 ```bash
-npm install
-npm run dev
+dotnet test Tools/SimTests
 ```
 
-`npm test` runs the simulation tests. `npm run build` type-checks and builds to `dist/`.
+```bash
+dotnet build Tools/LabCompile
+```
+
+The first runs the simulation tests. The second type-checks all scripts against older Unity reference assemblies.
