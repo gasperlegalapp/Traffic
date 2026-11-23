@@ -24,3 +24,7 @@ A browser traffic game built with Vite, TypeScript and three.js (0.184.0). The c
 `npm install`, `npm run dev`, `npm test`, `npm run build`. `.npmrc` sets `legacy-peer-deps` because npm 10 fails to resolve Vitest's optional peers otherwise.
 
 Headless Chromium in a cloud container renders slowly. When scripting checks, pause the app (`trafficLab.app.paused = true`) and call `trafficLab.sim.step()` directly rather than waiting on real time.
+
+## Unity port (in progress)
+
+The game is moving to Unity on Windows. `Assets/Scripts/Sim/` is a line-for-line C# translation of `src/sim/` (namespace `Traffic.Sim`, class `Simulation`), with no Unity references, and gives identical results to the TypeScript version for the same seed. `Assets/Tests/Sim/` holds the same tests in NUnit. Run them without the Unity editor with `dotnet test Tools/SimTests` (needs the .NET 8 SDK). Keep the C# to language version 9 so Unity can compile it. The Unity project settings and the rendering are not created yet; the web version stays until the Unity driver lab replaces it.

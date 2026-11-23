@@ -2,3 +2,19 @@ node_modules
 dist
 *.log
 .DS_Store
+
+# .NET test runner
+bin/
+obj/
+
+# Unity
+/[Ll]ibrary/
+/[Tt]emp/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Bb]uild/
+/[Bb]uilds/
+*.csproj
+*.sln
+!Tools/SimTests/SimTests.csproj
+.vs/
