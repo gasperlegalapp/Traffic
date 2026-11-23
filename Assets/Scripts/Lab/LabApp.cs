@@ -10,7 +10,7 @@ namespace Traffic.Lab
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Start()
         {
-            if (Object.FindObjectsByType<LabApp>(FindObjectsSortMode.None).Length > 0) return;
+            if (LabApp.Instance != null) return;
             new GameObject("Driver Lab").AddComponent<LabApp>();
         }
     }
@@ -25,6 +25,9 @@ namespace Traffic.Lab
         private const float Feet = 3.28084f;
         /// <summary>Camera tilt away from straight down, radians.</summary>
         private const float Tilt = 0.4f;
+
+        /// <summary>The running lab, if any.</summary>
+        public static LabApp Instance { get; private set; }
 
         public Simulation Sim { get; private set; }
 
@@ -51,6 +54,7 @@ namespace Traffic.Lab
 
         private void Awake()
         {
+            Instance = this;
             world = LabWorld.Build();
             Sim = new Simulation(world, (uint)(System.DateTime.Now.Ticks & 0xffff));
             Sim.OnCrash = (a, b) => Toast("Crash: car " + a.Id + " and car " + b.Id + ".");
@@ -77,7 +81,11 @@ namespace Traffic.Lab
             cam.nearClipPlane = 5;
             cam.farClipPlane = 4000;
 
-            foreach (UnityEngine.Light existing in FindObjectsByType<UnityEngine.Light>(FindObjectsSortMode.None)) existing.enabled = false;
+            // Turn off whatever lights the open scene came with; the lab brings its own sun.
+            foreach (UnityEngine.Light existing in Resources.FindObjectsOfTypeAll<UnityEngine.Light>())
+            {
+                if (existing.gameObject.scene.IsValid()) existing.enabled = false;
+            }
             var sun = new GameObject("Sun").AddComponent<UnityEngine.Light>();
             sun.transform.SetParent(transform, false);
             sun.type = LightType.Directional;
@@ -101,6 +109,11 @@ namespace Traffic.Lab
             float extent = (float)world.Extent * 1.08f;
             dist = Mathf.Max(extent / tan, extent / (tan * aspect));
             target = Vector3.zero;
+        }
+
+        private void OnDestroy()
+        {
+            if (Instance == this) Instance = null;
         }
 
         private void SpawnCars(int n)
