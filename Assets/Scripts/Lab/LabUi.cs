@@ -22,7 +22,7 @@ namespace Traffic.Lab
         private static readonly Color Bad = MeshKit.Hex(0xff5d5d);
 
         private Texture2D white;
-        private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn;
+        private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle;
         private Vector2 labScroll;
         private bool dragging;
         private float dragMoved;
@@ -54,6 +54,8 @@ namespace Traffic.Lab
             tagStyle = new GUIStyle(label) { fontSize = 9, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter, padding = new RectOffset(4, 4, 1, 1) };
             stateStyle = new GUIStyle(tagStyle) { fontSize = 11 };
             button = new GUIStyle(GUI.skin.button) { fontSize = 13, fontStyle = FontStyle.Bold };
+            toggle = new GUIStyle(GUI.skin.toggle) { fontSize = 13 };
+            toggle.normal.textColor = toggle.onNormal.textColor = MeshKit.Hex(0xe7edf0);
             buttonOn = new GUIStyle(button);
             buttonOn.normal.textColor = Accent;
             buttonOn.hover.textColor = Accent;
@@ -72,7 +74,7 @@ namespace Traffic.Lab
             if (showLabels && e.type == EventType.Repaint) DrawTags(scale);
 
             var top = new Rect(12, 12, 430, 54);
-            var lab = new Rect(12, 76, 272, Mathf.Min(560, h - 150));
+            var lab = new Rect(12, 76, 300, Mathf.Min(660, h - 150));
             var transport = new Rect(w / 2 - 150, h - 58, 300, 46);
             var inspector = new Rect(w - 300, h - 500, 288, 488);
             Car car = Sim.CarById(selected);
@@ -134,7 +136,10 @@ namespace Traffic.Lab
         private void DrawLab(Rect r)
         {
             GUILayout.BeginArea(r, panel);
-            labScroll = GUILayout.BeginScrollView(labScroll);
+            // Vertical scrolling only, with the content held narrower than the panel so
+            // the scroll bar never covers the values on the right.
+            labScroll = GUILayout.BeginScrollView(labScroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar);
+            GUILayout.BeginVertical(GUILayout.Width(r.width - 50));
 
             GUILayout.Label("CARS", heading);
             GUILayout.BeginHorizontal();
@@ -170,8 +175,8 @@ namespace Traffic.Lab
 
             GUILayout.Space(10);
             GUILayout.Label("SHOW", heading);
-            showSensors = GUILayout.Toggle(showSensors, " What each car is watching");
-            showLabels = GUILayout.Toggle(showLabels, " What each driver is doing");
+            showSensors = GUILayout.Toggle(showSensors, " What each car is watching", toggle);
+            showLabels = GUILayout.Toggle(showLabels, " What each driver is doing", toggle);
 
             GUILayout.Space(10);
             GUILayout.Label("NEW DRIVERS", heading);
@@ -184,6 +189,7 @@ namespace Traffic.Lab
             DriverSliders(newDriver);
             variation = Slider("Variety", Mathf.RoundToInt(variation * 100) + "%", variation, 0, 1);
 
+            GUILayout.EndVertical();
             GUILayout.EndScrollView();
             GUILayout.EndArea();
         }

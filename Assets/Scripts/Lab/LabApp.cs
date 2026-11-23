@@ -90,13 +90,13 @@ namespace Traffic.Lab
             sun.transform.SetParent(transform, false);
             sun.type = LightType.Directional;
             sun.color = MeshKit.Hex(0xfff1d6);
-            sun.intensity = 1.15f;
+            sun.intensity = 0.8f;
             sun.shadows = LightShadows.Soft;
             sun.shadowStrength = 0.6f;
             sun.transform.rotation = Quaternion.LookRotation(new Vector3(140, -260, 120));
 
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = MeshKit.Hex(0x8a96a0);
+            RenderSettings.ambientLight = MeshKit.Hex(0x4a5258);
             RenderSettings.fog = false;
             QualitySettings.shadowDistance = 1000;
         }
