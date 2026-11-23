@@ -67,7 +67,7 @@ namespace Traffic.Lab
         /// <summary>Throw away the current map and traffic and start another.</summary>
         private void LoadMap(int index)
         {
-            bool crashes = Sim != null && Sim.CrashesEnabled; // crashes are a later feature, so they start off
+            bool crashes = Sim == null || Sim.CrashesEnabled;
             bool rightOnRed = Sim == null || Sim.RightOnRed;
             if (roads != null) roads.Destroy();
             if (carViews != null) carViews.Destroy();
@@ -79,7 +79,12 @@ namespace Traffic.Lab
             Sim = new Simulation(world, (uint)(System.DateTime.Now.Ticks & 0xffff));
             Sim.CrashesEnabled = crashes;
             Sim.RightOnRed = rightOnRed;
-            Sim.OnCrash = (a, b) => Toast("Crash: car " + a.Id + " and car " + b.Id + ".");
+            Sim.OnAccident = accident =>
+            {
+                string kind = accident.Kind == CrashKind.RearEnd ? "Rear-end crash" : accident.Kind == CrashKind.Sideswipe ? "Sideswipe" : accident.Kind == CrashKind.HeadOn ? "Head-on crash" : "Broadside crash";
+                int mph = Mathf.RoundToInt((float)accident.ClosingSpeed * Mph);
+                Toast(accident.Major ? kind + " at " + mph + " mph. The road is blocked until the wrecks are towed." : kind + " at " + mph + " mph, a fender bender. They will move on shortly.");
+            };
             roads = new RoadView(world, transform);
             carViews = new CarViews(transform);
             Fit();

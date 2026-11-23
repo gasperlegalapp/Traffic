@@ -11,7 +11,7 @@ namespace Traffic.Lab
     public sealed partial class LabApp
     {
         private static readonly string[] SliderNames = { "Reaction time", "Speed", "Following gap", "Aggression", "Politeness", "Obeys lights and signs", "Weaving between lanes", "Swerving (drunk)", "Looking away (phone)" };
-        private static readonly string[] StateNames = { "CRUISE", "FOLLOW", "BRAKE", "STOPPING", "WAIT", "YIELD", "LETTING IN", "MERGE", "LANE CHANGE", "STARTLED", "CRASH", "SCARED", "WARY", "LOOKING AWAY" };
+        private static readonly string[] StateNames = { "CRUISE", "FOLLOW", "BRAKE", "STOPPING", "WAIT", "YIELD", "LETTING IN", "MERGE", "LANE CHANGE", "STARTLED", "CRASH", "SCARED", "WARY", "LOOKING AWAY", "RUBBERNECKING" };
         private static readonly float[] Speeds = { 0.25f, 1, 2, 4 };
         private static readonly string[] SpeedNames = { "1/4x", "1x", "2x", "4x" };
 
@@ -389,6 +389,7 @@ namespace Traffic.Lab
                 case CarState.Distracted:
                     return Bad;
                 case CarState.Wary:
+                case CarState.Gawking:
                 case CarState.Stopping:
                 case CarState.Wait:
                 case CarState.Yield:

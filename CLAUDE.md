@@ -22,7 +22,7 @@ A traffic game built in Unity 6 (project version 6000.6.3f1, Built-in Render Pip
 - Roads follow US practice: 12 ft lanes (`LaneW` 3.66 m), 10 ft dashes with 30 ft gaps, and limits of 25, 35 and 65 mph (`CitySpeed`, `ArterialSpeed`, `HighwaySpeed`).
 - A road added with `bridge: true` rises over whatever it crosses (`Lane.Peak`, `Car.Height`). Roads only interact at nodes, so traffic on and under a bridge ignores each other; crash detection skips pairs at different heights.
 - `Node.Controlled` means a real intersection with a light or stop signs. Bends, ramp junctions and map edges are not controlled: no stop lines, no signals, not selectable.
-- `Simulation.CrashesEnabled` is on by default (tests rely on it) and the lab turns it off: a car that would rear-end another is held behind it and counted in `Bumps`, and cars crossing paths pass through each other.
+- Accidents (`Simulation.Collide`): vehicles that overlap crash. Closing speed decides whether it is a fender bender (both stop, then drive on) or a wreck (blocks the road until towed, after `TowAfter`); the angle between them gives the `CrashKind`. Drivers go round a wreck when there is another lane (`Car.BlockedAhead`), and slow to look at one nearby (`Gawking`). With `CrashesEnabled` off, a car that would rear-end another is held behind it and counted in `Bumps`, and cars crossing paths pass through each other.
 
 ## Conventions
 

@@ -22,6 +22,8 @@ namespace Traffic.Sim
         Wary,
         /// <summary>Not looking at the road.</summary>
         Distracted,
+        /// <summary>Slowing down to look at a crash.</summary>
+        Gawking,
     }
 
     /// <summary>The thing that is currently limiting a car's acceleration.</summary>
@@ -58,6 +60,27 @@ namespace Traffic.Sim
         /// <summary>Stopped at a red light and is now turning right through it.</summary>
         public bool RightOnRed;
         public int Order = -1;
+    }
+
+    public enum CrashKind
+    {
+        RearEnd,
+        Sideswipe,
+        Broadside,
+        HeadOn,
+    }
+
+    /// <summary>A record of one collision.</summary>
+    public sealed class Accident
+    {
+        public double Time;
+        public CrashKind Kind;
+        /// <summary>A hard hit that wrecks the vehicles, as opposed to a fender bender they drive away from.</summary>
+        public bool Major;
+        /// <summary>How fast the two were closing, meters per second.</summary>
+        public double ClosingSpeed;
+        public double X, Y;
+        public Car A, B;
     }
 
     public sealed class Car
@@ -117,6 +140,16 @@ namespace Traffic.Sim
         public bool Gone;
         public bool Crashed;
         public double CrashedAt;
+        /// <summary>Wrecked and waiting to be towed, as opposed to stopped after a fender bender.</summary>
+        public bool CrashMajor;
+        /// <summary>When the wreck is towed away, or the driver gets going again after a fender bender.</summary>
+        public double CrashClearAt;
+        /// <summary>Just pulled away from a fender bender: cannot crash again for a moment.</summary>
+        public double CrashImmuneUntil;
+        /// <summary>The car it last hit. The two cannot crash into each other again until they have come apart.</summary>
+        public int CrashPartner = -1;
+        /// <summary>The car ahead is a wreck: get round it.</summary>
+        public bool BlockedAhead;
 
         /// <summary>World pose, refreshed every step.</summary>
         public double X, Y, H;
@@ -199,10 +232,16 @@ namespace Traffic.Sim
         public bool RightOnRed = true;
         /// <summary>Cars that have made it through an intersection.</summary>
         public int Passes;
-        /// <summary>Remove crashed cars after CrashClearAfter seconds.</summary>
+        /// <summary>Clear crashes after a while: wrecks are towed away and fender benders drive off.</summary>
         public bool AutoClear = true;
-        public double CrashClearAfter = 12;
-        public Action<Car, Car> OnCrash;
+        /// <summary>Closing speed, in meters per second, above which a collision wrecks the vehicles (about 11 mph).</summary>
+        public double MajorCrashSpeed = 5;
+        /// <summary>Seconds before a wreck is towed away, and before the drivers in a fender bender move on. Each varies a little.</summary>
+        public double TowAfter = 50;
+        public double FenderBenderDelay = 14;
+        public readonly List<Accident> Accidents = new List<Accident>();
+        public Action<Accident> OnAccident;
+        private readonly List<Car> wrecks = new List<Car>();
 
         private int nextId = 1;
         private readonly List<Entry>[] laneCars;
@@ -499,6 +538,8 @@ namespace Traffic.Sim
                 list.Sort((p, q) => p.S != q.S ? p.S.CompareTo(q.S) : p.Car.Id.CompareTo(q.Car.Id));
             }
             active.Clear();
+            wrecks.Clear();
+            foreach (var car in Cars) if (car.Crashed) wrecks.Add(car);
             foreach (var car in Cars)
             {
                 Lane conn;
@@ -707,6 +748,18 @@ namespace Traffic.Sim
                     v0 = Math.Min(v0, Math.Sqrt(vc * vc + 2 * d.B * 0.6 * look));
                 }
             }
+            // Rubbernecking: slow right down to look at a crash nearby, even one on the other side of the road.
+            bool gawking = false;
+            foreach (Car w in wrecks)
+            {
+                if (w.Lane == car.Lane || Math.Abs(w.Height - car.Height) > 2.5) continue;
+                double wx = w.X - car.X, wy = w.Y - car.Y;
+                if (wx * wx + wy * wy > 35 * 35) continue;
+                gawking = true;
+                v0 = Math.Min(v0, Math.Max(4, lane.SpeedLimit * 0.45));
+                break;
+            }
+
             // A driver who cannot hold a speed drifts above and below what they meant to do.
             if (drv.Swerve > 0) v0 *= 1 + 0.25 * drv.Swerve * Math.Sin(car.WobblePhase * 0.37);
             car.V0 = v0;
@@ -730,6 +783,7 @@ namespace Traffic.Sim
             car.LeaderId = leadId;
             car.Gap = leadGap;
             car.LeadV = leadV;
+            car.BlockedAhead = foundLeader != null && foundLeader.Crashed && leadGap < 30;
             // Nobody wants to sit right behind a car that is all over the road.
             double headway = drv.Headway;
             if (foundLeader != null && foundLeader.Drv.Swerve > 0.3 && drv.Swerve <= 0.3 && d.Nerves > 0.15) headway *= 1.6;
@@ -884,7 +938,7 @@ namespace Traffic.Sim
             else if (binding == Binding.Yield) car.State = CarState.Yield;
             else if (binding == Binding.Coop) car.State = CarState.LettingIn;
             else if (binding == Binding.End) car.State = CarState.Merge;
-            else car.State = CarState.Cruise;
+            else car.State = gawking ? CarState.Gawking : CarState.Cruise;
 
             // Turn signals.
             if (car.ChangingLanes) car.Blinker = car.LcFrom > 0 ? -1 : 1;
@@ -1260,10 +1314,17 @@ namespace Traffic.Sim
                     }
                     else urgency = Geo.Clamp(1 - toSolid / insistOver, 0, 1);
                 }
+                // Stuck behind a wreck: any way round will do, even across a solid line or into a lane for a different turn.
+                bool blocked = car.BlockedAhead;
+                if (blocked)
+                {
+                    need = 0;
+                    urgency = Math.Max(urgency, 0.8);
+                }
                 car.WantSide = urgency > 0.05 ? need : 0;
                 car.Urgency = need != 0 ? urgency : 0;
 
-                if (lane.Connectors != null && World.Nodes[lane.Node].Controlled && remaining < NetworkBuilder.SolidLine) continue;
+                if (!blocked && lane.Connectors != null && World.Nodes[lane.Node].Controlled && remaining < NetworkBuilder.SolidLine) continue;
                 if (car.S < 12) continue;
                 if (lane.IsEntry && car.S < 60) continue; // settle in before changing lanes: traffic is still arriving behind
                 if (Time < car.LcCooldownUntil && urgency < 0.5) continue;
@@ -1284,7 +1345,7 @@ namespace Traffic.Sim
                         // Moving over for a turn: the next lane must allow it or be on the way to one that does.
                         if (lane.Connectors != null && (t.Connectors == null || !(t.Allows(car.Turn) || t.TurnSide[(int)car.Turn] == need))) continue;
                     }
-                    else
+                    else if (!blocked)
                     {
                         if (t.Connectors == null && !t.IsExit && t.Length - tgt.S < 220) continue; // don't hop into a lane that is about to end
                         if (t.Connectors != null && !t.Allows(car.Turn) && remaining < 170) continue;
@@ -1311,7 +1372,7 @@ namespace Traffic.Sim
                     double bSafe = d.BSafe + urgency * 2.5;
                     bool folStopped = fol != null && fol.Car.V < 0.5;
                     if ((!folStopped && aFol < -bSafe) || (car.V >= 0.5 && aNew < -bSafe)) continue;
-                    double bias = (side == need ? 0.3 + urgency * 3 : 0) + 0.25 * car.Drv.Weave;
+                    double bias = (side == need ? 0.3 + urgency * 3 : 0) + 0.25 * car.Drv.Weave + (blocked ? 2.5 : 0);
                     double score = aNew - car.ALead + car.Drv.Politeness * folCost + bias;
                     if (score > d.LcThreshold && (!have || score > bestScore))
                     {
@@ -1322,7 +1383,13 @@ namespace Traffic.Sim
                         bestScore = score;
                     }
                 }
-                if (have) ChangeLane(car, bestSide, bestTarget, bestFol);
+                if (have)
+                {
+                    // Going round a wreck may mean giving up the turn that was planned.
+                    Lane into = bestTarget.Lane;
+                    if (blocked && into.Connectors != null && !into.Allows(car.Turn)) car.Turn = Lanes[into.ConnectorFor(car.Turn)].Turn;
+                    ChangeLane(car, bestSide, bestTarget, bestFol);
+                }
             }
         }
 
@@ -1417,7 +1484,23 @@ namespace Traffic.Sim
             {
                 if (car.Crashed)
                 {
-                    if (AutoClear && Time - car.CrashedAt > CrashClearAfter) removed = true;
+                    if (AutoClear && Time >= car.CrashClearAt)
+                    {
+                        if (car.CrashMajor)
+                        {
+                            // Towed away.
+                            car.Gone = true;
+                            removed = true;
+                        }
+                        else
+                        {
+                            // A fender bender: the drivers have swapped details and move on.
+                            car.Crashed = false;
+                            car.CrashImmuneUntil = Time + 8;
+                            car.State = CarState.Cruise;
+                            UpdatePose(car);
+                        }
+                    }
                     continue;
                 }
                 car.A = car.ANext;
@@ -1499,7 +1582,7 @@ namespace Traffic.Sim
                     car.HistCount = Math.Min(car.HistCount + 1, HistN);
                 }
             }
-            if (removed) Cars.RemoveAll(c => c.Gone || (c.Crashed && Time - c.CrashedAt > CrashClearAfter));
+            if (removed) Cars.RemoveAll(c => c.Gone);
         }
 
         private void DetectCrashes()
@@ -1512,30 +1595,82 @@ namespace Traffic.Sim
                 {
                     Car b = Cars[k];
                     if (a.Crashed && b.Crashed) continue;
+                    if (Time < a.CrashImmuneUntil || Time < b.CrashImmuneUntil) continue;
                     double dx = b.X - a.X;
                     double dy = b.Y - a.Y;
-                    if (dx * dx + dy * dy > 36) continue;
-                    if (Math.Abs(a.Height - b.Height) > 2.5) continue; // one is on a bridge over the other
-                    if (!BoxesOverlap(a, b)) continue;
-                    MarkCrashed(a);
-                    MarkCrashed(b);
-                    Crashes++;
-                    if (OnCrash != null) OnCrash(a, b);
+                    double reach = (a.Len + b.Len) / 2 + 1.5;
+                    bool partners = a.CrashPartner == b.Id || b.CrashPartner == a.Id;
+                    bool touching = dx * dx + dy * dy <= reach * reach && Math.Abs(a.Height - b.Height) <= 2.5 && BoxesOverlap(a, b);
+                    if (partners)
+                    {
+                        // Still tangled from the last crash: that is not a new one. Once apart, they can crash again.
+                        if (!touching)
+                        {
+                            if (a.CrashPartner == b.Id) a.CrashPartner = -1;
+                            if (b.CrashPartner == a.Id) b.CrashPartner = -1;
+                        }
+                        continue;
+                    }
+                    if (touching) Collide(a, b);
                 }
             }
         }
 
-        private void MarkCrashed(Car c)
+        /// <summary>Two vehicles have hit: work out what kind of crash it was and how bad, and stop them where they are.</summary>
+        private void Collide(Car a, Car b)
         {
+            double avx = a.V * Math.Cos(a.H), avy = a.V * Math.Sin(a.H);
+            double bvx = b.V * Math.Cos(b.H), bvy = b.V * Math.Sin(b.H);
+            double closing = Geo.Hypot(avx - bvx, avy - bvy);
+            bool major = closing >= MajorCrashSpeed;
+
+            // The angle between the two says what kind of crash it was.
+            double between = Math.Abs(Math.Atan2(Math.Sin(a.H - b.H), Math.Cos(a.H - b.H)));
+            CrashKind kind;
+            if (between > 2.6) kind = CrashKind.HeadOn;
+            else if (between > 0.5) kind = CrashKind.Broadside;
+            else
+            {
+                // Going the same way: one behind the other, or side by side?
+                double along = Math.Abs((b.X - a.X) * Math.Cos(a.H) + (b.Y - a.Y) * Math.Sin(a.H));
+                kind = along > (a.Len + b.Len) / 2 - 1.5 ? CrashKind.RearEnd : CrashKind.Sideswipe;
+            }
+
+            // Hitting a wreck that is already there joins that crash: everything is cleared together.
+            double wait = major ? TowAfter * (0.8 + 0.5 * Rng.Next()) : FenderBenderDelay * (0.8 + 0.5 * Rng.Next());
+            double clearAt = Time + wait;
+            if (a.Crashed) clearAt = Math.Max(clearAt, a.CrashClearAt);
+            if (b.Crashed) clearAt = Math.Max(clearAt, b.CrashClearAt);
+            bool wrecked = major || (a.Crashed && a.CrashMajor) || (b.Crashed && b.CrashMajor);
+            // A hard hit knocks the vehicles askew.
+            double knock = major ? Math.Min(0.6, closing / 25) : 0.05;
+            MarkCrashed(a, wrecked, clearAt, (Rng.Next() - 0.5) * 2 * knock);
+            MarkCrashed(b, wrecked, clearAt, (Rng.Next() - 0.5) * 2 * knock);
+
+            a.CrashPartner = b.Id;
+            b.CrashPartner = a.Id;
+            Crashes++;
+            var accident = new Accident { Time = Time, Kind = kind, Major = major, ClosingSpeed = closing, X = (a.X + b.X) / 2, Y = (a.Y + b.Y) / 2, A = a, B = b };
+            Accidents.Add(accident);
+            if (Accidents.Count > 50) Accidents.RemoveAt(0);
+            if (OnAccident != null) OnAccident(accident);
+        }
+
+        private void MarkCrashed(Car c, bool major, double clearAt, double spin)
+        {
+            c.CrashMajor = c.CrashMajor && c.Crashed || major;
+            c.CrashClearAt = clearAt;
             if (c.Crashed) return;
             c.Crashed = true;
             c.CrashedAt = Time;
             c.V = 0;
             c.A = 0;
+            c.H += spin;
             c.State = CarState.Crash;
             c.Blinker = 0;
             c.GhostLane = -1;
             c.LcT = c.LcDur;
+            c.Wobble = 0;
         }
 
         /// <summary>Separating-axis test on the two car rectangles, shrunk a little so a near miss is not a crash.</summary>

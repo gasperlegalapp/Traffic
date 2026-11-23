@@ -140,7 +140,7 @@ namespace Traffic.Lab
                 foreach (MeshRenderer r in v.Right) r.sharedMaterial = hazard || (car.Blinker > 0 && blink) ? blinkOn : blinkOff;
                 Color paint = MeshKit.Hex(car.Color);
                 if (car.Flash && time * 3 % 1 < 0.5) paint = Color.Lerp(paint, Color.white, 0.8f);
-                v.Paint.color = car.Crashed ? paint * 0.35f : paint;
+                v.Paint.color = !car.Crashed ? paint : car.CrashMajor ? paint * 0.35f : paint * 0.75f;
                 if (car.Id == selectedId)
                 {
                     ring.gameObject.SetActive(true);

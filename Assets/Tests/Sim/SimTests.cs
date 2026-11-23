@@ -592,6 +592,94 @@ namespace Traffic.Tests
             Assert.AreEqual(0, sim.Cars.Count);
         }
 
+        /// <summary>A stopped car at a red light on the west T's south arm, and a driver who never looks up heading for it.</summary>
+        private static Simulation RearEndSetup(double speed, out Car stopped, out Car late, out Lane[] lanes)
+        {
+            var sim = new Simulation(W, 1);
+            Node node = Grid.NodeAt(1, 0);
+            sim.Junctions[node.Id].Hold = true;
+            sim.Junctions[node.Id].ShowGreen(1, false, 0); // the south arm is red
+            lanes = Grid.Inbound(node, 'S');
+            stopped = sim.AddCar(lanes[0].Id, lanes[0].Length - 6, 0, null, Turn.Straight);
+            var blind = new DriverParams(1.6, 1.3, 0.3, 1, 0, 1) { Distraction = 1 };
+            late = sim.AddCar(lanes[0].Id, lanes[0].Length - 50, speed, blind, Turn.Straight);
+            stopped.LcCooldownUntil = late.LcCooldownUntil = 1e9;
+            late.LapseUntil = 30; // staring at the phone the whole way
+            return sim;
+        }
+
+        [Test]
+        public void AHardRearEndWrecksBothCarsUntilTheyAreTowed()
+        {
+            Car stopped, late;
+            Lane[] lanes;
+            Simulation sim = RearEndSetup(14, out stopped, out late, out lanes);
+            Grid.Run(sim, 8);
+            Assert.AreEqual(1, sim.Crashes);
+            Accident accident = sim.Accidents[0];
+            Assert.AreEqual(CrashKind.RearEnd, accident.Kind);
+            Assert.IsTrue(accident.Major);
+            Assert.IsTrue(stopped.Crashed && late.Crashed);
+            Grid.Run(sim, 80);
+            Assert.IsNull(sim.CarById(stopped.Id), "the wreck should have been towed");
+            Assert.IsNull(sim.CarById(late.Id));
+        }
+
+        [Test]
+        public void AFenderBenderHoldsBothCarsBrieflyThenTheyDriveOn()
+        {
+            Car stopped, late;
+            Lane[] lanes;
+            Simulation sim = RearEndSetup(3.5, out stopped, out late, out lanes);
+            late.Drv.Speed = 0.3; // crawling
+            Grid.Run(sim, 20);
+            Assert.AreEqual(1, sim.Crashes);
+            Assert.IsFalse(sim.Accidents[0].Major);
+            Assert.IsTrue(late.Crashed);
+            Grid.Run(sim, 25);
+            Assert.IsNotNull(sim.CarById(late.Id));
+            Assert.IsFalse(late.Crashed, "after a fender bender the driver should get going again");
+            Assert.AreEqual(1, sim.Crashes, "pulling away should not count as a second crash");
+        }
+
+        [Test]
+        public void TrafficGoesRoundAWreckWhenThereIsAnotherLane()
+        {
+            Car stopped, late;
+            Lane[] lanes;
+            Simulation sim = RearEndSetup(14, out stopped, out late, out lanes);
+            sim.AutoClear = false; // leave the wreck where it is
+            Grid.Run(sim, 8);
+            Assert.IsTrue(late.Crashed);
+            Car behind = sim.AddCar(lanes[0].Id, 20, 8, null, Turn.Straight);
+            Grid.Run(sim, 20);
+            Assert.AreEqual(lanes[1].Id, behind.Lane, "should have moved to the open lane");
+            Assert.IsFalse(behind.Crashed);
+        }
+
+        [Test]
+        public void DriversSlowDownToLookAtACrashOnTheOtherSideOfTheRoad()
+        {
+            Car stopped, late;
+            Lane[] lanes;
+            Simulation sim = RearEndSetup(14, out stopped, out late, out lanes);
+            sim.AutoClear = false;
+            Grid.Run(sim, 8);
+            // A car leaving the intersection southbound passes the wreck going the other way.
+            Lane away = W.Lanes[Grid.Arm(Grid.NodeAt(1, 0), 'S').Outbound[0]];
+            Car passer = sim.AddCar(away.Id, 3, 11, null, Turn.Straight);
+            passer.LcCooldownUntil = 1e9;
+            bool gawked = false;
+            double slowest = double.PositiveInfinity;
+            Grid.Run(sim, 5, () =>
+            {
+                gawked |= passer.State == CarState.Gawking;
+                slowest = Math.Min(slowest, passer.V);
+            });
+            Assert.IsTrue(gawked);
+            Assert.Less(slowest, away.SpeedLimit * 0.7);
+        }
+
         [Test]
         public void ReplaysExactlyFromTheSameSeed()
         {

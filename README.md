@@ -25,7 +25,7 @@ Every car drives itself:
 - obeys lights, arrows and stop signs, and waits for a gap before turning across traffic
 - brakes too hard when someone cuts it off
 - turns right on red after stopping, when there is a gap
-- crashes if all that fails, and blocks the road until cleared (off by default for now; cars that touch are counted as bumps)
+- crashes if all that fails: a fender bender holds both drivers up briefly, and a hard hit leaves wrecks that block the road until they are towed. Other drivers go round a wreck where they can and slow down to look
 
 Special drivers stand out in a loud color and upset everyone around them:
 
