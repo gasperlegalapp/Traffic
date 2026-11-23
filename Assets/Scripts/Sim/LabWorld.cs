@@ -168,8 +168,8 @@ namespace Traffic.Sim
             {
                 Lane from = lanes[fromId];
                 Lane to = lanes[toId];
-                Pose a = from.Path.At(from.Length);
-                Pose b = to.Path.At(0);
+                PathPose a = from.Path.At(from.Length);
+                PathPose b = to.Path.At(0);
                 double chord = Geo.Hypot(b.X - a.X, b.Y - a.Y);
                 Vec[] pts = turn == Turn.Straight ? new[] { a.Point, b.Point } : Geo.Bezier(a, b, 0.5523 * chord / Math.Sqrt(2));
                 var path = new LanePath(pts);

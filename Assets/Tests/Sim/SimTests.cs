@@ -55,7 +55,7 @@ namespace Traffic.Tests
         {
             Lane left = W.Lanes[W.Inbound[0][0]];
             Lane right = W.Lanes[W.Inbound[0][1]];
-            Pose mid = left.Path.At(left.Length / 2);
+            PathPose mid = left.Path.At(left.Length / 2);
             Assert.AreEqual(LabWorld.LaneW, right.Path.Project(mid.X, mid.Y).D, 0.05);
         }
 

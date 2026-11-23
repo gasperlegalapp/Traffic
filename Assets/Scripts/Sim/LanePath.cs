@@ -15,7 +15,7 @@ namespace Traffic.Sim
         }
     }
 
-    public struct Pose
+    public struct PathPose
     {
         public double X;
         public double Y;
@@ -83,14 +83,14 @@ namespace Traffic.Sim
         }
 
         /// <summary>Position and heading at distance s. Outside the path it continues straight.</summary>
-        public Pose At(double s)
+        public PathPose At(double s)
         {
             int i = Segment(s);
             Vec a = Pts[i];
             Vec b = Pts[i + 1];
             double len = Cum[i + 1] - Cum[i];
             double t = (s - Cum[i]) / len;
-            return new Pose { X = a.X + (b.X - a.X) * t, Y = a.Y + (b.Y - a.Y) * t, H = Math.Atan2(b.Y - a.Y, b.X - a.X) };
+            return new PathPose { X = a.X + (b.X - a.X) * t, Y = a.Y + (b.Y - a.Y) * t, H = Math.Atan2(b.Y - a.Y, b.X - a.X) };
         }
 
         public double RadiusAt(double s)
@@ -182,7 +182,7 @@ namespace Traffic.Sim
         }
 
         /// <summary>Cubic Bezier from pose a to pose b, sampled as a polyline.</summary>
-        public static Vec[] Bezier(Pose a, Pose b, double k, int samples = 24)
+        public static Vec[] Bezier(PathPose a, PathPose b, double k, int samples = 24)
         {
             double p1x = a.X + Math.Cos(a.H) * k, p1y = a.Y + Math.Sin(a.H) * k;
             double p2x = b.X - Math.Cos(b.H) * k, p2y = b.Y - Math.Sin(b.H) * k;

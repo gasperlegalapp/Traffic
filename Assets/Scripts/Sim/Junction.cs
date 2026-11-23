@@ -8,7 +8,7 @@ namespace Traffic.Sim
         AllWay,
     }
 
-    public enum Light
+    public enum SignalLight
     {
         Green,
         Yellow,
@@ -59,15 +59,15 @@ namespace Traffic.Sim
         }
 
         /// <summary>The light an arm shows right now (0 north, 1 east, 2 south, 3 west).</summary>
-        public Light ArmState(int arm)
+        public SignalLight ArmState(int arm)
         {
-            return Mode == JunctionMode.AllWay ? Light.Stop : StateFor(arm, Phase);
+            return Mode == JunctionMode.AllWay ? SignalLight.Stop : StateFor(arm, Phase);
         }
 
         /// <summary>The light an arm showed at an earlier time.</summary>
-        public Light ArmState(int arm, double at)
+        public SignalLight ArmState(int arm, double at)
         {
-            if (Mode == JunctionMode.AllWay) return Light.Stop;
+            if (Mode == JunctionMode.AllWay) return SignalLight.Stop;
             int phase = Phase;
             for (int i = log.Count - 1; i >= 0; i--)
             {
@@ -80,13 +80,13 @@ namespace Traffic.Sim
             return StateFor(arm, phase);
         }
 
-        private static Light StateFor(int arm, int phase)
+        private static SignalLight StateFor(int arm, int phase)
         {
             bool northSouth = arm % 2 == 0;
             bool mine = northSouth ? phase < 3 : phase >= 3;
-            if (!mine) return Light.Red;
+            if (!mine) return SignalLight.Red;
             int k = phase % 3;
-            return k == 0 ? Light.Green : k == 1 ? Light.Yellow : Light.Red;
+            return k == 0 ? SignalLight.Green : k == 1 ? SignalLight.Yellow : SignalLight.Red;
         }
     }
 }

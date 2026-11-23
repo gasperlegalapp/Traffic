@@ -169,7 +169,7 @@ namespace Traffic.Sim
             const double step = 0.25;
             for (double s = 0; s <= a.Length + 1e-6; s += step)
             {
-                Pose p = a.At(Math.Min(s, a.Length));
+                PathPose p = a.At(Math.Min(s, a.Length));
                 if (b.Project(p.X, p.Y).D < ConflictDist)
                 {
                     if (first < 0) first = s;
@@ -185,7 +185,7 @@ namespace Traffic.Sim
         {
             for (double s = 0; s <= a.Length; s += 0.25)
             {
-                Pose p = a.At(s);
+                PathPose p = a.At(s);
                 if (b.Project(p.X, p.Y).D > DivergeDist) return s;
             }
             return a.Length;

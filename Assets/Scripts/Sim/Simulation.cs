@@ -330,7 +330,7 @@ namespace Traffic.Sim
 
         private void UpdatePose(Car car)
         {
-            Pose p = Lanes[car.Lane].Path.At(car.S);
+            PathPose p = Lanes[car.Lane].Path.At(car.S);
             car.Cx = p.X;
             car.Cy = p.Y;
             car.X = p.X + Math.Sin(p.H) * car.Lat;
@@ -749,14 +749,14 @@ namespace Traffic.Sim
             }
 
             if (j.Run) return true;
-            Light light = jn.ArmState(lane.Arm, Time - car.Drv.Reaction);
+            SignalLight light = jn.ArmState(lane.Arm, Time - car.Drv.Reaction);
             bool ok;
-            if (light == Light.Green)
+            if (light == SignalLight.Green)
             {
                 j.Yellow = YellowChoice.Undecided;
                 ok = true;
             }
-            else if (light == Light.Yellow)
+            else if (light == SignalLight.Yellow)
             {
                 if (j.Yellow == YellowChoice.Undecided)
                 {
@@ -800,9 +800,9 @@ namespace Traffic.Sim
             if (uf + foe.Len / 2 > 0) return true;
             if (Junction.Mode == JunctionMode.AllWay) return foe.Junc.Released;
             if (foe.Junc.Run) return true;
-            Light light = Junction.ArmState(foeConn.FromArm);
-            if (light == Light.Green) return true;
-            if (light == Light.Yellow) return foe.Junc.Yellow == YellowChoice.Go || (foe.Junc.Yellow == YellowChoice.Undecided && -uf - foe.Len / 2 < 40);
+            SignalLight light = Junction.ArmState(foeConn.FromArm);
+            if (light == SignalLight.Green) return true;
+            if (light == SignalLight.Yellow) return foe.Junc.Yellow == YellowChoice.Go || (foe.Junc.Yellow == YellowChoice.Undecided && -uf - foe.Len / 2 < 40);
             return foe.Junc.Yellow == YellowChoice.Go && foe.V > 2;
         }
 
@@ -811,7 +811,7 @@ namespace Traffic.Sim
         {
             if (Junction.Mode == JunctionMode.AllWay) return 1e6 - (car.Junc.Order >= 0 ? car.Junc.Order : 1e5);
             bool crossed = u + car.Len / 2 > 0;
-            if (crossed && Junction.ArmState(conn.FromArm) != Light.Green) return 4; // clearing the box
+            if (crossed && Junction.ArmState(conn.FromArm) != SignalLight.Green) return 4; // clearing the box
             if (car.Junc.Run) return 0; // red-light runner
             return conn.Turn == Turn.Left ? 2 : 3; // left turns give way to oncoming traffic
         }
