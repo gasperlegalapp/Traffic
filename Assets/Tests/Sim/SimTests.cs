@@ -321,6 +321,165 @@ namespace Traffic.Tests
             Assert.Greater(sim.Passes - halfway, 200);
         }
 
+        [TestCase(true)]
+        [TestCase(false)]
+        public void TurnsRightOnRedOnlyWhenAllowedAndOnlyAfterStopping(bool allowed)
+        {
+            var sim = new Simulation(W, 1);
+            sim.RightOnRed = allowed;
+            Node node = Grid.NodeAt(1, 0); // west T
+            Junction jn = sim.Junctions[node.Id];
+            jn.Hold = true;
+            jn.ShowGreen(1, false, 0); // east-west green: the south arm stays red
+            Lane lane = Grid.Inbound(node, 'S')[1]; // right lane: straight or right
+            Car car = sim.AddCar(lane.Id, lane.Length - 60, 11, null, Turn.Right);
+            car.LcCooldownUntil = 1e9;
+            double slowest = double.PositiveInfinity;
+            Grid.Run(sim, 25, () =>
+            {
+                if (car.Lane == lane.Id && lane.Length - car.S < 8) slowest = Math.Min(slowest, car.V);
+            });
+            Assert.Less(slowest, 0.4, "should stop at the red first");
+            Assert.AreEqual(allowed ? 1 : 0, sim.Passes);
+            Assert.AreEqual(0, sim.Crashes);
+        }
+
+        [Test]
+        public void WaitsForCrossTrafficBeforeTurningRightOnRed()
+        {
+            var sim = new Simulation(W, 1);
+            Node node = Grid.NodeAt(1, 0); // west T: Main St leaves to the east
+            Junction jn = sim.Junctions[node.Id];
+            jn.Hold = true;
+            jn.ShowGreen(0, false, 0); // north-south green: the east arm (Main St westbound) is red
+            Lane right = Grid.Inbound(node, 'E')[1]; // turns right, to the north
+            Lane through = Grid.Inbound(node, 'S')[1]; // northbound through traffic, into the same lane
+            Car turner = sim.AddCar(right.Id, right.Length - 12, 4, null, Turn.Right);
+            for (int i = 0; i < 4; i++) sim.AddCar(through.Id, through.Length - 25 - i * 14, 10, null, Turn.Straight).LcCooldownUntil = 1e9;
+            int passesWhenTurnerWent = -1;
+            Grid.Run(sim, 30, () =>
+            {
+                bool onNewRoad = turner.Lane != right.Id && W.Lanes[turner.Lane].Kind == LaneKind.Road;
+                if (passesWhenTurnerWent < 0 && onNewRoad) passesWhenTurnerWent = sim.Passes;
+            });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.AreEqual(5, sim.Passes);
+            Assert.GreaterOrEqual(passesWhenTurnerWent, 3, "the turner should let most of the stream go first");
+        }
+
+        [Test]
+        public void AManiacPushesThroughARedLightAndFrightensCrossTraffic()
+        {
+            var sim = new Simulation(W, 1);
+            Node node = Grid.NodeAt(1, 0);
+            Junction jn = sim.Junctions[node.Id];
+            jn.Hold = true;
+            jn.ShowGreen(0, false, 0); // north-south green: Main St westbound is red
+            Lane red = Grid.Inbound(node, 'E')[0]; // turns left, across the northbound stream
+            Lane green = Grid.Inbound(node, 'S')[0];
+            Car maniac = sim.AddCar(red.Id, red.Length - 25, 8, SpecialDriver.All[0].Make(), Turn.Left);
+            var others = new List<Car>();
+            for (int i = 0; i < 5; i++) others.Add(sim.AddCar(green.Id, green.Length - 45 - i * 15, 10, null, Turn.Straight));
+            foreach (Car c in others) c.LcCooldownUntil = 1e9;
+            bool scared = false;
+            Grid.Run(sim, 30, () => scared |= others.Any(c => c.State == CarState.Scared));
+            Assert.AreNotEqual(red.Id, maniac.Lane, "the maniac should not have waited for green");
+            Assert.IsTrue(scared, "someone should have been frightened");
+            Assert.AreEqual(0, sim.Crashes);
+        }
+
+        [Test]
+        public void ADriverOnThePhoneLooksAwayAndADrunkDriverDrifts()
+        {
+            var sim = new Simulation(W, 3);
+            Car phone = sim.SpawnSpecial(SpecialDriver.All[2]);
+            Car drunk = sim.SpawnSpecial(SpecialDriver.All[3]);
+            bool lookedAway = false;
+            double drift = 0;
+            Grid.Run(sim, 60, () =>
+            {
+                lookedAway |= phone.State == CarState.Distracted;
+                drift = Math.Max(drift, Math.Abs(drunk.Wobble));
+            });
+            Assert.IsTrue(lookedAway);
+            Assert.Greater(drift, 0.8, "the drunk driver should stray over the lane line");
+            Assert.AreEqual("ON PHONE", phone.Special);
+        }
+
+        [Test]
+        public void OrdinaryDriversHangBackFromADrunkDriverInTheNextLane()
+        {
+            var sim = new Simulation(W, 1);
+            Lane[] lanes = Grid.Inbound(Grid.NodeAt(1, 0), 'S');
+            DriverParams slowDrunk = SpecialDriver.All[3].Make();
+            slowDrunk.Speed = 0.6;
+            Car drunk = sim.AddCar(lanes[0].Id, 40, 7, slowDrunk, Turn.Straight);
+            Car other = sim.AddCar(lanes[1].Id, 10, 12, null, Turn.Straight);
+            drunk.LcCooldownUntil = other.LcCooldownUntil = 1e9;
+            bool wary = false;
+            double furthestAhead = double.NegativeInfinity;
+            Grid.Run(sim, 6, () =>
+            {
+                wary |= other.State == CarState.Wary;
+                furthestAhead = Math.Max(furthestAhead, other.S - drunk.S);
+            });
+            Assert.IsTrue(wary);
+            Assert.Less(furthestAhead, 0, "should not pass the drunk driver");
+        }
+
+        [Test]
+        public void WithCrashesOffACarThatReactsTooLateIsHeldBehindTheOneItHit()
+        {
+            var sim = new Simulation(W, 1);
+            sim.CrashesEnabled = false;
+            Node node = Grid.NodeAt(1, 0);
+            sim.Junctions[node.Id].Hold = true;
+            sim.Junctions[node.Id].ShowGreen(1, false, 0); // the south arm is red
+            Lane lane = Grid.Inbound(node, 'S')[0];
+            Car stopped = sim.AddCar(lane.Id, lane.Length - 6, 0, null, Turn.Straight);
+            var blind = new DriverParams(1.6, 1.3, 0.3, 1, 0, 1) { Distraction = 1 };
+            Car late = sim.AddCar(lane.Id, lane.Length - 60, 14, blind, Turn.Straight);
+            stopped.LcCooldownUntil = late.LcCooldownUntil = 1e9;
+            late.LapseUntil = 20; // staring at the phone the whole way
+            double closest = double.PositiveInfinity;
+            Grid.Run(sim, 10, () => closest = Math.Min(closest, stopped.S - late.S));
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.GreaterOrEqual(sim.Bumps, 1);
+            Assert.Greater(closest, late.Len - 0.6, "the cars should not end up inside each other");
+        }
+
+        [Test]
+        public void TheGridKeepsMovingWithSpecialDriversInTheMix()
+        {
+            var sim = new Simulation(W, 21);
+            sim.CrashesEnabled = false;
+            for (int i = 0; i < 60; i++) sim.Spawn(DriverParams.Normal, 0.4);
+            foreach (SpecialDriver kind in SpecialDriver.All)
+            {
+                Assert.IsNotNull(sim.SpawnSpecial(kind));
+                Assert.IsNotNull(sim.SpawnSpecial(kind));
+            }
+            var stopped = new Dictionary<int, double>();
+            double longestStop = 0;
+            Action watch = () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    double t;
+                    stopped.TryGetValue(c.Id, out t);
+                    t = c.V < 0.1 ? t + Simulation.Dt : 0;
+                    stopped[c.Id] = t;
+                    longestStop = Math.Max(longestStop, t);
+                }
+            };
+            Grid.Run(sim, 240, watch);
+            int halfway = sim.Passes;
+            Grid.Run(sim, 240, watch);
+            Assert.Greater(halfway, 150);
+            Assert.Greater(sim.Passes - halfway, 150);
+            Assert.Less(longestStop, 180, "a car sat still for three minutes");
+        }
+
         [Test]
         public void ReplaysExactlyFromTheSameSeed()
         {

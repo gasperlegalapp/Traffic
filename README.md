@@ -18,7 +18,15 @@ Every car drives itself:
 - changes lanes when it gains something and the gap is safe, gets into the right lane for its next turn, and merges out of a lane that ends
 - obeys lights, arrows and stop signs, and waits for a gap before turning across traffic
 - brakes too hard when someone cuts it off
-- crashes if all that fails, and blocks the road until cleared
+- turns right on red after stopping, when there is a gap
+- crashes if all that fails, and blocks the road until cleared (off by default for now; cars that touch are counted as bumps)
+
+Special drivers stand out in a loud color and upset everyone around them:
+
+- **Maniac:** speeds, tailgates, weaves, and pushes through red lights. Drivers with a green brake hard and freeze for a moment.
+- **Slowpoke:** far under the limit with a huge gap.
+- **On phone:** keeps looking away, so reacts very late and sits at green lights.
+- **Drunk:** cannot hold a lane or a speed. Other drivers hang back and will not pass.
 
 Controls: add cars, pick or tune the driver for new cars, click a car to inspect and retune it live, click an intersection to change how it is controlled, force a cut-in, pause, step and change speed. Drag to pan, scroll to zoom.
 

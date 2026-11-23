@@ -19,10 +19,22 @@ namespace Traffic.Sim
         /// <summary>0 to 1: chance of obeying each red light or stop sign.</summary>
         public double Compliance = 1;
 
+        // Quirks: all zero for an ordinary driver.
+
+        /// <summary>0 to 1: darts between lanes for the slightest gain, into gaps others would not take.</summary>
+        public double Weave;
+        /// <summary>0 to 1: cannot hold the lane or a steady speed (drunk).</summary>
+        public double Swerve;
+        /// <summary>0 to 1: how much of the time the driver is not looking at the road (on the phone).</summary>
+        public double Distraction;
+
+        /// <summary>The six main dials.</summary>
         public const int Count = 6;
+        /// <summary>Main dials plus quirks.</summary>
+        public const int Total = 9;
 
         /// <summary>Lowest and highest value of each dial, in the order used by Get and Set.</summary>
-        public static readonly double[,] Ranges = { { 0.1, 1.6 }, { 0.6, 1.4 }, { 0.5, 2.6 }, { 0, 1 }, { 0, 1 }, { 0, 1 } };
+        public static readonly double[,] Ranges = { { 0.1, 1.6 }, { 0.5, 1.6 }, { 0.3, 2.6 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 } };
 
         public DriverParams()
         {
@@ -52,7 +64,10 @@ namespace Traffic.Sim
                 case 2: return Headway;
                 case 3: return Aggression;
                 case 4: return Politeness;
-                default: return Compliance;
+                case 5: return Compliance;
+                case 6: return Weave;
+                case 7: return Swerve;
+                default: return Distraction;
             }
         }
 
@@ -65,7 +80,10 @@ namespace Traffic.Sim
                 case 2: Headway = v; break;
                 case 3: Aggression = v; break;
                 case 4: Politeness = v; break;
-                default: Compliance = v; break;
+                case 5: Compliance = v; break;
+                case 6: Weave = v; break;
+                case 7: Swerve = v; break;
+                default: Distraction = v; break;
             }
         }
 
@@ -80,6 +98,41 @@ namespace Traffic.Sim
             new KeyValuePair<string, Func<DriverParams>>("Normal", () => Normal),
             new KeyValuePair<string, Func<DriverParams>>("Pushy", () => Pushy),
             new KeyValuePair<string, Func<DriverParams>>("Sleepy", () => Sleepy),
+        };
+    }
+
+    /// <summary>A driver who stands out: unusual dials, a loud color, and a name shown over the car.</summary>
+    public sealed class SpecialDriver
+    {
+        public string Name;
+        public string Blurb;
+        /// <summary>Paint color as 0xRRGGBB.</summary>
+        public int Color;
+        public bool Flash;
+        public Func<DriverParams> Make;
+
+        public static readonly SpecialDriver[] All =
+        {
+            new SpecialDriver
+            {
+                Name = "MANIAC", Blurb = "Speeds, tailgates, weaves, and pushes through red lights", Color = 0xc02bff, Flash = true,
+                Make = () => new DriverParams(0.25, 1.45, 0.35, 1, 0, 0) { Weave = 1 },
+            },
+            new SpecialDriver
+            {
+                Name = "SLOWPOKE", Blurb = "Far under the limit with a huge gap", Color = 0x00e5ff,
+                Make = () => new DriverParams(0.9, 0.55, 2.6, 0, 1, 1),
+            },
+            new SpecialDriver
+            {
+                Name = "ON PHONE", Blurb = "Keeps looking away: reacts very late and sits at green lights", Color = 0xffee00,
+                Make = () => new DriverParams(1.5, 0.95, 1.2, 0.4, 0.5, 0.9) { Distraction = 0.8, Swerve = 0.12 },
+            },
+            new SpecialDriver
+            {
+                Name = "DRUNK", Blurb = "Cannot hold a lane or a speed, slow to react, careless about lights", Color = 0xff5a00, Flash = true,
+                Make = () => new DriverParams(1.4, 0.9, 1.0, 0.6, 0.3, 0.5) { Swerve = 1, Distraction = 0.2 },
+            },
         };
     }
 
@@ -102,6 +155,8 @@ namespace Traffic.Sim
         public double BSafe;
         /// <summary>0 to 1: how hard the driver overreacts when startled.</summary>
         public double Nerves;
+        /// <summary>Seconds the driver waits after one lane change before considering another.</summary>
+        public double LcCooldown;
     }
 
     public static class DriverModel
@@ -118,10 +173,11 @@ namespace Traffic.Sim
                 B = 1.8 + 1.7 * g,
                 S0 = 2.4 - 1.0 * g,
                 ALat = 1.8 + 1.6 * g,
-                LcTime = 3.6 - 1.6 * g,
-                LcThreshold = 0.15 + 0.45 * (1 - g),
-                BSafe = 2.5 + 2.5 * g,
+                LcTime = (3.6 - 1.6 * g) * (1 - 0.4 * p.Weave),
+                LcThreshold = (0.15 + 0.45 * (1 - g)) * (1 - 0.9 * p.Weave),
+                BSafe = 2.5 + 2.5 * g + 3 * p.Weave,
                 Nerves = 1 - g,
+                LcCooldown = (2 + 3 * (1 - g)) * (1 - 0.85 * p.Weave),
             };
         }
 

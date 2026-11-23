@@ -16,6 +16,12 @@ namespace Traffic.Sim
         LaneChange,
         Startled,
         Crash,
+        /// <summary>Braking hard because someone is breaking the rules in front of them.</summary>
+        Scared,
+        /// <summary>Hanging back from a car that is all over the road.</summary>
+        Wary,
+        /// <summary>Not looking at the road.</summary>
+        Distracted,
     }
 
     /// <summary>The thing that is currently limiting a car's acceleration.</summary>
@@ -28,6 +34,8 @@ namespace Traffic.Sim
         Coop,
         End,
         Startle,
+        Scare,
+        Hazard,
     }
 
     public enum YellowChoice
@@ -47,6 +55,8 @@ namespace Traffic.Sim
         /// <summary>All-way stop: when the car came to rest at the line (negative if it has not), and whether it has been let go.</summary>
         public double Arrival = -1;
         public bool Released;
+        /// <summary>Stopped at a red light and is now turning right through it.</summary>
+        public bool RightOnRed;
         public int Order = -1;
     }
 
@@ -84,6 +94,24 @@ namespace Traffic.Sim
         public JunctionMemo Junc = new JunctionMemo();
         public double StartleAt;
         public double StartleUntil;
+        /// <summary>Frightened by a rule-breaker: braking to a stop until this time.</summary>
+        public double ScareUntil;
+        public double NextScare;
+
+        /// <summary>Name shown over a special driver's car; null for ordinary drivers.</summary>
+        public string Special;
+        /// <summary>The car's paint flashes.</summary>
+        public bool Flash;
+        /// <summary>Sideways drift of a driver who cannot hold the lane (positive is right).</summary>
+        public double Wobble;
+        public double WobblePhase;
+        /// <summary>Looking away from the road until this time.</summary>
+        public double LapseUntil;
+        public double NextLapse;
+        public double LeadV;
+        public double NextBump;
+        /// <summary>Seconds spent stopped inside an intersection.</summary>
+        public double BoxWait;
         public bool Crashed;
         public double CrashedAt;
 
@@ -134,6 +162,8 @@ namespace Traffic.Sim
         private static readonly double[] CurveLook = { 0, 8, 16, 28, 42, 60 };
         /// <summary>Distance over which a driver who must change lanes gets steadily more insistent.</summary>
         private const double MandatoryDist = 150;
+        /// <summary>A car counts as inside an intersection once its nose is this far past the stop line. Overshooting by less does not.</summary>
+        private const double Committed = 0.5;
 
         private static readonly int[] CarColors = { 0xf25f5c, 0xffe066, 0x70c1b3, 0x4ea8de, 0xf4a261, 0xe9ecef, 0xb388eb, 0x8ac926, 0xff8fab, 0x90e0ef };
 
@@ -146,6 +176,12 @@ namespace Traffic.Sim
         public int Tick;
         public Rng Rng;
         public int Crashes;
+        /// <summary>With crashes off: times a car ran into the back of another and was simply held behind it.</summary>
+        public int Bumps;
+        /// <summary>When false, cars that touch are not wrecked: a car is held behind the one it hit, and cars that cross paths pass through each other.</summary>
+        public bool CrashesEnabled = true;
+        /// <summary>Allow turning right at a red light after stopping.</summary>
+        public bool RightOnRed = true;
         /// <summary>Cars that have made it through an intersection.</summary>
         public int Passes;
         /// <summary>Remove crashed cars after CrashClearAfter seconds.</summary>
@@ -157,6 +193,8 @@ namespace Traffic.Sim
         private readonly List<Entry>[] laneCars;
         private readonly List<ActiveCar> active = new List<ActiveCar>();
         private readonly double[] minRad;
+        private Car foundLeader;
+        private bool scareSeen;
 
         private struct Entry
         {
@@ -261,6 +299,23 @@ namespace Traffic.Sim
             return null;
         }
 
+        /// <summary>Drop one special driver onto the road. Returns null when the track is full.</summary>
+        public Car SpawnSpecial(SpecialDriver kind)
+        {
+            Car car = Spawn(kind.Make(), 0);
+            if (car == null) return null;
+            car.Special = kind.Name;
+            car.Color = kind.Color;
+            car.Flash = kind.Flash;
+            return car;
+        }
+
+        /// <summary>Pushy enough to force a way through once committed to breaking a rule.</summary>
+        private static bool IsBully(Car car)
+        {
+            return car.Drv.Aggression > 0.7;
+        }
+
         public void RemoveCar(int id)
         {
             Cars.RemoveAll(c => c.Id == id);
@@ -357,7 +412,7 @@ namespace Traffic.Sim
             {
                 Lane conn;
                 double u;
-                if (JunctionCoord(car, out conn, out u) && (u + car.Len / 2 > 0 || car.Junc.Released))
+                if (JunctionCoord(car, out conn, out u) && (u + car.Len / 2 > Committed || car.Junc.Released))
                 {
                     active.Add(new ActiveCar { Car = car, Conn = conn, U = u });
                 }
@@ -369,8 +424,9 @@ namespace Traffic.Sim
             PathPose p = Lanes[car.Lane].Path.At(car.S);
             car.Cx = p.X;
             car.Cy = p.Y;
-            car.X = p.X + Math.Sin(p.H) * car.Lat;
-            car.Y = p.Y - Math.Cos(p.H) * car.Lat;
+            double side = car.Lat + car.Wobble;
+            car.X = p.X + Math.Sin(p.H) * side;
+            car.Y = p.Y - Math.Cos(p.H) * side;
             car.H = p.H;
         }
 
@@ -453,10 +509,12 @@ namespace Traffic.Sim
             double bestGap = double.PositiveInfinity;
             double bestV = 0;
             int bestId = -1;
+            foundLeader = null;
             void Consider(Entry e, double g)
             {
                 if (g < bestGap)
                 {
+                    foundLeader = e.Car;
                     bestGap = g;
                     bestV = e.Car.V;
                     bestId = e.Car.Id;
@@ -540,6 +598,8 @@ namespace Traffic.Sim
                     v0 = Math.Min(v0, Math.Sqrt(vc * vc + 2 * d.B * 0.6 * look));
                 }
             }
+            // A driver who cannot hold a speed drifts above and below what they meant to do.
+            if (drv.Swerve > 0) v0 *= 1 + 0.25 * drv.Swerve * Math.Sin(car.WobblePhase * 0.37);
             car.V0 = v0;
 
             double free = DriverModel.FreeAccel(car.V, v0, d);
@@ -560,6 +620,10 @@ namespace Traffic.Sim
             FindLeader(car, out leadGap, out leadV, out leadId);
             car.LeaderId = leadId;
             car.Gap = leadGap;
+            car.LeadV = leadV;
+            // Nobody wants to sit right behind a car that is all over the road.
+            double headway = drv.Headway;
+            if (foundLeader != null && foundLeader.Drv.Swerve > 0.3 && drv.Swerve <= 0.3 && d.Nerves > 0.15) headway *= 1.6;
             int i = Tick % ObsN;
             car.ObsGap[i] = (float)Math.Min(leadGap, 1e6);
             car.ObsV[i] = (float)leadV;
@@ -571,7 +635,7 @@ namespace Traffic.Sim
                 // what arrives late is news of the other car changing speed.
                 double closing = car.V - car.ObsV[j];
                 double gapNow = car.ObsGap[j] - closing * delay * Dt;
-                Use(DriverModel.Idm(car.V, v0, gapNow, closing, drv.Headway, d), Binding.Leader);
+                Use(DriverModel.Idm(car.V, v0, gapNow, closing, headway, d), Binding.Leader);
             }
             car.ALead = leadGap < Lookahead ? Math.Min(free, DriverModel.Idm(car.V, v0, leadGap, car.V - leadV, drv.Headway, d)) : free;
 
@@ -597,7 +661,44 @@ namespace Traffic.Sim
             }
             double jsDist;
             Binding jsKind;
+            scareSeen = false;
             if (JunctionStop(car, lane, d, v0, out jsDist, out jsKind)) StopFor(jsDist, jsKind);
+
+            // Someone pushing through a red light inches into the intersection rather than charging it.
+            if (car.Junc.Run && (lane.Kind == LaneKind.Connector || (lane.Connectors != null && lane.Length - car.S - half < 12)))
+            {
+                Use(DriverModel.FreeAccel(car.V, Math.Min(v0, 3.5), d), Binding.Free);
+            }
+
+            // A rule-breaker is forcing through ahead: ordinary drivers slam on the brakes and sit there a moment.
+            if (scareSeen && d.Nerves > 0.15 && Time > car.NextScare && lane.Kind != LaneKind.Connector)
+            {
+                car.ScareUntil = Time + 1.5 + 1.5 * d.Nerves;
+                car.NextScare = car.ScareUntil + 4;
+            }
+            // Never freeze in the middle of the intersection: once in, keep going.
+            if (Time < car.ScareUntil && lane.Kind != LaneKind.Connector) Use(car.V > 0.3 ? -d.B * (1.3 + 1.2 * d.Nerves) : -1, Binding.Scare);
+
+            // Hang back from a car in the next lane that keeps drifting out of its own.
+            if (lane.Kind == LaneKind.Road && drv.Swerve <= 0.3 && d.Nerves > 0.15)
+            {
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    foreach (int id in pass == 0 ? lane.Lefts : lane.Rights)
+                    {
+                        foreach (var e in laneCars[id])
+                        {
+                            Car m = e.Car;
+                            if (e.Ghost || m.Crashed || m.Drv.Swerve <= 0.3 || m.V < 1) continue;
+                            Projection pr = lane.Path.Project(m.Cx, m.Cy);
+                            if (pr.D > World.LaneWidth * 1.4) continue;
+                            double g = pr.S - m.Len / 2 - (car.S + half);
+                            if (g < -6 || g > 30) continue;
+                            Use(Math.Max(DriverModel.Idm(car.V, v0, Math.Max(g, 0.5), car.V - m.V, drv.Headway, d), -d.B), Binding.Hazard);
+                        }
+                    }
+                }
+            }
 
             // Courtesy: ease off for a car ahead in the next lane that needs to merge in.
             if (drv.Politeness > 0.15 && lane.Kind == LaneKind.Road)
@@ -637,7 +738,23 @@ namespace Traffic.Sim
 
             car.ANext = Geo.Clamp(acc, -DriverModel.MaxBrake, d.A);
 
-            if (binding == Binding.Startle) car.State = CarState.Startled;
+            // Looking at the phone: the driver just keeps doing what they were doing.
+            bool lapsing = false;
+            if (drv.Distraction > 0.02)
+            {
+                if (Time >= car.NextLapse && Time >= car.LapseUntil)
+                {
+                    car.LapseUntil = Time + 1 + 3.5 * drv.Distraction * Rng.Next();
+                    car.NextLapse = car.LapseUntil + (2 + 10 * (1 - drv.Distraction)) * (0.5 + Rng.Next());
+                }
+                lapsing = Time < car.LapseUntil;
+                if (lapsing) car.ANext = 0;
+            }
+
+            if (lapsing) car.State = CarState.Distracted;
+            else if (binding == Binding.Scare) car.State = CarState.Scared;
+            else if (binding == Binding.Hazard) car.State = CarState.Wary;
+            else if (binding == Binding.Startle) car.State = CarState.Startled;
             else if (car.ChangingLanes) car.State = CarState.LaneChange;
             else if (binding == Binding.Leader) car.State = acc < -1.5 ? CarState.Brake : CarState.Follow;
             else if (binding == Binding.Line) car.State = car.V < 0.5 ? CarState.Wait : CarState.Stopping;
@@ -679,7 +796,7 @@ namespace Traffic.Sim
                 if (dLine > 90) return false;
                 conn = PlannedConn(car, lane);
                 u = car.S - lane.Length;
-                if (dLine > -0.5 && !MayEnter(car, lane, conn, dLine, d))
+                if (dLine > -Committed && !MayEnter(car, lane, conn, dLine, d))
                 {
                     stopDist = dLine - 0.6;
                     stopKind = Binding.Line;
@@ -694,6 +811,7 @@ namespace Traffic.Sim
             // Inside (or cleared to enter): wait short of any shared stretch another car needs first.
             bool found = false;
             double myFront = u + half;
+            bool outside = myFront <= Committed;
             double vc = Math.Min(v0, ConnSpeed(conn, d));
             double margin = 0.8 + 1.2 * d.Nerves;
             double myRank = Rank(car, conn, u);
@@ -706,6 +824,7 @@ namespace Traffic.Sim
                 double tOut = DriverModel.TravelTime(cz.SOut - (u - half), car.V, d.A, vc);
                 Lane foeConn = Lanes[cz.Foe];
                 bool wait = false;
+                bool blocked = false;
                 ForFoes(foeConn, (foe, uf) =>
                 {
                     if (wait || foe == car) return;
@@ -713,30 +832,50 @@ namespace Traffic.Sim
                     double fRear = uf - foe.Len / 2;
                     if (fRear > cz.FoeOut) return;
                     bool inZone = fFront > cz.FoeIn;
+                    if (!foe.Crashed && foe.Junc.Run && IsBully(foe) && fFront > -4) scareSeen = true;
                     if (foe.Crashed)
                     {
-                        if (inZone) wait = true;
+                        if (inZone) wait = blocked = true;
                         return;
                     }
+                    if (!outside)
+                    {
+                        // Already in the intersection. Don't wait for someone standing behind their
+                        // stop line, and don't sit here for ever: after a while only give way to a
+                        // car physically in the way, and in the end just go.
+                        if (!inZone && fFront <= Committed && foe.V < 1) return;
+                        if (!inZone && car.BoxWait > 10) return;
+                        if (car.BoxWait > 25) return;
+                    }
+                    // A car sitting in the intersection: stay out until it has gone, rather than nosing in after it.
+                    bool sitting = fFront > Committed && foe.V < 1.5;
                     if (!inZone && !IsActive(foe, foeConn, uf)) return;
                     Derived fd = DriverModel.Derive(foe.Drv);
                     double fvc = Math.Min(foeConn.SpeedLimit * foe.Drv.Speed, ConnSpeed(foeConn, fd));
                     double fOut = DriverModel.TravelTime(cz.FoeOut - fRear, foe.V, fd.A, fvc);
                     if (inZone)
                     {
-                        if (tIn - margin * 0.5 < fOut) wait = true;
+                        if (tIn - margin * 0.5 < fOut)
+                        {
+                            wait = true;
+                            blocked |= sitting;
+                        }
                         return;
                     }
                     double fIn = DriverModel.TravelTime(cz.FoeIn - fFront, foe.V, fd.A, fvc);
                     if (tIn - margin < fOut && fIn < tOut + margin)
                     {
                         double fr = Rank(foe, foeConn, uf);
-                        if (fr > myRank || (fr == myRank && (fIn < tIn || (fIn == tIn && foe.Id < car.Id)))) wait = true;
+                        if (fr > myRank || (fr == myRank && (fIn < tIn || (fIn == tIn && foe.Id < car.Id))))
+                        {
+                            wait = true;
+                            blocked |= sitting;
+                        }
                     }
                 });
                 if (wait)
                 {
-                    double dist = dIn - 1.0;
+                    double dist = blocked && outside ? -myFront - 0.6 : dIn - 1.0;
                     if (!found || dist < stopDist)
                     {
                         stopDist = dist;
@@ -768,15 +907,19 @@ namespace Traffic.Sim
                     Conflict cz = conn.ConflictWith(o.Conn.Id);
                     if (cz != null && o.U - o.Car.Len / 2 < cz.FoeOut) return false;
                 }
+                bool jumpsQueue = car.Drv.Compliance < 0.3;
                 foreach (var o in Cars)
                 {
                     JunctionMemo oj = o.Junc;
+                    if (jumpsQueue) break;
                     if (o == car || o.Crashed || oj.Arrival < 0 || oj.Released) continue;
                     Lane ol = Lanes[o.Lane];
                     if (ol.Connectors == null || ol.Node != conn.Node) continue;
                     if (oj.Arrival < j.Arrival || (oj.Arrival == j.Arrival && o.Id < car.Id))
                     {
-                        if (conn.ConflictWith(PlannedConn(o, ol).Id) != null) return false;
+                        // Someone who got here first goes first, unless they have nowhere to go.
+                        Lane theirs = PlannedConn(o, ol);
+                        if (conn.ConflictWith(theirs.Id) != null && ExitHasSpace(o, theirs)) return false;
                     }
                 }
                 if (!ExitHasSpace(car, conn)) return false;
@@ -792,6 +935,7 @@ namespace Traffic.Sim
             if (light == SignalLight.Green)
             {
                 j.Yellow = YellowChoice.Undecided;
+                j.RightOnRed = false;
                 ok = true;
             }
             else if (light == SignalLight.Yellow)
@@ -816,6 +960,16 @@ namespace Traffic.Sim
                     j.Run = Rng.Next() >= car.Drv.Compliance;
                 }
                 ok = j.Run;
+                if (!ok && RightOnRed && conn.Turn == Turn.Right)
+                {
+                    // Right turn on red: come to a stop at the line first, then go when there is a gap.
+                    if (!j.RightOnRed && dLine < 3.2 && car.V < 0.4)
+                    {
+                        if (j.Arrival < 0) j.Arrival = Time;
+                        if (Time - j.Arrival >= 0.5 + 0.7 * d.Nerves) j.RightOnRed = true;
+                    }
+                    ok = j.RightOnRed;
+                }
             }
             return ok && ExitHasSpace(car, conn);
         }
@@ -835,7 +989,7 @@ namespace Traffic.Sim
         /// <summary>Is this car going to go through, so that others must plan around it?</summary>
         private bool IsActive(Car foe, Lane foeConn, double uf)
         {
-            if (uf + foe.Len / 2 > 0) return true;
+            if (uf + foe.Len / 2 > Committed) return true;
             Junction jn = Junctions[foeConn.Node];
             if (jn.Mode == JunctionMode.Free) return true;
             if (jn.Mode == JunctionMode.AllWay) return foe.Junc.Released;
@@ -852,9 +1006,10 @@ namespace Traffic.Sim
             Junction jn = Junctions[conn.Node];
             if (jn.Mode == JunctionMode.Free) return 3;
             if (jn.Mode == JunctionMode.AllWay) return 1e6 - (car.Junc.Order >= 0 ? car.Junc.Order : 1e5);
-            bool crossed = u + car.Len / 2 > 0;
+            bool crossed = u + car.Len / 2 > Committed;
+            if (car.Junc.RightOnRed) return 0.5; // turning right on red: gives way to everyone with a green
+            if (car.Junc.Run) return crossed && IsBully(car) ? 5 : 0; // red-light runner: waits for a gap, unless pushy enough to force it
             if (crossed && jn.State(conn.FromArm, conn.Turn) != SignalLight.Green) return 4; // clearing the box
-            if (car.Junc.Run) return 0; // red-light runner
             if (jn.IsProtected(conn.FromArm, conn.Turn)) return 3; // green arrow
             if (conn.Turn == Turn.UTurn) return 1; // U-turns give way to everyone
             return conn.Turn == Turn.Left ? 2 : 3; // left turns give way to oncoming traffic
@@ -953,7 +1108,7 @@ namespace Traffic.Sim
                     continue;
                 }
                 if (Time < car.NextLcCheck) continue;
-                car.NextLcCheck = Time + 0.4;
+                car.NextLcCheck = Time + 0.4 * (1 - 0.5 * car.Drv.Weave);
                 Derived d = DriverModel.Derive(car.Drv);
                 double half = car.Len / 2;
                 double remaining = lane.Length - car.S - half;
@@ -1021,13 +1176,14 @@ namespace Traffic.Sim
                     {
                         Car f = fol.Car;
                         aFol = DriverModel.Idm(f.V, Math.Max(f.V0, 1), fol.Gap, f.V - car.V, f.Drv.Headway, DriverModel.Derive(f.Drv));
-                        folCost = Math.Min(0, aFol - f.ANext);
+                        // Slowing the car behind counts against the move, but not if it is already stopped.
+                        folCost = f.V < 0.5 ? 0 : Math.Min(0, aFol - f.ANext);
                     }
                     // A car that is already stopped cannot be made to brake any harder.
                     double bSafe = d.BSafe + urgency * 2.5;
                     bool folStopped = fol != null && fol.Car.V < 0.5;
                     if ((!folStopped && aFol < -bSafe) || (car.V >= 0.5 && aNew < -bSafe)) continue;
-                    double bias = side == need ? 0.3 + urgency * 3 : 0;
+                    double bias = (side == need ? 0.3 + urgency * 3 : 0) + 0.25 * car.Drv.Weave;
                     double score = aNew - car.ALead + car.Drv.Politeness * folCost + bias;
                     if (score > d.LcThreshold && (!have || score > bestScore))
                     {
@@ -1056,7 +1212,7 @@ namespace Traffic.Sim
             car.LcFrom = car.Lat;
             car.LcT = 0;
             car.LcDur = d.LcTime;
-            car.LcCooldownUntil = Time + 2 + 3 * d.Nerves;
+            car.LcCooldownUntil = Time + d.LcCooldown;
             car.WantSide = 0;
             car.Urgency = 0;
             Neighbor lead = LeaderIn(t, s, car);
@@ -1138,7 +1294,19 @@ namespace Traffic.Sim
                 }
                 car.A = car.ANext;
                 car.V = Math.Max(0, car.V + car.A * Dt);
+                if (!CrashesEnabled && car.Gap < 0.3 && car.V > car.LeadV)
+                {
+                    // Ran into the car ahead. With crashes off, just hold it there.
+                    if (car.V - car.LeadV > 1.5 && Time >= car.NextBump)
+                    {
+                        Bumps++;
+                        car.NextBump = Time + 3;
+                    }
+                    car.V = car.Gap < 0.05 ? Math.Min(car.V, car.LeadV * 0.8) : car.LeadV;
+                }
                 car.S += car.V * Dt;
+                if (Lanes[car.Lane].Kind == LaneKind.Connector && car.V < 0.3) car.BoxWait += Dt;
+                else if (car.V > 1 || Lanes[car.Lane].Kind != LaneKind.Connector) car.BoxWait = 0;
 
                 double yaw = 0;
                 if (car.ChangingLanes)
@@ -1173,6 +1341,16 @@ namespace Traffic.Sim
                     }
                     lane = Lanes[next];
                 }
+                if (car.Drv.Swerve > 0)
+                {
+                    // Slow, uneven drift from side to side, fading out as the car stops.
+                    car.WobblePhase += Dt * (0.9 + 0.5 * Math.Sin(car.Id * 1.7 + Time * 0.13));
+                    double reach = 1.3 * car.Drv.Swerve * Math.Min(1, car.V / 4) * (lane.Kind == LaneKind.Connector ? 0.4 : 1);
+                    double before = car.Wobble;
+                    car.Wobble = reach * (0.65 * Math.Sin(car.WobblePhase) + 0.35 * Math.Sin(2.3 * car.WobblePhase + 1));
+                    yaw += Math.Atan2(-(car.Wobble - before) / Dt, Math.Max(car.V, 3));
+                }
+                else car.Wobble = 0;
                 UpdatePose(car);
                 car.H += yaw;
 
@@ -1190,6 +1368,7 @@ namespace Traffic.Sim
 
         private void DetectCrashes()
         {
+            if (!CrashesEnabled) return;
             for (int i = 0; i < Cars.Count; i++)
             {
                 Car a = Cars[i];

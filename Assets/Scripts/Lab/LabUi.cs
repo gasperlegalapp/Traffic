@@ -10,8 +10,8 @@ namespace Traffic.Lab
     /// </summary>
     public sealed partial class LabApp
     {
-        private static readonly string[] SliderNames = { "Reaction time", "Speed", "Following gap", "Aggression", "Politeness", "Obeys lights and signs" };
-        private static readonly string[] StateNames = { "CRUISE", "FOLLOW", "BRAKE", "STOPPING", "WAIT", "YIELD", "LETTING IN", "MERGE", "LANE CHANGE", "STARTLED", "CRASH" };
+        private static readonly string[] SliderNames = { "Reaction time", "Speed", "Following gap", "Aggression", "Politeness", "Obeys lights and signs", "Weaving between lanes", "Swerving (drunk)", "Looking away (phone)" };
+        private static readonly string[] StateNames = { "CRUISE", "FOLLOW", "BRAKE", "STOPPING", "WAIT", "YIELD", "LETTING IN", "MERGE", "LANE CHANGE", "STARTLED", "CRASH", "SCARED", "WARY", "LOOKING AWAY" };
         private static readonly float[] Speeds = { 0.25f, 1, 2, 4 };
         private static readonly string[] SpeedNames = { "1/4x", "1x", "2x", "4x" };
 
@@ -74,9 +74,10 @@ namespace Traffic.Lab
             if (showLabels && e.type == EventType.Repaint) DrawTags(scale);
 
             var top = new Rect(12, 12, 430, 54);
-            var lab = new Rect(12, 76, 300, Mathf.Min(660, h - 150));
+            var lab = new Rect(12, 76, 300, Mathf.Min(800, h - 150));
             var transport = new Rect(w / 2 - 150, h - 58, 300, 46);
-            var inspector = new Rect(w - 300, h - 500, 288, 488);
+            float inspectorHeight = Mathf.Min(612, h - 24);
+            var inspector = new Rect(w - 300, h - 12 - inspectorHeight, 288, inspectorHeight);
             Car car = Sim.CarById(selected);
 
             DrawTop(top);
@@ -118,7 +119,8 @@ namespace Traffic.Lab
             Stat("CARS", Sim.Cars.Count.ToString());
             Stat("AVG SPEED", (moving > 0 ? Mathf.RoundToInt((float)(v / moving) * Mph) : 0) + " mph");
             Stat("THROUGH", Sim.Passes.ToString());
-            Stat("CRASHES", Sim.Crashes.ToString());
+            if (Sim.CrashesEnabled) Stat("CRASHES", Sim.Crashes.ToString());
+            else Stat("BUMPS", Sim.Bumps.ToString());
             Stat("CLOCK", t / 60 + ":" + (t % 60).ToString("00"));
             GUILayout.EndHorizontal();
             GUILayout.EndArea();
@@ -166,6 +168,34 @@ namespace Traffic.Lab
             GUILayout.EndHorizontal();
 
             GUILayout.Space(10);
+            GUILayout.Label("SPECIAL DRIVERS", heading);
+            for (int i = 0; i < SpecialDriver.All.Length; i += 2)
+            {
+                GUILayout.BeginHorizontal();
+                for (int k = i; k < i + 2 && k < SpecialDriver.All.Length; k++)
+                {
+                    SpecialDriver kind = SpecialDriver.All[k];
+                    GUI.contentColor = MeshKit.Hex(kind.Color);
+                    bool pressed = GUILayout.Button("+ " + kind.Name, button);
+                    GUI.contentColor = Color.white;
+                    if (!pressed) continue;
+                    Car special = Sim.SpawnSpecial(kind);
+                    if (special == null) Toast("The road is full.");
+                    else
+                    {
+                        Select(special.Id);
+                        Toast(kind.Name + ": " + kind.Blurb + ".");
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.Space(10);
+            GUILayout.Label("RULES", heading);
+            Sim.RightOnRed = GUILayout.Toggle(Sim.RightOnRed, " Right turn on red", toggle);
+            Sim.CrashesEnabled = GUILayout.Toggle(Sim.CrashesEnabled, " Crashes wreck cars", toggle);
+
+            GUILayout.Space(10);
             GUILayout.Label("INTERSECTION", heading);
             if (selectedNode < 0)
             {
@@ -192,7 +222,7 @@ namespace Traffic.Lab
                 if (GUILayout.Button(preset.Key, button)) newDriver = preset.Value();
             }
             GUILayout.EndHorizontal();
-            DriverSliders(newDriver);
+            DriverSliders(newDriver, DriverParams.Count);
             variation = Slider("Variety", Mathf.RoundToInt(variation * 100) + "%", variation, 0, 1);
 
             GUILayout.EndVertical();
@@ -200,9 +230,9 @@ namespace Traffic.Lab
             GUILayout.EndArea();
         }
 
-        private void DriverSliders(DriverParams drv)
+        private void DriverSliders(DriverParams drv, int count)
         {
-            for (int i = 0; i < DriverParams.Count; i++)
+            for (int i = 0; i < count; i++)
             {
                 float lo = (float)DriverParams.Ranges[i, 0];
                 float hi = (float)DriverParams.Ranges[i, 1];
@@ -252,7 +282,9 @@ namespace Traffic.Lab
             GUILayout.BeginHorizontal();
             Rect dot = GUILayoutUtility.GetRect(14, 14, GUILayout.Width(14));
             Fill(new Rect(dot.x, dot.y + 4, 12, 12), MeshKit.Hex(car.Color));
-            GUILayout.Label("Car " + car.Id, big);
+            if (car.Special != null) big.normal.textColor = MeshKit.Hex(car.Color);
+            GUILayout.Label(car.Special ?? "Car " + car.Id, big);
+            big.normal.textColor = MeshKit.Hex(0xe7edf0);
             GUILayout.FlexibleSpace();
             stateStyle.normal.textColor = StateColor(car.State);
             GUILayout.Label(StateNames[(int)car.State], stateStyle);
@@ -269,7 +301,7 @@ namespace Traffic.Lab
             Graph("Gap ahead (ft)", car, car.HistGap, Feet, 0, 200, Info, false);
             Graph("Gas and brake", car, car.HistA, 1, -8, 4, Warn, true);
 
-            DriverSliders(car.Drv);
+            DriverSliders(car.Drv, DriverParams.Total);
 
             GUILayout.Space(8);
             GUILayout.BeginHorizontal();
@@ -331,7 +363,10 @@ namespace Traffic.Lab
                 case CarState.Brake:
                 case CarState.Startled:
                 case CarState.Crash:
+                case CarState.Scared:
+                case CarState.Distracted:
                     return Bad;
+                case CarState.Wary:
                 case CarState.Stopping:
                 case CarState.Wait:
                 case CarState.Yield:
@@ -353,15 +388,17 @@ namespace Traffic.Lab
             foreach (Car car in Sim.Cars)
             {
                 // From far away only the interesting states get a tag.
-                if (zoomedOut && car.Id != selected && (car.State == CarState.Cruise || car.State == CarState.Follow)) continue;
+                bool dull = car.State == CarState.Cruise || car.State == CarState.Follow;
+                if (zoomedOut && car.Id != selected && car.Special == null && dull) continue;
                 Vector3 p = cam.WorldToScreenPoint(MeshKit.ToWorld(car.X, car.Y, 2.4f));
                 if (p.z <= 0 || p.x < -40 || p.x > Screen.width + 40 || p.y < -40 || p.y > Screen.height + 40) continue;
                 string text = StateNames[(int)car.State];
+                if (car.Special != null) text = dull ? car.Special : car.Special + " - " + text;
                 Vector2 size = tagStyle.CalcSize(new GUIContent(text));
                 var r = new Rect(p.x / scale - size.x / 2, (Screen.height - p.y) / scale - size.y - 12, size.x, size.y);
-                bool bad = car.State == CarState.Brake || car.State == CarState.Startled || car.State == CarState.Crash;
+                bool bad = car.State == CarState.Brake || car.State == CarState.Startled || car.State == CarState.Crash || car.State == CarState.Scared;
                 Fill(r, bad ? new Color(0.84f, 0.19f, 0.19f, 0.92f) : new Color(0.04f, 0.055f, 0.063f, 0.78f));
-                tagStyle.normal.textColor = bad ? Color.white : StateColor(car.State);
+                tagStyle.normal.textColor = bad ? Color.white : car.Special != null ? MeshKit.Hex(car.Color) : StateColor(car.State);
                 GUI.Label(r, text, tagStyle);
             }
         }

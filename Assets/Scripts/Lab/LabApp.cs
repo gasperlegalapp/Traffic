@@ -58,6 +58,7 @@ namespace Traffic.Lab
             Instance = this;
             world = LabWorld.Build();
             Sim = new Simulation(world, (uint)(System.DateTime.Now.Ticks & 0xffff));
+            Sim.CrashesEnabled = false; // crashes are a later feature; the control panel can turn them on
             Sim.OnCrash = (a, b) => Toast("Crash: car " + a.Id + " and car " + b.Id + ".");
             roads = new RoadView(world, transform);
             carViews = new CarViews(transform);
