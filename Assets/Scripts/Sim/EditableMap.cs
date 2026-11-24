@@ -90,6 +90,8 @@ namespace Traffic.Sim
         /// <summary>A curved stretch is part of a circle, from A to B, passing through Mid halfway along.</summary>
         public bool Curved;
         public Vec Mid;
+        /// <summary>Part of a roundabout. Where a road meets one there are no lights or signs: traffic going round has the right of way.</summary>
+        public bool Ring;
     }
 
     /// <summary>Where a point lands when it is dropped on the map.</summary>
@@ -136,7 +138,7 @@ namespace Traffic.Sim
         {
             var copy = new EditableMap();
             copy.Nodes.AddRange(Nodes);
-            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid });
+            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring });
             return copy;
         }
 
@@ -450,7 +452,7 @@ namespace Traffic.Sim
                     double u = x.U / upTo;
                     if (Dist(x.At, Nodes[s.A]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.A });
                     else if (Dist(x.At, Nodes[s.B]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.B });
-                    else if (LengthBetween(s, 0, u) < MinLength || LengthBetween(s, u, 1) < MinLength) return "That crosses another road too close to an intersection.";
+                    else if (LengthBetween(s, 0, u) < Shortest(s) || LengthBetween(s, u, 1) < Shortest(s)) return "That crosses another road too close to an intersection.";
                     else
                     {
                         stops.Add(new Stop { T = x.T, Node = Split(i, u) });
@@ -523,7 +525,7 @@ namespace Traffic.Sim
                 return Nodes.Count - 1;
             }
             EditSegment s = Segments[snap.Segment];
-            if (LengthBetween(s, 0, snap.T) < MinLength || LengthBetween(s, snap.T, 1) < MinLength)
+            if (LengthBetween(s, 0, snap.T) < Shortest(s) || LengthBetween(s, snap.T, 1) < Shortest(s))
             {
                 error = "Too close to the end of that road. Join at the end, or further along.";
                 return -1;
@@ -538,7 +540,7 @@ namespace Traffic.Sim
             Vec at = PointAt(s, t);
             Nodes.Add(at);
             int mid = Nodes.Count - 1;
-            var rest = new EditSegment { A = mid, B = s.B, Type = s.Type };
+            var rest = new EditSegment { A = mid, B = s.B, Type = s.Type, Ring = s.Ring };
             if (s.Curved)
             {
                 // Each part of a curve is a piece of the same circle.
@@ -576,6 +578,158 @@ namespace Traffic.Sim
             return found;
         }
 
+        // ---------------------------------------------------------------- roundabouts
+
+        /// <summary>The smallest and largest a roundabout may be, as the radius of the middle of its ring.</summary>
+        public const double MinRing = 16, MaxRing = 150;
+        /// <summary>The shortest stretch of ring allowed between two roads that join it.</summary>
+        public const double RingPiece = 24;
+
+        /// <summary>The shortest piece a road may be cut into: shorter on a roundabout, whose junctions are small.</summary>
+        private static double Shortest(EditSegment s)
+        {
+            return s.Ring ? RingPiece : MinLength;
+        }
+
+        /// <summary>The road a roundabout's ring is made of: one lane, one-way, of the same class as the road chosen.</summary>
+        public static RoadType RingType(RoadType chosen)
+        {
+            if (chosen.OneWay && chosen.Forward == 1 && chosen.Group != RoadType.Highway && RoadType.ById(chosen.Id) != null) return chosen;
+            return RoadType.ById(chosen.Group == RoadType.Street ? "s1" : "a1");
+        }
+
+        /// <summary>
+        /// Build a roundabout: a one-way ring that traffic goes round counter-clockwise. Roads
+        /// that cross the ring are cut where they meet it and join it there; whatever lies
+        /// inside is removed. Returns null if it was built, or a short reason why it cannot be.
+        /// </summary>
+        public string TryAddRoundabout(Vec center, double radius, RoadType chosen, bool commit)
+        {
+            if (radius < MinRing) return "Too small for a roundabout.";
+            if (radius > MaxRing) return "Too big for a roundabout.";
+            EditableMap work = Clone();
+            string error = work.AddRing(center, radius, RingType(chosen));
+            if (error != null) return error;
+            try
+            {
+                work.ToWorld();
+            }
+            catch (Exception)
+            {
+                return "Roads join the roundabout too close together.";
+            }
+            if (commit)
+            {
+                Nodes = work.Nodes;
+                Segments = work.Segments;
+            }
+            return null;
+        }
+
+        private string AddRing(Vec c, double r, RoadType type)
+        {
+            foreach (EditSegment s in Segments) if (s.Ring && Dist(PointAt(s, 0.5), c) < r + 40) return "Too close to another roundabout.";
+
+            // Cut every road where it crosses the ring.
+            var onRing = new List<int>();
+            int existing = Segments.Count;
+            for (int i = 0; i < existing; i++)
+            {
+                List<Crossing> crossings = CircleCrossings(Trace(Segments[i]), c, r);
+                crossings.Sort((m, n) => n.T.CompareTo(m.T));
+                double upTo = 1;
+                foreach (Crossing x in crossings)
+                {
+                    EditSegment s = Segments[i];
+                    if (Dist(x.At, Nodes[s.A]) < 4 || Dist(x.At, Nodes[s.B]) < 4) return "A road ends right on the ring. Move the roundabout a little.";
+                    // The road should come in across the ring, not along it.
+                    Vec before = PointAt(s, Math.Max(0, x.T / upTo - 0.02)), after = PointAt(s, Math.Min(1, x.T / upTo + 0.02));
+                    double along = Math.Atan2(after.Y - before.Y, after.X - before.X), outward = Math.Atan2(x.At.Y - c.Y, x.At.X - c.X);
+                    if (Math.Abs(Math.Cos(along - outward)) < Math.Cos(Math.PI / 2 - MinAngle)) return "A road meets the ring at too shallow an angle.";
+                    int node = Split(i, x.T / upTo);
+                    double d = Dist(Nodes[node], c);
+                    Nodes[node] = new Vec(c.X + (Nodes[node].X - c.X) / d * r, c.Y + (Nodes[node].Y - c.Y) / d * r);
+                    onRing.Add(node);
+                    upTo = x.T;
+                }
+            }
+            // Take away what is inside, and check that what is left outside is long enough to be a road.
+            Segments.RemoveAll(s => Dist(PointAt(s, 0.5), c) < r);
+            foreach (EditSegment s in Segments)
+            {
+                if ((onRing.Contains(s.A) || onRing.Contains(s.B)) && LengthOf(Trace(s)) < MinLength) return "That would leave a road too short beside the roundabout.";
+            }
+
+            // The ring needs at least three points round it, and no stretch of more than half a turn.
+            var angles = new List<KeyValuePair<double, int>>();
+            foreach (int node in onRing) angles.Add(new KeyValuePair<double, int>(Math.Atan2(Nodes[node].Y - c.Y, Nodes[node].X - c.X), node));
+            if (angles.Count == 0)
+            {
+                Nodes.Add(new Vec(c.X + r, c.Y));
+                angles.Add(new KeyValuePair<double, int>(0, Nodes.Count - 1));
+            }
+            while (true)
+            {
+                angles.Sort((m, n) => m.Key.CompareTo(n.Key));
+                int widest = 0;
+                double gap = 0;
+                for (int i = 0; i < angles.Count; i++)
+                {
+                    double g = angles[(i + 1) % angles.Count].Key - angles[i].Key;
+                    if (g <= 0) g += 2 * Math.PI;
+                    if (g > gap)
+                    {
+                        gap = g;
+                        widest = i;
+                    }
+                }
+                if (angles.Count >= 3 && gap <= Math.PI + 0.01) break;
+                double at = angles[widest].Key + gap / 2;
+                if (at > Math.PI) at -= 2 * Math.PI;
+                Nodes.Add(new Vec(c.X + Math.Cos(at) * r, c.Y + Math.Sin(at) * r));
+                angles.Add(new KeyValuePair<double, int>(at, Nodes.Count - 1));
+            }
+            for (int i = 0; i < angles.Count; i++)
+            {
+                double from = angles[i].Key, to = angles[(i + 1) % angles.Count].Key;
+                if (to <= from) to += 2 * Math.PI;
+                if ((to - from) * r < RingPiece) return "Roads join the roundabout too close together.";
+                double mid = (from + to) / 2;
+                Segments.Add(new EditSegment
+                {
+                    A = angles[i].Value, B = angles[(i + 1) % angles.Count].Value, Type = type, Curved = true, Ring = true,
+                    Mid = new Vec(c.X + Math.Cos(mid) * r, c.Y + Math.Sin(mid) * r),
+                });
+            }
+            DropUnusedNodes();
+            return null;
+        }
+
+        /// <summary>Every place a traced line crosses a circle.</summary>
+        private static List<Crossing> CircleCrossings(Vec[] path, Vec c, double r)
+        {
+            var found = new List<Crossing>();
+            int n = path.Length - 1;
+            for (int i = 0; i < n; i++)
+            {
+                // Where along this piece is it exactly r from the center? Solve |p + d f - c| = r for f.
+                Vec p = path[i];
+                double dx = path[i + 1].X - p.X, dy = path[i + 1].Y - p.Y, px = p.X - c.X, py = p.Y - c.Y;
+                double qa = dx * dx + dy * dy, qb = 2 * (px * dx + py * dy), qc = px * px + py * py - r * r;
+                double disc = qb * qb - 4 * qa * qc;
+                if (qa < 1e-12 || disc <= 0) continue;
+                foreach (double sign in new[] { -1.0, 1.0 })
+                {
+                    double f = (-qb + sign * Math.Sqrt(disc)) / (2 * qa);
+                    if (f < 0 || f >= 1) continue;
+                    double t = (i + f) / n;
+                    if (t <= 1e-6 || t >= 1 - 1e-6) continue;
+                    found.Add(new Crossing { T = t, At = new Vec(p.X + dx * f, p.Y + dy * f) });
+                }
+            }
+            return found;
+        }
+
         // ---------------------------------------------------------------- merging
 
         /// <summary>
@@ -608,6 +762,8 @@ namespace Traffic.Sim
             var here = new List<EditSegment>();
             foreach (EditSegment s in Segments) if (s.A == node || s.B == node) here.Add(s);
             if (here.Count != 3) return null;
+            // On a roundabout every way in is a give-way junction, never a merge.
+            foreach (EditSegment s in here) if (s.Ring) return null;
             for (int i = 0; i < 3; i++)
             {
                 EditSegment ramp = here[i], x = here[(i + 1) % 3], y = here[(i + 2) % 3];
@@ -732,7 +888,10 @@ namespace Traffic.Sim
                     fastest = Math.Max(fastest, s.Mph);
                 }
                 joins[i] = JoinAt(i);
-                JunctionMode mode = arms <= 2 || joins[i] != null ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
+                // On a roundabout nobody stops for a light or a sign: whoever is going round goes first.
+                bool onRing = false;
+                foreach (EditSegment s in Segments) if (s.Ring && (s.A == i || s.B == i)) onRing = true;
+                JunctionMode mode = arms <= 2 || joins[i] != null || onRing ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
                 b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
             }
             foreach (EditSegment s in Segments)
@@ -815,7 +974,7 @@ namespace Traffic.Sim
                 sb.Append(s.A).Append(',').Append(s.B).Append(',');
                 if (RoadType.ById(s.Type.Id) != null) sb.Append(s.Type.Id);
                 else sb.Append(s.Lanes).Append(',').Append(s.Mph);
-                if (s.Curved) sb.Append(',').Append(Num(s.Mid.X)).Append(',').Append(Num(s.Mid.Y)).Append(",arc");
+                if (s.Curved) sb.Append(',').Append(Num(s.Mid.X)).Append(',').Append(Num(s.Mid.Y)).Append(s.Ring ? ",ring" : ",arc");
                 sb.Append(';');
             }
             return sb.ToString();
@@ -858,6 +1017,7 @@ namespace Traffic.Sim
                         s.Mid = new Vec(double.Parse(f[rest], CultureInfo.InvariantCulture), double.Parse(f[rest + 1], CultureInfo.InvariantCulture));
                         // Curves saved before they became round arcs bent toward a corner point;
                         // the middle of that older curve is close to where the arc should pass.
+                        s.Ring = f.Length > rest + 2 && f[rest + 2] == "ring";
                         if (f.Length == rest + 2) s.Mid = new Vec((map.Nodes[s.A].X + 2 * s.Mid.X + map.Nodes[s.B].X) / 4, (map.Nodes[s.A].Y + 2 * s.Mid.Y + map.Nodes[s.B].Y) / 4);
                     }
                     map.Segments.Add(s);

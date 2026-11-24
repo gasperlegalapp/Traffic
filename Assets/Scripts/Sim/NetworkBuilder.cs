@@ -159,6 +159,9 @@ namespace Traffic.Sim
             var radius = new double[nodePos.Count];
             // For each node, the direction and half-width of every road end that meets it.
             var endsAt = new List<double[]>[nodePos.Count];
+            // A node where a ramp attaches, and the widest road end at each node.
+            var rampAt = new bool[nodePos.Count];
+            var widest = new double[nodePos.Count];
             for (int i = 0; i < radius.Length; i++)
             {
                 radius[i] = 12;
@@ -172,6 +175,10 @@ namespace Traffic.Sim
                 double halfA = atA * LaneW + r.Inner, halfB = atB * LaneW + r.Inner;
                 radius[r.A] = Math.Max(radius[r.A], halfA + CornerRadius);
                 radius[r.B] = Math.Max(radius[r.B], halfB + CornerRadius);
+                widest[r.A] = Math.Max(widest[r.A], halfA);
+                widest[r.B] = Math.Max(widest[r.B], halfB);
+                if (r.OwnA || r.ShiftA != 0) rampAt[r.A] = true;
+                if (r.OwnB || r.ShiftB != 0) rampAt[r.B] = true;
 
                 // Roughly which way the road leaves each node: for a traced curve, toward where it is a little way out.
                 Vec a = nodePos[r.A], b = nodePos[r.B];
@@ -199,9 +206,11 @@ namespace Traffic.Sim
             {
                 int ends = EndsAt(i);
                 if (ends == 1) radius[i] = 0; // the edge of the map
-                else if (ends > 2 && nodeMode[i] == JunctionMode.Free) radius[i] = FreeRadius; // a ramp leaving or joining
+                else if (ends > 2 && nodeMode[i] == JunctionMode.Free && rampAt[i]) radius[i] = FreeRadius; // a ramp leaving or joining
                 else
                 {
+                    // A junction with no light or signs (a way on to a roundabout) is kept as small as its roads allow.
+                    if (ends > 2 && nodeMode[i] == JunctionMode.Free) radius[i] = Math.Max(FreeRadius, widest[i] + CornerRadius);
                     // Roads that meet at a narrow angle need a bigger intersection, so that they
                     // have come apart by the time they reach their stop lines.
                     List<double[]> around = endsAt[i];

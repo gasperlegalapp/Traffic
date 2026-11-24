@@ -113,7 +113,7 @@ namespace Traffic.Lab
         private int roadChoice;
         /// <summary>The length and price of the road about to be placed, shown beside the pointer.</summary>
         private string previewNote = "";
-        /// <summary>0 draws straight roads, 1 draws curves.</summary>
+        /// <summary>0 draws straight roads, 1 draws curves, 2 places roundabouts.</summary>
         private int shape;
         private bool hasStart;
         private Vec chainStart;
@@ -224,6 +224,7 @@ namespace Traffic.Lab
         {
             if (bulldozing) return "Click a road to remove it.";
             if (!hasStart) return drawing.Segments.Count == 0 ? "Click where the road starts. An open road end is where traffic comes in." : "Click where the road starts. Touch or cross another road to make an intersection.";
+            if (shape == 2) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
             if (shape == 1 && hasEnd) return "Move the pointer to pull the road into a curve, then click. Right-click to go back.";
             return "Click where the road ends. Right-click to stop.";
         }
@@ -264,6 +265,25 @@ namespace Traffic.Lab
             if (bulldozing)
             {
                 if (drawing.RemoveNear(p)) DrawingChanged(before);
+                return;
+            }
+            if (shape == 2)
+            {
+                // A roundabout: the first click is its middle, the second sets its size.
+                if (!hasStart)
+                {
+                    chainStart = p;
+                    hasStart = true;
+                    return;
+                }
+                string refused = drawing.TryAddRoundabout(chainStart, Geo.Hypot(p.X - chainStart.X, p.Y - chainStart.Y), DrawType, true);
+                if (refused != null)
+                {
+                    Toast(refused);
+                    return;
+                }
+                hasStart = false;
+                DrawingChanged(before);
                 return;
             }
             if (!hasStart)
@@ -320,9 +340,14 @@ namespace Traffic.Lab
                 Mark(on, 4, new Color(1, 0.3f, 0.3f, 1));
                 return;
             }
-            Vec end = drawing.SnapTo(hover).Point;
             // White shows up on both grass and asphalt.
             var good = new Color(1, 1, 1, 1);
+            if (shape == 2)
+            {
+                RingGuide(hover, good, faint);
+                return;
+            }
+            Vec end = drawing.SnapTo(hover).Point;
             if (!hasStart)
             {
                 Mark(end, 4, good);
@@ -354,6 +379,34 @@ namespace Traffic.Lab
             if (curved) Mark(hover, 3, faint);
             Mark(chainStart, 4, c);
             Mark(end, 4, c);
+        }
+
+        /// <summary>The roundabout about to be placed: its ring, both edges of it, and what it will cost.</summary>
+        private void RingGuide(Vec hover, Color good, Color faint)
+        {
+            if (!hasStart)
+            {
+                Mark(hover, 4, good);
+                return;
+            }
+            double radius = Geo.Hypot(hover.X - chainStart.X, hover.Y - chainStart.Y);
+            if (previewVersion != editVersion || Geo.Hypot(hover.X - previewAt.X, hover.Y - previewAt.Y) > 0.4)
+            {
+                previewOk = drawing.TryAddRoundabout(chainStart, radius, DrawType, false) == null;
+                previewVersion = editVersion;
+                previewAt = hover;
+            }
+            Color c = previewOk ? good : new Color(1, 0.3f, 0.3f, 1);
+            RoadType ring = EditableMap.RingType(DrawType);
+            foreach (double r in new[] { radius - ring.Width / 2, radius, radius + ring.Width / 2 })
+            {
+                if (r < 1) continue;
+                var circle = new Vec[65];
+                for (int i = 0; i <= 64; i++) circle[i] = new Vec(chainStart.X + System.Math.Cos(i * System.Math.PI / 32) * r, chainStart.Y + System.Math.Sin(i * System.Math.PI / 32) * r);
+                Polyline(circle, r == radius ? faint : c);
+            }
+            Mark(chainStart, 3, c);
+            previewNote = Mathf.RoundToInt((float)radius * 2 * Feet) + " ft across   " + Money(2 * System.Math.PI * radius * ring.CostPerMeter);
         }
 
         private static string Money(double dollars)

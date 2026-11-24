@@ -1024,8 +1024,11 @@ namespace Traffic.Sim
                         // (Only one that is being held there. One that is free to go is about to move.)
                         bool held = foe.StopKind == Binding.Line || foe.StopKind == Binding.Yield;
                         if (!inZone && fFront <= Committed && foe.V < 1 && held) return;
-                        if (!inZone && car.BoxWait > 10) return;
-                        if (car.BoxWait > 25) return;
+                        // Not at a junction without signs, though: there, waiting just short of the
+                        // traffic going by is how giving way works, however long it takes.
+                        bool giveWay = Junctions[conn.Node].Mode == JunctionMode.Free;
+                        if (!giveWay && !inZone && car.BoxWait > 10) return;
+                        if (!giveWay && car.BoxWait > 25) return;
                     }
                     // A car sitting in the intersection: stay out until it has gone, rather than nosing in after it.
                     bool sitting = fFront > Committed && foe.V < 1.5;
@@ -1186,7 +1189,8 @@ namespace Traffic.Sim
         private double Rank(Car car, Lane conn, double u)
         {
             Junction jn = Junctions[conn.Node];
-            if (jn.Mode == JunctionMode.Free) return 3;
+            // No light or signs (a way on to a roundabout): traffic carrying straight on goes first, and whoever is turning in gives way.
+            if (jn.Mode == JunctionMode.Free) return conn.Turn == Turn.Straight ? 3 : 2;
             if (jn.Mode == JunctionMode.AllWay) return 1e6 - (car.Junc.Order >= 0 ? car.Junc.Order : 1e5);
             bool crossed = u + car.Len / 2 > Committed;
             if (car.Junc.RightOnRed) return 0.5; // turning right on red: gives way to everyone with a green

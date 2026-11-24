@@ -58,6 +58,8 @@ namespace Traffic.Ui
         private const double Button = 44, Gap = 6, Pad = 8, BarHeight = 60, Margin = 14;
 
         public static readonly string[] RateNames = { "1/4x", "1x", "2x", "4x" };
+        /// <summary>The shapes a road can be drawn in, by the name of their icon, in the order the tray shows them.</summary>
+        public static readonly string[] ShapeNames = { "straight", "curve", "roundabout" };
         /// <summary>The kinds of road in the tray, in order. Roads under the same heading sit together, in two rows.</summary>
         public DockRoad[] Roads = new DockRoad[0];
 
@@ -145,7 +147,8 @@ namespace Traffic.Ui
                     if (groups.Count == 0 || groups[groups.Count - 1].Key != Roads[i].Group) groups.Add(new KeyValuePair<string, List<int>>(Roads[i].Group, new List<int>()));
                     groups[groups.Count - 1].Value.Add(i);
                 }
-                trayW = 14 + high + 14;
+                int shapeColumns = (ShapeNames.Length + 1) / 2;
+                trayW = 14 + shapeColumns * high + (shapeColumns - 1) * Gap + 14;
                 foreach (KeyValuePair<string, List<int>> g in groups)
                 {
                     int columns = (g.Value.Count + 1) / 2;
@@ -156,8 +159,8 @@ namespace Traffic.Ui
                 trayY = barY - 10 - trayH;
                 double tx = trayX + 14, ty = trayY + 32;
                 headings.Add(new KeyValuePair<string, double>("SHAPE", tx));
-                for (int i = 0; i < 2; i++) Items.Add(new DockItem { Kind = DockKind.Shape, Index = i, X = tx, Y = ty + i * (high + Gap), W = high, H = high });
-                tx += high;
+                for (int i = 0; i < ShapeNames.Length; i++) Items.Add(new DockItem { Kind = DockKind.Shape, Index = i, X = tx + (i / 2) * (high + Gap), Y = ty + (i % 2) * (high + Gap), W = high, H = high });
+                tx += shapeColumns * high + (shapeColumns - 1) * Gap;
                 foreach (KeyValuePair<string, List<int>> g in groups)
                 {
                     tx += between;
@@ -242,7 +245,7 @@ namespace Traffic.Ui
                         break;
                     case DockKind.Shape:
                         if (Shape != item.Index) s.Fill(item.X, item.Y, item.W, item.H, 12, Lift);
-                        Glyph(s, item, item.Index == 0 ? "straight" : "curve", Shape == item.Index, hot, true);
+                        Glyph(s, item, ShapeNames[item.Index], Shape == item.Index, hot, true);
                         break;
                     case DockKind.Rate:
                         {
@@ -398,10 +401,10 @@ namespace Traffic.Ui
                     body = item.Index == 1 ? "Time runs as it does on the street." : item.Index == 0 ? "Slow motion, to watch one driver closely." : "Time runs faster.";
                     break;
                 case DockKind.Shape:
-                    title = item.Index == 0 ? "Straight" : "Curve";
-                    body = item.Index == 0
-                        ? "Click where the road starts, then where it ends. Keep clicking to carry on from there."
-                        : "Click where the road starts and where it ends, then pull it into a round curve with the pointer and click again.";
+                    title = item.Index == 0 ? "Straight" : item.Index == 1 ? "Curve" : "Roundabout";
+                    body = item.Index == 0 ? "Click where the road starts, then where it ends. Keep clicking to carry on from there."
+                        : item.Index == 1 ? "Click where the road starts and where it ends, then pull it into a round curve with the pointer and click again."
+                        : "Click where the middle should be, pull out to the size you want, and click again. Roads that cross the ring join it, and whatever is inside is removed.\nNobody stops for a light: traffic already going round has the right of way.";
                     break;
                 case DockKind.Road:
                     title = Roads[item.Index].Title;

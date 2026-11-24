@@ -431,6 +431,84 @@ namespace Traffic.Tests
             Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Controlled));
         }
 
+        // ---------------------------------------------------------------- roundabouts
+
+        /// <summary>Two streets crossing, with a roundabout dropped on the crossing.</summary>
+        public static EditableMap CrossroadsRoundabout(string road = "s2", double radius = 28)
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T(road), true));
+            Assert.IsNull(map.TryAdd(P(0, -300), P(0, 300), T(road), true));
+            Assert.IsNull(map.TryAddRoundabout(P(0, 0), radius, T(road), true));
+            return map;
+        }
+
+        [Test]
+        public void ARoundaboutCutsTheRoadsThatCrossItAndJoinsThemToARing()
+        {
+            EditableMap map = CrossroadsRoundabout();
+            Assert.AreEqual(4, map.Segments.Count(s => s.Ring));
+            Assert.AreEqual(4, map.Segments.Count(s => !s.Ring), "the four roads outside; the crossing inside is gone");
+            foreach (EditSegment s in map.Segments.Where(s => s.Ring))
+            {
+                Assert.IsTrue(s.Type.OneWay);
+                // Counter-clockwise, as traffic that drives on the right goes round.
+                Vec a = map.Nodes[s.A], b = map.Nodes[s.B];
+                Assert.Greater(a.X * b.Y - a.Y * b.X, 0);
+                foreach (Vec pt in map.Trace(s)) Assert.AreEqual(28, Geo.Hypot(pt.X, pt.Y), 0.05);
+            }
+            World world = map.ToWorld();
+            Assert.AreEqual(0, world.Nodes.Count(n => n.Controlled), "no lights or stop signs on a roundabout");
+            Assert.AreEqual(4, world.Nodes.Count(n => n.Arms.Count == 3));
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.AreEqual(4, loaded.Segments.Count(s => s.Ring));
+        }
+
+        [Test]
+        public void ARoundaboutOnOpenGroundIsAClosedRingARoadCanJoinLater()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAddRoundabout(P(0, 0), 40, T("a2"), true));
+            Assert.GreaterOrEqual(map.Segments.Count, 3);
+            Assert.IsTrue(map.Segments.All(s => s.Ring));
+            Assert.IsNull(map.TryAdd(P(300, 0), P(40, 0), T("a2"), true));
+            Assert.AreEqual(1, map.Segments.Count(s => !s.Ring));
+            Assert.AreEqual(0, map.ToWorld().Nodes.Count(n => n.Controlled));
+            Assert.IsNotNull(map.TryAddRoundabout(P(0, 0), 5, T("s2"), false), "too small");
+            Assert.IsNotNull(map.TryAddRoundabout(P(30, 30), 40, T("s2"), false), "on top of another");
+        }
+
+        [TestCase("s2", 28.0)]
+        [TestCase("a2", 40.0)]
+        [TestCase("a4", 45.0)]
+        public void TrafficGoesRoundARoundaboutGivingWayToThoseOnIt(string road, double radius)
+        {
+            var sim = new Simulation(CrossroadsRoundabout(road, radius).ToWorld(), 3);
+            sim.ArrivalsPerMinute = 5;
+            double longestStop = 0;
+            var stopped = new System.Collections.Generic.Dictionary<int, double>();
+            Action watch = () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    c.Drv.Compliance = 1;
+                    double t;
+                    stopped.TryGetValue(c.Id, out t);
+                    t = c.V < 0.1 ? t + Simulation.Dt : 0;
+                    stopped[c.Id] = t;
+                    longestStop = Math.Max(longestStop, t);
+                }
+            };
+            Grid.Run(sim, 300, watch);
+            int leftByHalfway = sim.Left;
+            Grid.Run(sim, 300, watch);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(leftByHalfway, 40);
+            Assert.Greater(sim.Left - leftByHalfway, 40);
+            Assert.Less(longestStop, 120, "a vehicle sat still for two minutes");
+        }
+
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>
         private static EditableMap Town()
         {
