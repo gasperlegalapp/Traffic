@@ -130,7 +130,7 @@ namespace Traffic.Tests
         public void APointOnTheLineJustMakesAStraightRoad()
         {
             var map = new EditableMap();
-            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), 2, 40, true, P(100, 1)));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), 2, 40, true, P(100, 0.3)));
             Assert.IsFalse(map.Segments[0].Curved);
         }
 
@@ -660,6 +660,176 @@ namespace Traffic.Tests
             // A tight curve cannot become a highway.
             Assert.IsNull(map.TryAdd(P(200, 0), P(240, 40), T("s2"), true, P(228.3, 11.7)));
             Assert.IsNotNull(map.TryReplace(P(228, 12), T("h2"), true));
+        }
+
+        // ---------------------------------------------------------------- flowing curves, moving, reshaping
+
+        private static double Heading(Vec from, Vec to)
+        {
+            return Math.Atan2(to.Y - from.Y, to.X - from.X);
+        }
+
+        private static double Apart(double a, double b)
+        {
+            return Math.Abs(Math.Atan2(Math.Sin(a - b), Math.Cos(a - b)));
+        }
+
+        [Test]
+        public void ABendLeavesTheWayItIsPointedAndArrivesWhereItSays()
+        {
+            // Setting off east and ending up to the north-east: a quarter of a circle of radius 100, turning left.
+            Vec via;
+            Assert.IsTrue(EditableMap.Bend(P(0, 0), 0, P(100, 100), out via));
+            Assert.AreEqual(70.71, via.X, 0.01);
+            Assert.AreEqual(29.29, via.Y, 0.01);
+            Assert.AreEqual(100, EditableMap.CurveRadius(P(0, 0), via, P(100, 100)), 0.01);
+            Assert.AreEqual(Math.PI / 2, EditableMap.BendArrives(P(0, 0), 0, P(100, 100)), 1e-9);
+
+            // Whatever the direction and wherever the end, the curve sets off the way it was pointed.
+            var rng = new Random(5);
+            for (int i = 0; i < 200; i++)
+            {
+                Vec from = P(rng.NextDouble() * 400 - 200, rng.NextDouble() * 400 - 200), to = P(rng.NextDouble() * 400 - 200, rng.NextDouble() * 400 - 200);
+                double heading = rng.NextDouble() * 2 * Math.PI;
+                if (Apart(Heading(from, to), heading) > 2 || !EditableMap.Bend(from, heading, to, out via)) continue;
+                Vec[] trace = EditableMap.Trace(from, to, true, via, 400);
+                Assert.Less(Apart(Heading(trace[0], trace[1]), heading), 0.02, "sets off as pointed");
+                Assert.Less(Apart(Heading(trace[399], trace[400]), EditableMap.BendArrives(from, heading, to)), 0.02, "arrives as promised");
+            }
+
+            Assert.IsFalse(EditableMap.Bend(P(0, 0), 0, P(100, 0), out via), "dead ahead is a straight road");
+            Assert.IsFalse(EditableMap.Bend(P(0, 0), 0, P(-100, 0), out via), "dead behind cannot be reached");
+        }
+
+        [Test]
+        public void CurvesDrawnOneAfterAnotherFlowWithoutACorner()
+        {
+            // A road that sets off east and winds its way north-east, each piece carrying on from the last.
+            var map = new EditableMap();
+            Vec at = P(-250, -150);
+            double heading = 0;
+            foreach (Vec next in new[] { P(-130, -110), P(-40, -10), P(90, 20), P(170, 120), P(260, 150) })
+            {
+                Vec via;
+                bool curved = EditableMap.Bend(at, heading, next, out via);
+                Assert.IsNull(map.TryAdd(at, next, T("s2"), true, curved ? via : (Vec?)null));
+                heading = EditableMap.BendArrives(at, heading, next);
+                at = next;
+            }
+            Assert.AreEqual(5, map.Segments.Count);
+            Assert.AreEqual(5, map.Segments.Count(s => s.Curved));
+            // Where one piece meets the next they point the same way.
+            for (int i = 0; i + 1 < map.Segments.Count; i++)
+            {
+                Vec[] a = map.Trace(map.Segments[i]), b = map.Trace(map.Segments[i + 1]);
+                Assert.Less(Apart(Heading(a[a.Length - 2], a[a.Length - 1]), Heading(b[0], b[1])), 0.12, "pieces " + i + " and " + (i + 1));
+            }
+            // The end of the road knows which way it is going, so the next piece can carry on from it.
+            double flow;
+            Assert.IsTrue(map.FlowAt(P(262, 151), out flow));
+            Assert.Less(Apart(flow, heading), 0.06);
+            Assert.IsFalse(map.FlowAt(P(-40, -10), out flow), "two roads meet there, so there is no one way on");
+            Assert.IsFalse(map.FlowAt(P(0, 200), out flow), "open ground");
+
+            var sim = new Simulation(map.ToWorld(), 3);
+            sim.ArrivalsPerMinute = 8;
+            Grid.Run(sim, 240);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 15);
+        }
+
+        [Test]
+        public void ARoadKnowsWhichWayItRunsWhereANewOneStarts()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 200), T("s2"), true));
+            Assert.AreEqual(0, map.HeadingsAt(P(300, 300)).Count);
+            Assert.AreEqual(2, map.HeadingsAt(P(100, 4)).Count, "both ways along the road");
+            Assert.AreEqual(3, map.HeadingsAt(P(2, 2)).Count, "each road at the junction");
+            Assert.IsTrue(map.HeadingsAt(P(100, 4)).Any(h => Apart(h, 0) < 0.01));
+            Assert.IsTrue(map.HeadingsAt(P(2, 2)).Any(h => Apart(h, Math.PI / 2) < 0.01));
+        }
+
+        [Test]
+        public void APointCanBeMovedAndItsRoadsFollow()
+        {
+            EditableMap map = Cross(2, 25);
+            int middle = map.NodeAt(P(3, 3), 10);
+            Assert.GreaterOrEqual(middle, 0);
+            Assert.AreEqual(-1, map.NodeAt(P(80, 80), 10));
+            double before = map.Cost();
+
+            Assert.IsNull(map.TryMove(middle, P(40, 30), false), "trying it changes nothing");
+            Assert.AreEqual(0, map.Nodes[middle].X, 1e-9);
+            Assert.IsNull(map.TryMove(middle, P(40, 30), true));
+            Assert.AreEqual(40, map.Nodes[middle].X, 1e-9);
+            Assert.AreEqual(4, map.Segments.Count);
+            Assert.Greater(map.Cost(), before, "the roads are longer now");
+            Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Arms.Count == 4));
+
+            // It cannot be moved so far that a road becomes too short, onto another point, or out of a level's building area.
+            Assert.IsNotNull(map.TryMove(middle, P(180, 0), true));
+            Assert.IsNotNull(map.TryMove(middle, P(198, 3), true));
+            map.Bound = 150;
+            Assert.IsNotNull(map.TryMove(middle, P(0, 160), true));
+            map.Bound = 0;
+            Assert.AreEqual(40, map.Nodes[middle].X, 1e-9, "a refused move leaves everything where it was");
+        }
+
+        [Test]
+        public void MovingDoesNotJoinOrCrossRoads()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(-100, 60), P(100, 160), T("s2"), true));
+            int end = map.NodeAt(P(-100, 60), 5);
+            Assert.IsNotNull(map.TryMove(end, P(-100, 4), true), "onto the other road");
+            Assert.IsNotNull(map.TryMove(end, P(-100, -80), true), "across the other road");
+            Assert.IsNull(map.TryMove(end, P(-140, 90), true));
+            // Roads that came with a level stay where they are.
+            map.AddLocked(P(-200, -150), P(200, -150), T("s2"));
+            Assert.IsNotNull(map.TryMove(map.NodeAt(P(200, -150), 5), P(200, -200), true));
+        }
+
+        [Test]
+        public void ACurveKeepsItsShapeWhenItsEndIsMoved()
+        {
+            var map = new EditableMap();
+            Vec via;
+            Assert.IsTrue(EditableMap.Bend(P(0, 0), 0, P(100, 100), out via));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(100, 100), T("s2"), true, via));
+            double turn = EditableMap.CurveTurn(P(0, 0), via, P(100, 100));
+            // Pull the far end out to twice the distance, and round to the north.
+            Assert.IsNull(map.TryMove(map.NodeAt(P(100, 100), 5), P(0, 283), true));
+            EditSegment s = map.Segments[0];
+            Assert.IsTrue(s.Curved);
+            Assert.AreEqual(turn, EditableMap.CurveTurn(map.Nodes[s.A], s.Mid, map.Nodes[s.B]), 1e-6, "still a quarter turn");
+            Assert.AreEqual(200, EditableMap.CurveRadius(map.Nodes[s.A], s.Mid, map.Nodes[s.B]), 0.5, "twice the size");
+        }
+
+        [Test]
+        public void ARoadCanBeBentAndStraightenedAgain()
+        {
+            EditableMap map = Cross(2, 25);
+            Vec on;
+            int east = map.NearestSegment(P(100, 0), 5, out on);
+            Assert.IsFalse(map.Segments[east].Curved);
+            Assert.IsNull(map.TryBend(east, P(100, 40), true));
+            Assert.IsTrue(map.Segments[east].Curved);
+            Vec[] trace = map.Trace(map.Segments[east]);
+            Assert.IsTrue(trace.Any(v => Math.Abs(v.X - 100) < 4 && Math.Abs(v.Y - 40) < 1), "it passes through the point it was pulled to");
+            Assert.AreEqual(4, map.Segments.Count);
+            map.ToWorld();
+
+            Assert.IsNotNull(map.TryBend(east, P(100, 190), true), "too far round, or too tight");
+            Assert.IsTrue(map.Segments[east].Curved);
+            Assert.IsNull(map.TryBend(east, P(100, 1), true), "pulled back into line it is straight again");
+            Assert.IsFalse(map.Segments[east].Curved);
+
+            // Bending one road across another is refused: crossing is what drawing is for.
+            Assert.IsNull(map.TryAdd(P(40, 60), P(160, 60), T("s2"), true));
+            Assert.IsNotNull(map.TryBend(east, P(100, 90), true));
         }
 
         // ---------------------------------------------------------------- levels

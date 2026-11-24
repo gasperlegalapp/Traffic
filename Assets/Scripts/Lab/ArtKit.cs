@@ -18,14 +18,9 @@ namespace Traffic.Lab
         private const int Side = 64;
         private const int PaintStart = 32 * Side, PaintSteps = 32, LeafStart = 48 * Side;
 
-        /// <summary>Leaf colors. The first few are summer greens, then autumn, then the dark greens of pines.</summary>
-        private static readonly int[] LeafColors =
-        {
-            0x5f9e52, 0x4f8c4a, 0x74ad5c, 0x67a04f, 0x86b85e,
-            0xd98b3e, 0xe2b04c, 0xc8643a, 0xcf9a45,
-            0x3f7350, 0x356647, 0x487a52,
-        };
-        public const int SummerLeaves = 5, AutumnLeaves = 4, PineLeaves = 3;
+        /// <summary>Leaf colors: summer greens, close enough together that the trees read as one color.</summary>
+        private static readonly int[] LeafColors = { 0x467d3a, 0x427737, 0x4b843e };
+        public const int SummerLeaves = 3;
 
         private static ArtFile file;
         private static bool tried;

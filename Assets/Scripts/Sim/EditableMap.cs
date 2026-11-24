@@ -403,6 +403,292 @@ namespace Traffic.Sim
             return length * type.CostPerMeter * CostTimes(level);
         }
 
+        // ---------------------------------------------------------------- flowing curves
+
+        /// <summary>
+        /// The round curve that leaves p heading a given way and ends at q, as the point halfway
+        /// round it: pass that to TryAdd as the point to go through. False when q is dead ahead,
+        /// which is a straight road, or dead behind, which no curve reaches.
+        /// </summary>
+        public static bool Bend(Vec p, double heading, Vec q, out Vec via)
+        {
+            via = default(Vec);
+            double dx = q.X - p.X, dy = q.Y - p.Y, chord = Geo.Hypot(dx, dy);
+            if (chord < 1e-6) return false;
+            // How far round from the way the road sets off to the straight line to q: the curve turns twice that.
+            double off = Math.Atan2(dy, dx) - heading;
+            off = Math.Atan2(Math.Sin(off), Math.Cos(off));
+            if (Math.Abs(off) > Math.PI - 0.01) return false;
+            // The curve swings out to the right of the straight line when it turns left, and the other way about.
+            double swing = chord / 2 * Math.Tan(off / 2);
+            if (Math.Abs(swing) < 1e-6) return false;
+            via = new Vec((p.X + q.X) / 2 + dy / chord * swing, (p.Y + q.Y) / 2 - dx / chord * swing);
+            return true;
+        }
+
+        /// <summary>The way a road is heading when it arrives at q, having left p heading a given way on one round curve.</summary>
+        public static double BendArrives(Vec p, double heading, Vec q)
+        {
+            double off = Math.Atan2(q.Y - p.Y, q.X - p.X) - heading;
+            return heading + 2 * Math.Atan2(Math.Sin(off), Math.Cos(off));
+        }
+
+        /// <summary>
+        /// Whether a road from p0 to p1 through via is a curve at all: a point this close to the
+        /// straight line between the ends just makes a straight road. It is kept small, so that a
+        /// gentle curve drawn to carry on smoothly from another road stays a curve.
+        /// </summary>
+        public static bool IsCurve(Vec p0, Vec via, Vec p1)
+        {
+            double t;
+            Vec on;
+            return Project(new[] { p0, p1 }, via, out t, out on) > CurveSlack;
+        }
+
+        private const double CurveSlack = 0.5;
+
+        /// <summary>The radius of the round curve from p0 to p1 through via, or 0 if the three are in a line.</summary>
+        public static double CurveRadius(Vec p0, Vec via, Vec p1)
+        {
+            Vec c;
+            double r, start, sweep;
+            return Arc(p0, via, p1, out c, out r, out start, out sweep) ? r : 0;
+        }
+
+        /// <summary>
+        /// If exactly one road ends at a point, the way it is heading as it gets there: a road
+        /// drawn on from that point in the same direction carries on from it smoothly.
+        /// </summary>
+        public bool FlowAt(Vec p, out double heading)
+        {
+            heading = 0;
+            Snap snap = SnapTo(p);
+            if (snap.Node < 0) return false;
+            EditSegment only = null;
+            foreach (EditSegment s in Segments)
+            {
+                if (s.A != snap.Node && s.B != snap.Node) continue;
+                if (only != null) return false;
+                only = s;
+            }
+            if (only == null) return false;
+            heading = HeadingFrom(only, snap.Node) + Math.PI;
+            return true;
+        }
+
+        /// <summary>
+        /// The directions the roads at a point run in, for lining a new road up with them: each
+        /// road at a point where roads meet, or both ways along a road the point lies on. Empty on open ground.
+        /// </summary>
+        public List<double> HeadingsAt(Vec p)
+        {
+            var headings = new List<double>();
+            Snap snap = SnapTo(p);
+            if (snap.Node >= 0)
+            {
+                foreach (EditSegment s in Segments) if (s.A == snap.Node || s.B == snap.Node) headings.Add(HeadingFrom(s, snap.Node));
+            }
+            else if (snap.Segment >= 0)
+            {
+                EditSegment s = Segments[snap.Segment];
+                Vec before = PointAt(s, Math.Max(snap.T - 0.01, 0)), after = PointAt(s, Math.Min(snap.T + 0.01, 1));
+                double along = Math.Atan2(after.Y - before.Y, after.X - before.X);
+                headings.Add(along);
+                headings.Add(along + Math.PI);
+            }
+            return headings;
+        }
+
+        /// <summary>
+        /// Where a road drawn along a line on the ground would cross roads already there: the
+        /// places that would become intersections. A bridge or tunnel passes over or under instead.
+        /// </summary>
+        public List<Vec> WouldCross(Vec[] path, int level)
+        {
+            var places = new List<Vec>();
+            if (level != 0) return places;
+            foreach (EditSegment s in Segments)
+            {
+                if (s.Level != 0) continue;
+                foreach (Crossing x in Crossings(path, Trace(s))) places.Add(x.At);
+            }
+            return places;
+        }
+
+        // ---------------------------------------------------------------- moving and reshaping
+
+        /// <summary>The point nearest a spot, if one is within reach, or -1.</summary>
+        public int NodeAt(Vec p, double reach)
+        {
+            int node = -1;
+            for (int i = 0; i < Nodes.Count; i++)
+            {
+                double d = Dist(Nodes[i], p);
+                if (d < reach)
+                {
+                    reach = d;
+                    node = i;
+                }
+            }
+            return node;
+        }
+
+        /// <summary>The roads that end at a point.</summary>
+        public List<EditSegment> RoadsAt(int node)
+        {
+            var here = new List<EditSegment>();
+            foreach (EditSegment s in Segments) if (s.A == node || s.B == node) here.Add(s);
+            return here;
+        }
+
+        /// <summary>
+        /// Move a point, without checking the result. The roads that end there follow it, and a
+        /// curved one keeps its shape: it turns and stretches about its other end.
+        /// </summary>
+        public void Shift(int node, Vec to)
+        {
+            Vec from = Nodes[node];
+            foreach (EditSegment s in Segments)
+            {
+                if (!s.Curved || (s.A != node && s.B != node)) continue;
+                Vec hold = Nodes[s.A == node ? s.B : s.A];
+                double was = Dist(hold, from), now = Dist(hold, to);
+                if (was < 1e-6) continue;
+                double turn = Math.Atan2(to.Y - hold.Y, to.X - hold.X) - Math.Atan2(from.Y - hold.Y, from.X - hold.X);
+                double cos = Math.Cos(turn) * now / was, sin = Math.Sin(turn) * now / was;
+                double mx = s.Mid.X - hold.X, my = s.Mid.Y - hold.Y;
+                s.Mid = new Vec(hold.X + mx * cos - my * sin, hold.Y + mx * sin + my * cos);
+            }
+            Nodes[node] = to;
+        }
+
+        /// <summary>
+        /// Reshape a road, without checking the result: it becomes the round curve between its
+        /// ends that passes through a point, or a straight road if the point is nearly in line.
+        /// </summary>
+        public void Reshape(int segment, Vec through)
+        {
+            EditSegment s = Segments[segment];
+            double t;
+            Vec on;
+            s.Curved = Project(new[] { Nodes[s.A], Nodes[s.B] }, through, out t, out on) > 3;
+            s.Mid = through;
+        }
+
+        /// <summary>
+        /// Move a point to a new place, taking the ends of its roads with it. Returns null if it
+        /// was moved, or a short reason why it cannot be. With commit false nothing is changed.
+        /// </summary>
+        public string TryMove(int node, Vec to, bool commit)
+        {
+            EditableMap work = Clone();
+            work.Shift(node, to);
+            string problem = work.ProblemWith(work.RoadsAt(node), node);
+            if (problem != null) return problem;
+            if (commit)
+            {
+                Nodes = work.Nodes;
+                Segments = work.Segments;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Bend a road so that it passes through a point, or straighten it by pulling it back
+        /// into line. Returns null if it was reshaped, or a short reason why it cannot be.
+        /// </summary>
+        public string TryBend(int segment, Vec through, bool commit)
+        {
+            EditableMap work = Clone();
+            work.Reshape(segment, through);
+            string problem = work.ProblemWith(new List<EditSegment> { work.Segments[segment] }, -1);
+            if (problem != null) return problem;
+            if (commit)
+            {
+                Nodes = work.Nodes;
+                Segments = work.Segments;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// What is wrong with roads that have just been moved or reshaped, if anything. Moving
+        /// never joins roads together or makes a new intersection: that is what drawing is for.
+        /// </summary>
+        private string ProblemWith(List<EditSegment> changed, int moved)
+        {
+            if (moved >= 0 && Bound > 0 && (Math.Abs(Nodes[moved].X) > Bound + 0.5 || Math.Abs(Nodes[moved].Y) > Bound + 0.5)) return "That is outside the area you can build in.";
+            foreach (EditSegment s in changed)
+            {
+                if (s.Locked) return "That road came with the level.";
+                if (s.Ring) return "A roundabout cannot be reshaped. Remove it and place it again.";
+            }
+            if (moved >= 0)
+            {
+                for (int i = 0; i < Nodes.Count; i++) if (i != moved && Dist(Nodes[i], Nodes[moved]) < SnapNode) return "Too close to another point. To join roads, draw a road between them.";
+            }
+            var touched = new HashSet<int>();
+            foreach (EditSegment s in changed)
+            {
+                touched.Add(s.A);
+                touched.Add(s.B);
+                Vec pa = Nodes[s.A], pb = Nodes[s.B];
+                if (s.Curved && CurveTurn(pa, s.Mid, pb) > MaxTurn) return "That curve goes too far round.";
+                Vec[] path = Trace(s);
+                if (Bound > 0) foreach (Vec v in path) if (Math.Abs(v.X) > Bound + 0.5 || Math.Abs(v.Y) > Bound + 0.5) return "That is outside the area you can build in.";
+                double length = LengthOf(path);
+                if (length < MinLength) return "Too short: each stretch of road needs to be at least " + Math.Round(MinLength * 3.28084 / 10) * 10 + " ft.";
+                if (s.Level != 0 && length < 2 * RampFor(s.Level) + 20) return "Too short to " + (s.Level > 0 ? "climb that high." : "go down that deep.");
+                if (s.Curved && TightestRadius(path) < s.Type.MinRadius) return "That curve is too tight for this kind of road.";
+                for (int i = 0; i < Nodes.Count; i++)
+                {
+                    if (i == s.A || i == s.B) continue;
+                    double t;
+                    Vec on;
+                    if (!(Project(path, Nodes[i], out t, out on) < SnapRoad && t > 0 && t < 1)) continue;
+                    if (s.Level == 0 || Math.Abs(HeightAlong(s.Level, t * length, length)) < Clearance) return "That runs into another road. Draw a road across to make an intersection.";
+                }
+                foreach (EditSegment o in Segments)
+                {
+                    if (o == s) continue;
+                    bool same = (o.A == s.A && o.B == s.B) || (o.A == s.B && o.B == s.A);
+                    if (same && !o.Curved && !s.Curved) return "There is already a road there.";
+                    Vec[] other = Trace(o);
+                    double otherLength = LengthOf(other);
+                    foreach (Crossing x in Crossings(path, other))
+                    {
+                        // Touching at a shared end is not a crossing.
+                        if ((o.A == s.A || o.B == s.A) && Dist(x.At, pa) < SnapNode * 1.5) continue;
+                        if ((o.A == s.B || o.B == s.B) && Dist(x.At, pb) < SnapNode * 1.5) continue;
+                        if (s.Level == 0 && o.Level == 0) return "That would cross another road. Draw a road across to make an intersection.";
+                        double room = Math.Abs(HeightAlong(s.Level, x.T * length, length) - HeightAlong(o.Level, x.U * otherLength, otherLength));
+                        if (room < Clearance) return "Not enough room between the roads there.";
+                    }
+                    // A moved end must not come to rest on a road it is no part of.
+                    if (moved >= 0 && o.A != moved && o.B != moved && o.Level == 0)
+                    {
+                        double t;
+                        Vec on;
+                        if (Project(other, Nodes[moved], out t, out on) < SnapRoad) return "Too close to another road. To join roads, draw a road between them.";
+                    }
+                }
+            }
+            foreach (int node in touched)
+            {
+                string problem = NodeProblem(node);
+                if (problem != null) return problem;
+            }
+            try
+            {
+                ToWorld();
+            }
+            catch (Exception)
+            {
+                return "That puts two intersections too close together.";
+            }
+            return null;
+        }
+
         // ---------------------------------------------------------------- bridges and tunnels
 
         /// <summary>How far up or down each level is, meters.</summary>
@@ -466,9 +752,7 @@ namespace Traffic.Sim
             Vec c = default(Vec);
             if (through.HasValue)
             {
-                double t0;
-                Vec on;
-                curved = Project(new[] { pa, pb }, through.Value, out t0, out on) > 3;
+                curved = IsCurve(pa, through.Value, pb);
                 c = through.Value;
                 if (curved && CurveTurn(pa, c, pb) > MaxTurn) return "That curve goes too far round. Draw it in two parts.";
             }

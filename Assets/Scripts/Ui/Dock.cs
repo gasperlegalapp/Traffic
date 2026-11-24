@@ -66,10 +66,11 @@ namespace Traffic.Ui
         /// <summary>True on the map the player draws, which is the only one that can be built on.</summary>
         public bool OwnMap;
         public bool Building, Paused, CanUndo, CanRedo;
-        /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen.</summary>
+        /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen, 3 moves and bends what is there.</summary>
         public int Tool;
+        private static readonly string[] ToolIcons = { "road", "bulldoze", "replace", "move" };
         public int Shape, Road, Rate;
-        /// <summary>Snapping: keep new roads to eighth-turn angles, and to a grid.</summary>
+        /// <summary>Snapping: pull new roads into line with the roads they start from, and keep points to a grid.</summary>
         public bool SnapAngles, SnapGrid;
         /// <summary>Which of HeightLevels is chosen.</summary>
         public int Height;
@@ -90,7 +91,8 @@ namespace Traffic.Ui
         private double barX, barY, barW, trayX, trayY, trayW, trayH, noteX, noteY, noteW, width;
         private bool tray, note;
 
-        private bool RoadTool => Building && Tool != 1;
+        /// <summary>The tools that need the tray of road kinds: drawing, and replacing.</summary>
+        private bool RoadTool => Building && (Tool == 0 || Tool == 2);
 
         /// <summary>Work out where everything goes on a screen of the given size.</summary>
         public void Layout(double w, double h)
@@ -108,6 +110,7 @@ namespace Traffic.Ui
             if (Building)
             {
                 Add(DockKind.Tool, 0, Button);
+                Add(DockKind.Tool, 3, Button);
                 Add(DockKind.Tool, 2, Button);
                 Add(DockKind.Tool, 1, Button);
                 Add(DockKind.None, 0, 0);
@@ -247,7 +250,7 @@ namespace Traffic.Ui
                 switch (item.Kind)
                 {
                     case DockKind.Tool:
-                        Glyph(s, item, item.Index == 0 ? "road" : item.Index == 1 ? "bulldoze" : "replace", Tool == item.Index, hot, true);
+                        Glyph(s, item, ToolIcons[item.Index], Tool == item.Index, hot, true);
                         break;
                     case DockKind.Undo:
                         Glyph(s, item, "undo", false, hot, CanUndo);
@@ -423,10 +426,11 @@ namespace Traffic.Ui
             switch (item.Kind)
             {
                 case DockKind.Tool:
-                    title = item.Index == 0 ? "Road" : item.Index == 1 ? "Bulldoze" : "Replace";
-                    body = item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground."
-                        : item.Index == 1 ? "Click a road to remove it."
-                        : "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.";
+                    title = item.Index == 0 ? "Road" : item.Index == 1 ? "Bulldoze" : item.Index == 2 ? "Replace" : "Move";
+                    body = item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground.\nKeys 1, 2 and 3 pick the shape."
+                        : item.Index == 1 ? "Click a road to remove it.\nKey B."
+                        : item.Index == 2 ? "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.\nKey R."
+                        : "Drag a point to move it, and the roads that meet there follow.\nDrag the middle of a road to bend it into a curve, or pull a curve back straight.\nKey M.";
                     break;
                 case DockKind.Undo:
                     title = "Undo";
@@ -463,7 +467,7 @@ namespace Traffic.Ui
                 case DockKind.Shape:
                     title = item.Index == 0 ? "Straight" : item.Index == 1 ? "Curve" : "Roundabout";
                     body = item.Index == 0 ? "Click where the road starts, then where it ends. Keep clicking to carry on from there."
-                        : item.Index == 1 ? "Click where the road starts and where it ends, then pull it into a round curve with the pointer and click again."
+                        : item.Index == 1 ? "Click where the road starts, click again to point it, then sweep it round to where it should end.\nFrom the end of a road it carries on smoothly, with no pointing needed, and each piece flows into the next."
                         : "Click where the middle should be, pull out to the size you want, and click again. Roads that cross the ring join it, and whatever is inside is removed.\nNobody stops for a light: traffic already going round has the right of way.";
                     break;
                 case DockKind.Road:
@@ -472,7 +476,7 @@ namespace Traffic.Ui
                     break;
                 case DockKind.Snap:
                     title = item.Index == 0 ? "Snap to angles" : "Snap to grid";
-                    body = item.Index == 0 ? "Keeps a straight road to north, south, east, west or halfway between, so corners come out square."
+                    body = item.Index == 0 ? "Pulls a straight road into line when it is nearly straight on from the roads it starts from, square to them, or halfway between. On open ground it lines up with the compass."
                         : "Keeps the ends of new roads on a 30 ft grid, so they line up.";
                     body += "\nJoining an existing road always comes first.";
                     break;

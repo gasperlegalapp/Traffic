@@ -4,9 +4,10 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using Traffic.Sim;
 using Traffic.Ui;
 
-/// <summary>Draws the toolbar as a web page: boxes for the panels, images for the icons.</summary>
+/// <summary>Draws the toolbar as a web page: boxes for the panels, images for the icons. Below it, the road pen at work.</summary>
 internal sealed class HtmlSurface : ISurface
 {
     public readonly StringBuilder Html = new StringBuilder();
@@ -150,7 +151,8 @@ internal static class Program
         var states = new (string Name, Action<Dock> Set, DockKind Point, int Index)[]
         {
             ("Building, pointing at the wide avenue", d => { d.Building = true; d.Road = 0; d.CanUndo = true; d.Hint = "Click where the road starts."; }, DockKind.Road, 3),
-            ("Building a curve on a bridge, pointing at bridge level 2", d => { d.Building = true; d.Shape = 1; d.Road = 5; d.Height = 1; d.CanUndo = true; d.CanRedo = true; d.Hint = "Move the pointer to pull the road into a curve, then click."; }, DockKind.Height, 2),
+            ("Building a curve on a bridge, pointing at bridge level 2", d => { d.Building = true; d.Shape = 1; d.Road = 5; d.Height = 1; d.CanUndo = true; d.CanRedo = true; d.Hint = "Sweep the road round to where it should end, and click. Right-click to point it again."; }, DockKind.Shape, 1),
+            ("Moving, pointing at the move tool", d => { d.Building = true; d.Tool = 3; d.CanUndo = true; d.Hint = "Drag a point to move it. Drag the middle of a road to bend it, or pull it back straight."; }, DockKind.Tool, 3),
             ("Bulldozing", d => { d.Building = true; d.Tool = 1; d.Hint = "Click a road to remove it."; }, DockKind.Tool, 1),
             ("Driving on your own map", d => { d.Rate = 1; }, DockKind.Build, 0),
             ("Driving, paused, on a built-in map", d => { d.OwnMap = false; d.Paused = true; d.Rate = 2; }, DockKind.Pause, 0),
@@ -178,11 +180,181 @@ internal static class Program
         s.Html.Append("<div style='left:0;top:" + s.OffsetY + "px;width:" + w + "px;height:130px;background:#141a1e'></div>\n");
         for (int i = 0; i < Icons.Names.Length; i++)
         {
-            s.Icon(Icons.Names[i], 20 + i * 104, 16, 84, 0xFFE7EDF0);
-            s.Text(Icons.Names[i], 20 + i * 104, 104, 84, 16, 11, false, 1, 0xFF8D9AA3);
+            s.Icon(Icons.Names[i], 14 + i * 70, 24, 58, 0xFFE7EDF0);
+            s.Text(Icons.Names[i], 14 + i * 70, 92, 58, 16, 10, false, 1, 0xFF8D9AA3);
         }
+        // The road pen at work: what the player sees on the ground at each step of drawing.
+        var scenes = new StringBuilder();
+        double scenesTop = states.Length * h + 130;
+        int scene = 0;
+        foreach (PenScene one in PenScenes.All())
+        {
+            double x = 16 + (scene % 3) * 420, y = scenesTop + 16 + (scene / 3) * 330;
+            scenes.Append("<div style='left:" + x + "px;top:" + y + "px;width:404px;height:314px'>" + one.Svg(404, 290) + "</div>\n");
+            s.OffsetY = 0;
+            s.Text(one.Name, x, y + 292, 404, 20, 12, false, 0, 0xFF16301C);
+            scene++;
+        }
+        double scenesHigh = 16 + ((scene + 2) / 3) * 330;
+        string backdrop = "<div style='left:0;top:" + scenesTop + "px;width:" + w + "px;height:" + scenesHigh + "px;background:#dfe6dc'></div>\n";
         string page = "<!doctype html><meta charset='utf-8'><style>body{margin:0;font-family:Arial,'Liberation Sans',sans-serif}div,img{position:absolute;box-sizing:border-box}</style>\n"
-            + "<div style='position:relative;width:" + w + "px;height:" + (states.Length * h + 130) + "px'>\n" + s.Html + "</div>";
+            + "<div style='position:relative;width:" + w + "px;height:" + (states.Length * h + 130 + scenesHigh) + "px'>\n" + backdrop + s.Html + scenes + "</div>";
         File.WriteAllText(args.Length > 0 ? args[0] : "toolbar.html", page);
+    }
+}
+
+/// <summary>One moment of drawing a road: a map, the pen in some state, and the pointer somewhere.</summary>
+internal sealed class PenScene
+{
+    public string Name;
+    public RoadPen Pen;
+    /// <summary>The middle of the picture on the map, and how many pixels a meter takes.</summary>
+    public Vec Center;
+    public double Zoom = 1.6;
+
+    private static string N(double v)
+    {
+        return v.ToString("0.#", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>The picture: grass, the roads already built, the pen's ghost over them, and its note beside the pointer.</summary>
+    public string Svg(double w, double h)
+    {
+        Func<Vec, string> at = p => N(w / 2 + (p.X - Center.X) * Zoom) + "," + N(h / 2 - (p.Y - Center.Y) * Zoom);
+        var svg = new StringBuilder("<svg xmlns='http://www.w3.org/2000/svg' width='" + w + "' height='" + h + "' style='border-radius:10px;background:#659d48'>");
+        foreach (EditSegment road in Pen.Map.Segments)
+        {
+            var pts = new StringBuilder();
+            foreach (Vec p in Pen.Map.Trace(road)) pts.Append(at(p) + " ");
+            svg.Append("<polyline points='" + pts + "' fill='none' stroke='#3a3c40' stroke-width='" + N(road.Type.Width * Zoom) + "'/>");
+            svg.Append("<polyline points='" + pts + "' fill='none' stroke='" + (road.Type.OneWay ? "#f1f1ec" : "#efbd2e") + "' stroke-width='1' stroke-dasharray='" + (road.Type.OneWay ? "6 8" : "none") + "'/>");
+        }
+        Ghost g = Pen.Ghost;
+        for (int i = 0; i + 2 < g.Tris.Count; i += 3)
+        {
+            uint c = g.Colors[g.Tris[i]];
+            svg.Append("<polygon points='" + at(g.Points[g.Tris[i]]) + " " + at(g.Points[g.Tris[i + 1]]) + " " + at(g.Points[g.Tris[i + 2]]) + "' fill='rgb(" + ((c >> 16) & 255) + "," + ((c >> 8) & 255) + "," + (c & 255) + ")' fill-opacity='" + ((c >> 24) / 255.0).ToString("0.##", CultureInfo.InvariantCulture) + "'/>");
+        }
+        svg.Append("</svg>");
+        if (Pen.Note.Length > 0)
+        {
+            svg.Append("<div style='left:10px;top:" + (h - 36) + "px;height:26px;padding:0 10px;border-radius:9px;display:flex;align-items:center;white-space:nowrap;font-size:12px;color:#e7edf0;background:" + (Pen.NoteBad ? "rgba(163,41,32,.95)" : "rgba(20,26,30,.95)") + "'>" + System.Net.WebUtility.HtmlEncode(Pen.Note) + "</div>");
+        }
+        return svg.ToString();
+    }
+}
+
+internal static class PenScenes
+{
+    private static Vec P(double x, double y)
+    {
+        return new Vec(x, y);
+    }
+
+    private static RoadPen New(string road, params double[] roads)
+    {
+        var pen = new RoadPen { Map = new EditableMap(), Type = RoadType.ById(road) };
+        // Roads already on the map, as fours: from x, y to x, y.
+        for (int i = 0; i + 3 < roads.Length; i += 4)
+        {
+            string no = pen.Map.TryAdd(P(roads[i], roads[i + 1]), P(roads[i + 2], roads[i + 3]), RoadType.ById("s2"), true);
+            if (no != null) throw new InvalidOperationException(no);
+        }
+        return pen;
+    }
+
+    private static void Click(RoadPen pen, double x, double y, double pixel)
+    {
+        string refused;
+        pen.Hover(P(x, y), pixel);
+        pen.Click(P(x, y), out refused);
+    }
+
+    public static List<PenScene> All()
+    {
+        var all = new List<PenScene>();
+        Action<string, RoadPen, double, double, double, double, double> add = (name, pen, hx, hy, cx, cy, zoom) =>
+        {
+            if (!double.IsNaN(hx)) pen.Hover(P(hx, hy), 1 / zoom);
+            else pen.Away(1 / zoom);
+            all.Add(new PenScene { Name = name, Pen = pen, Center = P(cx, cy), Zoom = zoom });
+        };
+        const double z = 1.6, px = 1 / z;
+
+        RoadPen pen = New("s2", -150, -60, 150, -60);
+        Click(pen, -60, -60, px);
+        add("Straight, from a road: pulled square to it, with the line it follows", pen, -55, 62, 0, 0, z);
+
+        pen = New("s2");
+        pen.Shape = RoadPen.Curve;
+        Click(pen, -90, -50, px);
+        add("Curve, step 2: pointing the road", pen, -30, -40, 0, 0, z);
+
+        pen = New("s2");
+        pen.Shape = RoadPen.Curve;
+        Click(pen, -90, -50, px);
+        Click(pen, -30, -40, px);
+        add("Curve, step 3: sweeping it round", pen, 70, 50, 0, 0, z);
+
+        pen = New("a2", -120, -70, -20, -70, 110, -80, 110, 80);
+        pen.Shape = RoadPen.Curve;
+        Click(pen, -20, -70, px);
+        add("Curve carrying on from a road end and catching on another road", pen, 108, -25, 0, 0, z);
+
+        pen = New("h2");
+        pen.Shape = RoadPen.Curve;
+        Click(pen, -100, -40, px);
+        Click(pen, -60, -40, px);
+        Click(pen, 0, -10, px);
+        add("One-way highway, second piece flowing from the first", pen, 90, 60, 0, 10, z);
+
+        pen = New("h2");
+        pen.Shape = RoadPen.Curve;
+        Click(pen, -80, -40, px);
+        Click(pen, -40, -40, px);
+        add("Too tight for a highway: red, and it says why", pen, -30, 10, -20, 0, z);
+
+        pen = New("s2", -260, 0, 260, 0, 0, -220, 0, 220);
+        pen.Shape = RoadPen.Roundabout;
+        Click(pen, 0, 0, px);
+        add("Roundabout being sized", pen, 28, 14, 0, 0, z);
+
+        pen = New("s2", -100, -40, 0, -40, 0, -40, 90, 40, 0, -40, -10, 70);
+        pen.Tool = RoadPen.Move;
+        add("Move tool: every point that can be dragged, pointer over one", pen, 2, -38, 0, 0, z);
+
+        pen = New("s2", -140, -40, 0, -40, 0, -40, 130, 30);
+        pen.Tool = RoadPen.Move;
+        pen.Hover(P(0, -40), px);
+        pen.Press(P(0, -40));
+        pen.Drag(P(10, 30));
+        add("Move tool: dragging a point, its roads follow", pen, 10, 30, 0, 0, z);
+
+        pen = New("s2", -140, -20, 140, -20);
+        pen.Tool = RoadPen.Move;
+        pen.Hover(P(0, -20), px);
+        pen.Press(P(0, -20));
+        pen.Drag(P(10, 45));
+        add("Move tool: bending a road by its middle", pen, 10, 45, 0, 0, z);
+
+        pen = New("a4", -150, 0, 150, 0, 0, 0, 0, 90);
+        pen.Tool = RoadPen.Replace;
+        add("Replace: the road as it would become", pen, -70, 4, 0, 0, z);
+
+        pen = New("s2", -150, 0, 150, 0, 0, 0, 0, 90);
+        pen.Tool = RoadPen.Bulldoze;
+        add("Bulldoze: the road that would go", pen, 3, 50, 0, 0, z);
+
+        pen = New("a2", -150, 30, 150, 30, -150, -40, 150, -40);
+        Click(pen, -60, -110, px);
+        add("Crossing two roads: a ring where each intersection will be", pen, 20, 100, 0, 0, z);
+
+        // The same curve from far out, where a meter is a fraction of a pixel: the outlines and pins keep their size on screen.
+        pen = New("s2", -500, -200, 500, -200);
+        pen.Shape = RoadPen.Curve;
+        Click(pen, -300, -200, 2.5);
+        Click(pen, -300, -100, 2.5);
+        add("Zoomed far out: lines and pins stay visible", pen, 100, 200, 0, 0, 0.4);
+        return all;
     }
 }

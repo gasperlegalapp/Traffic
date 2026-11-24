@@ -65,7 +65,6 @@ namespace Traffic.Lab
             var skirt = new FlatBuilder();
             var buried = new FlatBuilder();
             var mouths = new FlatBuilder();
-            var grime = new ShadeBuilder();
 
             // Where the lanes are, so that a sidewalk can be kept off the next road at a sharp corner.
             var lanePoints = new Dictionary<long, List<Vec>>();
@@ -113,8 +112,6 @@ namespace Traffic.Lab
                 for (int i = 0; i < far.Length; i++) far[i] = OnALane(full[i]) ? slim[i] : full[i];
                 walks.Ribbon(edge, far, CurbHeight, 1.6f);
                 walks.Wall(edge, 0.02f, CurbHeight, 1.6f, -side);
-                // The road is darker along the curb, where the dirt gathers.
-                grime.Along(list, new[] { 0, -side * 0.25, -side * 0.9 }, new[] { 0.3f, 0.2f, 0f }, 0.04f, false, 2);
             }
 
             bool anyBridge = false, anyTunnel = false;
@@ -167,9 +164,10 @@ namespace Traffic.Lab
                 foreach (Lane lane in world.Lanes) if (lane.Kind == LaneKind.Road && lane.ApproachNode == node.Id) fastest = System.Math.Max(fastest, lane.SpeedLimit);
                 foreach (Vec[] corner in node.Corners) Roadside(corner, 1, fastest >= FastRoad);
             }
-            Material asphaltMaterial = MeshKit.Textured(asphaltPhoto, asphaltPhoto != null ? Color.white : MeshKit.Hex(0x50545a), 0.12f);
+            // The roads are newly laid: dark, even asphalt with nothing worn into it, and bright paint.
+            Material asphaltMaterial = MeshKit.Textured(asphaltPhoto, asphaltPhoto != null ? Color.white : MeshKit.Hex(0x3c3e42), 0.1f);
             MeshKit.Spawn("Asphalt", asphalt.Build(), asphaltMaterial, root, false);
-            if (!walks.Empty) MeshKit.Spawn("Sidewalks", walks.Build(), MeshKit.Textured(walkPhoto, walkPhoto != null ? Color.white : MeshKit.Hex(0xb0aea8), 0.05f), root, true);
+            if (!walks.Empty) MeshKit.Spawn("Sidewalks", walks.Build(), MeshKit.Textured(walkPhoto, walkPhoto != null ? Color.white : MeshKit.Hex(0xc6c4be), 0.05f), root, true);
             if (!shoulders.Empty) MeshKit.Spawn("Shoulders", shoulders.Build(), MeshKit.Textured(gravelPhoto, gravelPhoto != null ? Color.white : MeshKit.Hex(0x89816f), 0), root, false);
             if (anyBridge)
             {
@@ -181,17 +179,6 @@ namespace Traffic.Lab
                 MeshKit.Spawn("Tunnel lines", buried.Build(), MeshKit.Lit(MeshKit.Hex(0xd9dfc8), 0), root, false);
                 MeshKit.Spawn("Tunnel mouths", mouths.Build(), MeshKit.Lit(MeshKit.Hex(0x15181c), 0), root, false);
             }
-
-            // What traffic leaves on the road: two dark wheel tracks and a line of oil down each lane,
-            // heavier through an intersection where everyone brakes and turns.
-            foreach (Lane lane in world.Lanes)
-            {
-                if (lane.Peak != 0) continue;
-                bool turning = lane.Kind == LaneKind.Connector;
-                float tyre = turning ? 0.2f : 0.13f, oil = turning ? 0.04f : 0.08f;
-                grime.Along(lane.Path.Pts, new[] { -1.35, -0.85, -0.4, -0.12, 0.12, 0.4, 0.85, 1.35 }, new[] { 0f, tyre, tyre * 0.15f, oil, oil, tyre * 0.15f, tyre, 0f }, 0.045f, true, 2);
-            }
-            if (!grime.Empty) MeshKit.Spawn("Wear", grime.Build(), MeshKit.Shade, root, false).GetComponent<MeshRenderer>().receiveShadows = false;
 
             if (world.Medians.Count > 0)
             {
@@ -270,9 +257,9 @@ namespace Traffic.Lab
                     }
                 }
             }
-            // Road paint is never quite white, and the yellow is nearer mustard than lemon.
-            MeshKit.Spawn("White paint", white.Build(), MeshKit.Lit(MeshKit.Hex(0xdcdcd2), 0), root, false);
-            MeshKit.Spawn("Yellow paint", yellow.Build(), MeshKit.Lit(MeshKit.Hex(0xdcb23c), 0), root, false);
+            // Fresh paint: clean white, and a warm yellow.
+            MeshKit.Spawn("White paint", white.Build(), MeshKit.Lit(MeshKit.Hex(0xf1f1ec), 0), root, false);
+            MeshKit.Spawn("Yellow paint", yellow.Build(), MeshKit.Lit(MeshKit.Hex(0xefbd2e), 0), root, false);
             MeshKit.Spawn("Red paint", red.Build(), MeshKit.Lit(MeshKit.Hex(0xe5383b), 0), root, false);
 
             foreach (StopLine sl in world.StopLines)
@@ -386,8 +373,8 @@ namespace Traffic.Lab
         }
 
         /// <summary>
-        /// Open ground: grass, rougher grass and bare earth in drifts, from photographs. Without
-        /// the picture, a painted stand-in of soft green patches.
+        /// Open ground: even green grass, from a photograph. Without the picture, a painted
+        /// stand-in of much the same green.
         /// </summary>
         private static Material GroundMaterial()
         {
@@ -399,7 +386,7 @@ namespace Traffic.Lab
                 return groundMaterial;
             }
             const int n = 256;
-            Color lush = MeshKit.Hex(0x6e9753), grass = MeshKit.Hex(0x81a65b), dry = MeshKit.Hex(0xa6ad6b);
+            Color lush = MeshKit.Hex(0x5f9843), grass = MeshKit.Hex(0x68a04a), dry = MeshKit.Hex(0x71a851);
             var pixels = new Color32[n * n];
             for (int y = 0; y < n; y++)
             {
@@ -513,11 +500,9 @@ namespace Traffic.Lab
                             if (Rand(i, j, 3) < chance && Open(x, y))
                             {
                                 bool pine = Hills((float)x / 240, (float)y / 240, 13) > 0.62f;
-                                bool autumn = Hills((float)x / 130, (float)y / 130, 14) > 0.5f && Rand(i, j, 4) < 0.7f;
-                                int leaf = pine ? ArtKit.SummerLeaves + ArtKit.AutumnLeaves + (int)(Rand(i, j, 5) * ArtKit.PineLeaves)
-                                    : autumn ? ArtKit.SummerLeaves + (int)(Rand(i, j, 5) * ArtKit.AutumnLeaves)
-                                    : (int)(Rand(i, j, 5) * ArtKit.SummerLeaves);
-                                // A dark-leaved tree is narrower and taller than a broad-leaved one.
+                                // It is summer: every tree is green, in shades close enough to read as one color.
+                                int leaf = (int)(Rand(i, j, 5) * ArtKit.SummerLeaves);
+                                // Some are narrower and taller than the rest.
                                 plants.Add(new Plant { Kind = pine ? 1 : 0, X = x, Y = y, Turn = Rand(i, j, 7) * 6.2832f, Scale = 0.8f + 0.5f * Rand(i, j, 8), Leaf = leaf, Seed = i * 7919 + j });
                                 signature = signature * 31 + (i * 7919 + j) * 2 + 1;
                             }
@@ -566,7 +551,7 @@ namespace Traffic.Lab
 
         private struct Plant
         {
-            /// <summary>0 a broad-leaved tree, 1 a dark, narrow one, 2 a bush, 3 a rock.</summary>
+            /// <summary>0 a broad tree, 1 a tall, narrow one, 2 a bush, 3 a rock.</summary>
             public int Kind;
             public int Seed;
             public ArtModel Model;

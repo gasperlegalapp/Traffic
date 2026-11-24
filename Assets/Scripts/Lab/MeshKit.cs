@@ -291,9 +291,9 @@ namespace Traffic.Lab
     }
 
     /// <summary>
-    /// Collects soft, see-through shading to lay over the ground: the dark of wheel tracks in a
-    /// lane, the grime along a curb, the shade under a tree. Each corner carries how dark it is,
-    /// and the darkness fades smoothly between corners, so nothing has a hard edge.
+    /// Collects soft, see-through shading to lay over the ground, such as the shade under a
+    /// tree. Each corner carries how dark it is, and the darkness fades smoothly between
+    /// corners, so nothing has a hard edge.
     /// </summary>
     public sealed class ShadeBuilder
     {
@@ -308,38 +308,6 @@ namespace Traffic.Lab
             verts.Add(MeshKit.ToWorld(x, y, height));
             colors.Add(new Color(0, 0, 0, dark));
             return verts.Count - 1;
-        }
-
-        /// <summary>
-        /// Shading along a line. Across it, at each given distance to the right of the line
-        /// (negative for the left), it is as dark as the matching amount; along it, it fades in
-        /// and out over a few meters at each end when asked to.
-        /// </summary>
-        public void Along(IList<Vec> line, double[] across, float[] dark, float height, bool fadeEnds, int step = 1)
-        {
-            if (line.Count < 2) return;
-            var along = new double[line.Count];
-            for (int i = 1; i < line.Count; i++) along[i] = along[i - 1] + Geo.Hypot(line[i].X - line[i - 1].X, line[i].Y - line[i - 1].Y);
-            double total = along[line.Count - 1];
-            int previous = -1;
-            for (int i = 0; i < line.Count; i = i == line.Count - 1 ? line.Count : System.Math.Min(i + step, line.Count - 1))
-            {
-                Vec before = line[System.Math.Max(i - 1, 0)], after = line[System.Math.Min(i + 1, line.Count - 1)];
-                double dx = after.X - before.X, dy = after.Y - before.Y, len = System.Math.Max(Geo.Hypot(dx, dy), 1e-6);
-                double rx = dy / len, ry = -dx / len;
-                float fade = fadeEnds ? Mathf.Clamp01((float)(System.Math.Min(along[i], total - along[i]) / 6)) : 1;
-                int first = verts.Count;
-                for (int k = 0; k < across.Length; k++) Point(line[i].X + rx * across[k], line[i].Y + ry * across[k], height, dark[k] * fade);
-                if (previous >= 0)
-                {
-                    for (int k = 0; k + 1 < across.Length; k++)
-                    {
-                        tris.Add(previous + k); tris.Add(first + k); tris.Add(previous + k + 1);
-                        tris.Add(previous + k + 1); tris.Add(first + k); tris.Add(first + k + 1);
-                    }
-                }
-                previous = first;
-            }
         }
 
         /// <summary>A round patch of shade, darkest in the middle and gone at its rim.</summary>

@@ -4,8 +4,11 @@ Makes the ground and road textures the game loads, from the photo scans in Art/a
 
 A scan covers only a couple of meters, which from the height the game is seen from would
 average out to one flat color. So each texture here repeats its scan small, for the detail
-you see zoomed in, and lays over it what you see from further off: lighter and darker
-stretches, relaid patches and cracks in the asphalt, bare and dry places in the grass.
+you see zoomed in, and lays a faint, slow change of tone over it so the repeat does not
+show from further off. Everything is new: fresh dark asphalt, clean concrete, even green grass.
+
+The colors are the ones meant to reach the screen. The game's sun and sky light are set so
+that flat ground in the open shows a texture at about its own brightness (LabApp.SetUpScene).
 
     python3 Tools/BakeArt/textures.py                 write the textures
     python3 Tools/BakeArt/textures.py preview.png     also draw a sample of each, and a mock-up of a road
@@ -50,72 +53,54 @@ def save(name, image, quality=88):
     return path
 
 
+def toned(image, color, contrast):
+    """A picture moved to an average color, keeping its detail at the given strength."""
+    gray = image.mean(axis=2, keepdims=True)
+    return np.asarray(color, np.float32) / 255 * (1 + (gray - gray.mean()) / gray.mean() * contrast)
+
+
 def asphalt(size=2048):
-    """64 m of road: the scan sixteen times across, toned, patched and cracked."""
+    """64 m of newly laid road: the scan sixteen times across, dark and even."""
     stone = scan("Asphalt012", size // 16)
-    # The scan has red paint in it; keep its grain, drop its color.
-    gray = stone.mean(axis=2, keepdims=True)
-    base = tiled(np.repeat(gray, 3, axis=2), 16)
-    base = 0.33 + (base - base.mean()) * 0.9
-    tone = (hills(size, 7, 1) - 0.5) * 0.08 + (hills(size, 31, 2) - 0.5) * 0.05
-    marks = np.zeros((size, size), np.float32)
-    for _ in range(16):
-        # A relaid patch: a darker rectangle with a paler seam round it.
-        x, y = rng.integers(0, size, 2)
-        w, h = int(rng.uniform(0.02, 0.07) * size), int(rng.uniform(0.012, 0.035) * size)
-        ys, xs = np.ix_(np.arange(y - 1, y + h + 1) % size, np.arange(x - 1, x + w + 1) % size)
-        marks[ys, xs] = 0.025
-        ys, xs = np.ix_(np.arange(y, y + h) % size, np.arange(x, x + w) % size)
-        marks[ys, xs] = -rng.uniform(0.025, 0.05)
-    for _ in range(70):
-        # A crack: a dark line that wanders.
-        x, y, heading = rng.uniform(0, size), rng.uniform(0, size), rng.uniform(0, 6.28)
-        for _ in range(int(rng.uniform(0.03, 0.14) * size)):
-            heading += rng.uniform(-0.4, 0.4)
-            x += np.cos(heading)
-            y += np.sin(heading)
-            marks[int(y) % size, int(x) % size] = -0.08
-            marks[int(y + 1) % size, int(x) % size] = -0.05
-    image = base + (tone + marks)[:, :, None]
-    # A little blue in the gray, as worn asphalt has.
-    return image * np.array([0.97, 0.99, 1.04], np.float32)
+    # The scan has red paint in it; keep its grain, drop its color. Fresh asphalt is fine and close-grained.
+    base = toned(tiled(stone, 16), (57, 59, 63), 0.42)
+    tone = (hills(size, 5, 1) - 0.5) * 0.035 + (hills(size, 23, 2) - 0.5) * 0.02
+    return base * (1 + tone)[:, :, None]
 
 
 def ground(size=2048):
-    """128 m of open ground: mown-looking grass, rougher grass, and bare, mossy earth, in drifts."""
+    """128 m of open ground: one even, well-kept green, with only a slow drift of light and shade across it."""
     lawn = tiled(scan("Grass004", size // 16), 16)
-    rough = tiled(scan("Grass001", size // 16), 16)
-    earth = tiled(scan("Ground037", size // 8), 8)
-    # Tame the greens so they sit together, and take the edge off the brightest.
-    lawn = lawn * np.array([0.92, 0.9, 0.88], np.float32)
-    rough = rough * np.array([1.25, 1.2, 1.15], np.float32)
-    a = np.clip((hills(size, 6, 11) * 0.7 + hills(size, 23, 12) * 0.3 - 0.42) * 3.5, 0, 1)[:, :, None]
-    image = lawn * (1 - a) + rough * a
-    b = np.clip((hills(size, 9, 13) * 0.6 + hills(size, 37, 14) * 0.4 - 0.62) * 5, 0, 1)[:, :, None]
-    image = image * (1 - b * 0.85) + earth * (b * 0.85)
-    return image * (0.94 + 0.12 * hills(size, 4, 15))[:, :, None]
+    # Keep the blades, at a gentler strength, in the green the game wants.
+    gray = lawn.mean(axis=2, keepdims=True)
+    detail = (gray - gray.mean()) / gray.mean()
+    image = np.array([101, 157, 72], np.float32) / 255 * (1 + detail * 0.5)
+    # A little of the scan's own color, so blades differ in hue and not only in brightness.
+    hue = lawn / np.maximum(gray, 1e-3)
+    hue = hue / hue.reshape(-1, 3).mean(axis=0)
+    image = image * (1 + (hue - 1) * 0.35)
+    drift = (hills(size, 4, 15) - 0.5) * 0.07 + (hills(size, 13, 16) - 0.5) * 0.04
+    return image * (1 + drift)[:, :, None]
 
 
 def sidewalk(size=512):
     """One slab's length of sidewalk: across the picture is across the walk, with the curb stone at the left."""
     stone = scan("Concrete034", size)
-    image = 0.69 + (stone - stone.mean()) * 0.8
-    image = image * np.array([1.0, 0.985, 0.95], np.float32)
-    image *= (0.95 + 0.1 * hills(size, 6, 21))[:, :, None]
+    image = toned(stone, (199, 197, 190), 0.55)
+    image *= (0.97 + 0.06 * hills(size, 6, 21))[:, :, None]
     curb = int(size * 0.13)
-    image[:, :curb] *= 1.05
-    image[:, curb - 2:curb + 2] *= 0.72
-    image[:3] *= 0.7
-    image[-2:] *= 0.7
+    image[:, :curb] *= 1.04
+    image[:, curb - 2:curb + 2] *= 0.8
+    image[:3] *= 0.8
+    image[-2:] *= 0.8
     return image
 
 
 def gravel(size=512):
     """12 m of highway shoulder."""
     stones = tiled(scan("Gravel022", size // 4), 4)
-    image = 0.5 + (stones - stones.mean()) * 0.55
-    image = image * np.array([1.04, 1.0, 0.92], np.float32)
-    return image * (0.9 + 0.2 * hills(size, 7, 31))[:, :, None]
+    image = toned(stones, (150, 145, 132), 0.5)
+    return image * (0.95 + 0.1 * hills(size, 7, 31))[:, :, None]
 
 
 def foliage(size=512):
@@ -160,13 +145,8 @@ def mock(path, parts):
     lanes, lane = 2, int(3.66 * scale)
     top = h // 2 - lanes * lane
     canvas[top:top + 2 * lanes * lane] = road[:2 * lanes * lane, :w]
-    # Wear: darker wheel tracks and an oil line in each lane.
-    xs = np.linspace(0, 1, lane)
-    track = 0.10 * (np.exp(-((xs - 0.27) / 0.09) ** 2) + np.exp(-((xs - 0.73) / 0.09) ** 2)) + 0.05 * np.exp(-((xs - 0.5) / 0.06) ** 2)
-    for k in range(2 * lanes):
-        canvas[top + k * lane:top + (k + 1) * lane] *= (1 - track)[:, None, None]
     # Paint.
-    white, yellow = np.array([0.86, 0.86, 0.83]), np.array([0.85, 0.68, 0.2])
+    white, yellow = np.array([0.945, 0.945, 0.925]), np.array([0.937, 0.741, 0.18])
     mid = top + lanes * lane
     canvas[mid - 4:mid - 2] = yellow
     canvas[mid + 2:mid + 4] = yellow
@@ -182,10 +162,9 @@ def mock(path, parts):
     strip = np.tile(np.transpose(slab, (1, 0, 2)).transpose(1, 0, 2), (1, w // slab.shape[1] + 1, 1))[:, :w]
     canvas[top - walk_w:top] = strip[::-1]
     canvas[top + 2 * lanes * lane:top + 2 * lanes * lane + walk_w] = strip
-    canvas[top:top + 6] *= 0.8
     # Trees: tinted foliage in rough circles, with shadows thrown to the lower right.
     yy, xx = np.mgrid[0:h, 0:w]
-    tints = [(0.42, 0.62, 0.32), (0.33, 0.52, 0.28), (0.5, 0.66, 0.34), (0.8, 0.55, 0.24), (0.28, 0.45, 0.3)]
+    tints = [(0.275, 0.49, 0.227), (0.259, 0.467, 0.216), (0.294, 0.518, 0.243)]
     rng2 = np.random.default_rng(99)
     for i in range(26):
         cx, cy, r = rng2.uniform(0, w), rng2.choice([rng2.uniform(20, top - walk_w - 60), rng2.uniform(top + 2 * lanes * lane + walk_w + 60, h - 20)]), rng2.uniform(40, 68)
@@ -197,7 +176,7 @@ def mock(path, parts):
         u = ((xx - cx) / (2.4 * r) * leaf.shape[1] + rng2.integers(0, 512)).astype(int) % leaf.shape[1]
         v = ((yy - cy) / (2.4 * r) * leaf.shape[0] + rng2.integers(0, 512)).astype(int) % leaf.shape[0]
         tint = np.array(tints[i % len(tints)], np.float32)
-        crown = leaf[v, u] * tint * 1.35 * (1.05 - 0.35 * d[:, :, None] ** 2)
+        crown = leaf[v, u] * tint * 1.9 * (1.05 - 0.35 * d[:, :, None] ** 2)
         canvas[inside] = crown[inside]
     samples = [np.asarray(Image.fromarray((np.clip(p, 0, 1) * 255).astype(np.uint8)).resize((300, 300)), dtype=np.float32) / 255 for p in parts]
     sheet = np.zeros((h + 310, w, 3), np.float32) + 0.12

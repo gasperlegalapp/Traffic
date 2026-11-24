@@ -116,41 +116,29 @@ namespace Traffic.Lab
         /// <summary>The map index that means "the one the player is drawing".</summary>
         private static int OwnMap => Maps.All.Length;
 
-        private EditableMap drawing;
+        /// <summary>
+        /// The hand that draws. It holds the map being built and everything about the road
+        /// that is half drawn, and keeps the picture of what the next click would do.
+        /// </summary>
+        private readonly RoadPen pen = new RoadPen();
+        private EditableMap drawing
+        {
+            get { return pen.Map; }
+            set { pen.Map = value; }
+        }
         /// <summary>True while laying out roads; traffic only runs once this is off.</summary>
         private bool building;
-        private bool bulldozing;
-        /// <summary>The Replace tool is out: a click changes a road to the kind chosen.</summary>
-        private bool replacing;
-        private bool snapAngles, snapGrid;
-        /// <summary>The spacing of the grid new roads can be kept to, meters (30 ft).</summary>
-        private const double GridStep = 9.144;
         /// <summary>Which of RoadType.All is being drawn.</summary>
         private int roadChoice;
-        /// <summary>The length and price of the road about to be placed, shown beside the pointer.</summary>
-        private string previewNote = "";
-        /// <summary>0 draws straight roads, 1 draws curves, 2 places roundabouts.</summary>
-        private int shape;
-        private bool hasStart;
-        private Vec chainStart;
-        /// <summary>For a curve, where it ends, once that has been clicked. The pointer then pulls the bend out.</summary>
-        private bool hasEnd;
-        private Vec endPoint;
+        /// <summary>Which of Dock.HeightLevels is being drawn at: the ground, a bridge or a tunnel.</summary>
+        private int levelChoice;
         private Vector2 hoverPixel;
+        /// <summary>True while the pointer is over a panel or the toolbar, where it draws nothing.</summary>
+        private bool pointerOverUi;
         /// <summary>Earlier states of the drawing, for undo and redo.</summary>
         private readonly List<string> undo = new List<string>();
         private readonly List<string> redo = new List<string>();
-        // The check on the road about to be placed is only redone when something has changed.
-        private int editVersion, previewVersion = -1;
-        private Vec previewAt;
-        private bool previewOk;
 
-        private RoadType DrawType => RoadType.All[roadChoice];
-        /// <summary>Which of Dock.HeightLevels is being drawn at: the ground, a bridge or a tunnel.</summary>
-        private int levelChoice;
-        private int DrawLevel => Dock.HeightLevels[levelChoice];
-
-        /// <summary>Open the player's own map, as it was last left.</summary>
         /// <summary>Open a puzzle level, as it was last left.</summary>
         private void LoadLevel(int index)
         {
@@ -173,6 +161,7 @@ namespace Traffic.Lab
             dist *= 0.8f;
         }
 
+        /// <summary>Open the player's own map, as it was last left.</summary>
         private void LoadOwnMap()
         {
             mapIndex = OwnMap;
@@ -198,7 +187,6 @@ namespace Traffic.Lab
         {
             List<Car> before = keepCars && building && Sim != null ? new List<Car>(Sim.Cars) : null;
             StartWorld(drawing.ToWorld());
-            editVersion++;
             stars = 0;
             resultShown = false;
             if (level != null)
@@ -248,9 +236,7 @@ namespace Traffic.Lab
         /// <summary>Forget the road that was half drawn.</summary>
         private void StopDrawing()
         {
-            hasStart = false;
-            hasEnd = false;
-            editVersion++;
+            pen.Cancel();
         }
 
         /// <summary>The drawing has changed: save it and rebuild the roads.</summary>
@@ -272,17 +258,6 @@ namespace Traffic.Lab
             StopDrawing();
             SaveDrawing();
             RebuildDrawing(true);
-        }
-
-        /// <summary>A line of help about what the next click will do.</summary>
-        private string BuildHint()
-        {
-            if (bulldozing) return "Click a road to remove it.";
-            if (replacing) return "Click a road to change it to the kind chosen.";
-            if (!hasStart) return drawing.Segments.Count == 0 ? "Click where the road starts. An open road end is where traffic comes in." : "Click where the road starts. Touch or cross another road to make an intersection.";
-            if (shape == 2) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
-            if (shape == 1 && hasEnd) return "Move the pointer to pull the road into a curve, then click. Right-click to go back.";
-            return "Click where the road ends. Right-click to stop.";
         }
 
         private void SaveDrawing()
@@ -314,198 +289,90 @@ namespace Traffic.Lab
             return true;
         }
 
-        /// <summary>A click on the ground while building: place the next point of a road, or bulldoze one.</summary>
+        /// <summary>How many meters of ground one pixel of screen covers, at the middle of the view.</summary>
+        private double MetersPerPixel => 2 * dist * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad) / Mathf.Max(Screen.height, 1);
+
+        /// <summary>A click on the ground while building: whatever the tool in hand does with it.</summary>
         private void EditClick(Vector2 pixel)
         {
             Vec p;
             if (!GroundAt(pixel, out p)) return;
             string before = drawing.Serialize();
-            editVersion++;
-            if (bulldozing)
-            {
-                if (drawing.RemoveNear(p)) DrawingChanged(before);
-                return;
-            }
-            if (replacing)
-            {
-                string no = drawing.TryReplace(p, DrawType, true);
-                if (no != null) Toast(no);
-                else DrawingChanged(before);
-                return;
-            }
-            p = Snapped(p);
-            if (shape == 2)
-            {
-                // A roundabout: the first click is its middle, the second sets its size.
-                if (!hasStart)
-                {
-                    chainStart = p;
-                    hasStart = true;
-                    return;
-                }
-                string refused = drawing.TryAddRoundabout(chainStart, Geo.Hypot(p.X - chainStart.X, p.Y - chainStart.Y), DrawType, true);
-                if (refused != null)
-                {
-                    Toast(refused);
-                    return;
-                }
-                hasStart = false;
-                DrawingChanged(before);
-                return;
-            }
-            if (!hasStart)
-            {
-                chainStart = drawing.SnapTo(p).Point;
-                hasStart = true;
-                hasEnd = false;
-                return;
-            }
-            if (shape == 1 && !hasEnd)
-            {
-                // A curve: the second click fixes the far end, and the third pulls the bend out.
-                endPoint = drawing.SnapTo(p).Point;
-                if (Geo.Hypot(endPoint.X - chainStart.X, endPoint.Y - chainStart.Y) < 1) return;
-                hasEnd = true;
-                return;
-            }
-            Vec end = shape == 1 ? endPoint : p;
-            string problem = drawing.TryAdd(chainStart, end, DrawType, true, shape == 1 ? p : (Vec?)null, DrawLevel);
-            if (problem != null)
-            {
-                Toast(problem);
-                return;
-            }
-            // Carry on from where this stretch ended, so a road can be drawn as a chain of clicks.
-            chainStart = drawing.SnapTo(end).Point;
-            hasEnd = false;
-            DrawingChanged(before);
+            string refused;
+            bool changed = pen.Click(p, out refused);
+            if (refused != null) Toast(refused);
+            if (changed) DrawingChanged(before);
         }
 
         /// <summary>
-        /// Where a click really lands once snapping has had its say. Joining an existing road
-        /// always wins; otherwise the point is kept to the grid, and a straight road being
-        /// drawn is kept to an eighth of a turn.
+        /// The button went down on the ground while building. True if the move tool took hold
+        /// of a point or a road there, so that dragging moves that and not the view.
         /// </summary>
-        private Vec Snapped(Vec p)
+        private bool GrabAt(Vector2 pixel)
         {
-            Snap near = drawing.SnapTo(p);
-            if (near.Node >= 0 || near.Segment >= 0) return p;
-            if (snapGrid) p = new Vec(System.Math.Round(p.X / GridStep) * GridStep, System.Math.Round(p.Y / GridStep) * GridStep);
-            if (snapAngles && hasStart && shape == 0)
+            Vec p;
+            return GroundAt(pixel, out p) && pen.Press(p);
+        }
+
+        private void GrabTo(Vector2 pixel)
+        {
+            Vec p;
+            if (GroundAt(pixel, out p)) pen.Drag(p);
+        }
+
+        private void GrabDrop()
+        {
+            string before = drawing.Serialize();
+            string refused;
+            bool changed = pen.Release(out refused);
+            if (refused != null) Toast(refused);
+            if (changed) DrawingChanged(before);
+        }
+
+        private Mesh ghostMesh;
+        private GameObject ghostObject;
+        private int ghostVersion = -1;
+        private readonly List<Vector3> ghostPoints = new List<Vector3>();
+        private readonly List<Color32> ghostColors = new List<Color32>();
+
+        /// <summary>
+        /// While building, lay the pen's picture of what the next click would do on the ground:
+        /// the road about to be placed at its real width, the points it joins, the handles
+        /// that can be dragged. It is rebuilt only when the pen says the picture has changed.
+        /// </summary>
+        private void ShowGhost()
+        {
+            if (ghostObject == null)
             {
-                double dx = p.X - chainStart.X, dy = p.Y - chainStart.Y, length = Geo.Hypot(dx, dy);
-                double heading = System.Math.Round(System.Math.Atan2(dy, dx) / (System.Math.PI / 4)) * (System.Math.PI / 4);
-                // The length along that heading, so the end stays under the pointer as nearly as it can.
-                length = dx * System.Math.Cos(heading) + dy * System.Math.Sin(heading);
-                if (snapGrid) length = System.Math.Round(length / GridStep) * GridStep;
-                p = new Vec(chainStart.X + System.Math.Cos(heading) * length, chainStart.Y + System.Math.Sin(heading) * length);
+                ghostMesh = new Mesh();
+                ghostMesh.MarkDynamic();
+                ghostMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+                ghostObject = MeshKit.Spawn("Build guide", ghostMesh, lineMaterial, transform, false);
+                ghostObject.GetComponent<MeshRenderer>().receiveShadows = false;
             }
-            return p;
-        }
-
-        /// <summary>Right-click or Esc while drawing: go back one click.</summary>
-        private void StepBack()
-        {
-            if (hasEnd) hasEnd = false;
-            else hasStart = false;
-            editVersion++;
-        }
-
-        /// <summary>Guide lines while building: a mark on every point, and the road about to be placed.</summary>
-        private void GuideLines()
-        {
-            var faint = new Color(1, 1, 1, 0.6f);
-            previewNote = "";
-            foreach (Vec n in drawing.Nodes) Mark(n, 2.5, faint);
-
+            ghostObject.SetActive(building);
+            if (!building) return;
             Vec hover;
-            if (!GroundAt(hoverPixel, out hover)) return;
-            if (bulldozing || replacing)
+            double pixel = MetersPerPixel;
+            if (!pointerOverUi && GroundAt(hoverPixel, out hover)) pen.Hover(hover, pixel);
+            else pen.Away(pixel);
+            if (pen.Version == ghostVersion) return;
+            ghostVersion = pen.Version;
+            Ghost ghost = pen.Ghost;
+            ghostPoints.Clear();
+            ghostColors.Clear();
+            for (int i = 0; i < ghost.Points.Count; i++)
             {
-                Vec on;
-                int seg = drawing.NearestSegment(hover, EditableMap.SnapRoad * 1.5, out on);
-                if (seg < 0) return;
-                // Red for a road about to go; white for one about to change, or red if it cannot.
-                bool red = bulldozing || drawing.TryReplace(hover, DrawType, false) != null;
-                Color mark = red ? new Color(1, 0.3f, 0.3f, 1) : Color.white;
-                Vec[] road = drawing.Trace(drawing.Segments[seg]);
-                Polyline(road, mark);
-                if (replacing && !red)
-                {
-                    Polyline(Geo.Offset(road, DrawType.Width / 2), mark);
-                    Polyline(Geo.Offset(road, -DrawType.Width / 2), mark);
-                }
-                Mark(on, 4, mark);
-                return;
+                uint c = ghost.Colors[i];
+                ghostPoints.Add(MeshKit.ToWorld(ghost.Points[i].X, ghost.Points[i].Y, 0.35f));
+                ghostColors.Add(new Color32((byte)(c >> 16), (byte)(c >> 8), (byte)c, (byte)(c >> 24)));
             }
-            hover = Snapped(hover);
-            // White shows up on both grass and asphalt.
-            var good = new Color(1, 1, 1, 1);
-            if (shape == 2)
-            {
-                RingGuide(hover, good, faint);
-                return;
-            }
-            Vec end = drawing.SnapTo(hover).Point;
-            if (!hasStart)
-            {
-                Mark(end, 4, good);
-                return;
-            }
-            // A curve whose far end is fixed bends through the pointer; anything else runs straight to it.
-            bool curved = shape == 1 && hasEnd;
-            if (curved) end = endPoint;
-            Vec to = curved ? endPoint : hover;
-            if (previewVersion != editVersion || Geo.Hypot(hover.X - previewAt.X, hover.Y - previewAt.Y) > 0.4)
-            {
-                previewOk = drawing.TryAdd(chainStart, to, DrawType, false, curved ? hover : (Vec?)null, DrawLevel) == null;
-                previewVersion = editVersion;
-                previewAt = hover;
-            }
-            Color c = previewOk ? good : new Color(1, 0.3f, 0.3f, 1);
-            Vec[] line = EditableMap.Trace(chainStart, end, curved, hover, 48);
-            Polyline(line, c);
-            // Show how wide it will be, and what it will cost.
-            if (Geo.Hypot(end.X - chainStart.X, end.Y - chainStart.Y) > 1)
-            {
-                double side = DrawType.Width / 2;
-                Polyline(Geo.Offset(line, side), c);
-                Polyline(Geo.Offset(line, -side), c);
-                double length;
-                double cost = EditableMap.CostOf(chainStart, end, DrawType, curved ? hover : (Vec?)null, out length, DrawLevel);
-                previewNote = (DrawLevel > 0 ? "Bridge   " : DrawLevel < 0 ? "Tunnel   " : "") + Mathf.RoundToInt((float)length * Feet) + " ft   " + Money(cost);
-            }
-            if (curved) Mark(hover, 3, faint);
-            Mark(chainStart, 4, c);
-            Mark(end, 4, c);
-        }
-
-        /// <summary>The roundabout about to be placed: its ring, both edges of it, and what it will cost.</summary>
-        private void RingGuide(Vec hover, Color good, Color faint)
-        {
-            if (!hasStart)
-            {
-                Mark(hover, 4, good);
-                return;
-            }
-            double radius = Geo.Hypot(hover.X - chainStart.X, hover.Y - chainStart.Y);
-            if (previewVersion != editVersion || Geo.Hypot(hover.X - previewAt.X, hover.Y - previewAt.Y) > 0.4)
-            {
-                previewOk = drawing.TryAddRoundabout(chainStart, radius, DrawType, false) == null;
-                previewVersion = editVersion;
-                previewAt = hover;
-            }
-            Color c = previewOk ? good : new Color(1, 0.3f, 0.3f, 1);
-            RoadType ring = EditableMap.RingType(DrawType);
-            foreach (double r in new[] { radius - ring.Width / 2, radius, radius + ring.Width / 2 })
-            {
-                if (r < 1) continue;
-                var circle = new Vec[65];
-                for (int i = 0; i <= 64; i++) circle[i] = new Vec(chainStart.X + System.Math.Cos(i * System.Math.PI / 32) * r, chainStart.Y + System.Math.Sin(i * System.Math.PI / 32) * r);
-                Polyline(circle, r == radius ? faint : c);
-            }
-            Mark(chainStart, 3, c);
-            previewNote = Mathf.RoundToInt((float)radius * 2 * Feet) + " ft across   " + Money(2 * System.Math.PI * radius * ring.CostPerMeter);
+            ghostMesh.Clear();
+            ghostMesh.SetVertices(ghostPoints);
+            ghostMesh.SetColors(ghostColors);
+            ghostMesh.SetTriangles(ghost.Tris, 0);
+            // Never cull it: it can be anywhere on the map.
+            ghostMesh.bounds = new Bounds(Vector3.zero, new Vector3(1e5f, 1e5f, 1e5f));
         }
 
         private static string Money(double dollars)
@@ -554,17 +421,6 @@ namespace Traffic.Lab
             return tiles;
         }
 
-        private void Polyline(Vec[] pts, Color c)
-        {
-            for (int i = 0; i + 1 < pts.Length; i++) Segment(pts[i].X, pts[i].Y, pts[i + 1].X, pts[i + 1].Y, c, 0);
-        }
-
-        private void Mark(Vec p, double size, Color c)
-        {
-            Segment(p.X - size, p.Y, p.X + size, p.Y, c, 0);
-            Segment(p.X, p.Y - size, p.X, p.Y + size, c, 0);
-        }
-
         private void SetUpScene()
         {
             cam = Camera.main;
@@ -575,7 +431,7 @@ namespace Traffic.Lab
                 cam = go.AddComponent<Camera>();
             }
             cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = MeshKit.Hex(0x7c9f58);
+            cam.backgroundColor = MeshKit.Hex(0x659d48);
             cam.orthographic = false;
             cam.fieldOfView = 30;
             cam.nearClipPlane = 5;
@@ -590,15 +446,18 @@ namespace Traffic.Lab
             sun.transform.SetParent(transform, false);
             sun.type = LightType.Directional;
             sun.color = MeshKit.Hex(0xfff1d6);
-            // The same numbers come out darker under URP than under the built-in pipeline, so each gets its own.
-            sun.intensity = MeshKit.Scriptable ? 1.4f : 0.9f;
+            // Sun and sky light together are set so that flat ground in the open shows a color at
+            // about the brightness it was given: the textures are made to the colors meant for the
+            // screen. (Measured from a screenshot: the brighter settings before this showed every
+            // color half as bright again, which washed out the cars and burned the sidewalks white.)
+            sun.intensity = MeshKit.Scriptable ? 0.85f : 0.9f;
             sun.shadows = LightShadows.Soft;
             sun.shadowStrength = 0.55f;
             // A fairly low sun, so trees and trucks throw long shadows across the ground.
             sun.transform.rotation = Quaternion.LookRotation(new Vector3(150, -190, 110));
 
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = MeshKit.Scriptable ? MeshKit.Hex(0x8e99a3) : MeshKit.Hex(0x4a5258);
+            RenderSettings.ambientLight = MeshKit.Scriptable ? MeshKit.Hex(0x737d8c) : MeshKit.Hex(0x4a5258);
             RenderSettings.fog = false;
             // Shadows should reach across the whole map. The setting lives in a different place under each pipeline.
             QualitySettings.shadowDistance = 3000;
@@ -731,6 +590,7 @@ namespace Traffic.Lab
             roads.Update(Sim.Junctions, Sim.Time);
             carViews.Sync(Sim.Cars, Sim.Time, selected);
             UpdateSensorLines();
+            ShowGhost();
 
             cam.transform.position = target + new Vector3(0, dist * Mathf.Cos(Tilt), -dist * Mathf.Sin(Tilt));
             cam.transform.LookAt(target, Vector3.forward);
@@ -833,7 +693,6 @@ namespace Traffic.Lab
             }
             if (building)
             {
-                GuideLines();
                 UploadLines();
                 return;
             }

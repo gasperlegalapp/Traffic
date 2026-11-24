@@ -28,8 +28,11 @@ namespace Traffic.Lab
         private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint;
         private Vector2 labScroll;
         private bool dragging;
-        private float dragMoved;
-        private Vector2 lastMouse;
+        /// <summary>The move tool has hold of something, so the drag in progress moves that and not the view.</summary>
+        private bool grabbing;
+        /// <summary>The pointer has gone far enough from where the button went down to count as a drag and not a click.</summary>
+        private bool dragMoved;
+        private Vector2 lastMouse, pressPixel;
 
         private void BuildStyles()
         {
@@ -109,16 +112,16 @@ namespace Traffic.Lab
             dock.Paused = paused;
             dock.CanUndo = undo.Count > 0;
             dock.CanRedo = redo.Count > 0;
-            dock.Tool = bulldozing ? 1 : replacing ? 2 : 0;
-            dock.SnapAngles = snapAngles;
-            dock.SnapGrid = snapGrid;
-            dock.Shape = shape;
+            dock.Tool = pen.Tool;
+            dock.SnapAngles = pen.SnapAngles;
+            dock.SnapGrid = pen.SnapGrid;
+            dock.Shape = pen.Shape;
             if (dock.Roads.Length == 0) dock.Roads = RoadTiles();
             dock.Road = roadChoice;
             dock.Height = levelChoice;
             if (dock.HeightNotes[1] == null) dock.HeightNotes = HeightNotes();
             dock.Rate = System.Array.IndexOf(Speeds, speed);
-            dock.Hint = building ? BuildHint() : "";
+            dock.Hint = building ? pen.Hint : "";
             dock.Layout(w, h);
             Vector2 mouse = e.mousePosition;
             if (e.type == EventType.Repaint) dock.Draw(surface, mouse.x, mouse.y);
@@ -133,13 +136,15 @@ namespace Traffic.Lab
             if (e.type == EventType.Repaint) DrawPlaceNames(scale);
             if (level != null && stars > 0 && !resultShown) DrawResult(w, h);
 
-            // Beside the pointer while a road is being drawn: how long it is and what it costs.
-            if (building && !overDock && previewNote.Length > 0)
+            // Beside the pointer while a road is being drawn: how long it is and what it costs,
+            // or, in red, why it cannot be built there.
+            if (building && !overDock && pen.Note.Length > 0)
             {
-                Vector2 size = label.CalcSize(new GUIContent(previewNote));
-                var r = new Rect(mouse.x + 18, mouse.y + 14, size.x + 20, 26);
-                Card(r, 9);
-                GUI.Label(new Rect(r.x + 10, r.y + 3, size.x + 4, 20), previewNote, label);
+                Vector2 size = label.CalcSize(new GUIContent(pen.Note));
+                var r = new Rect(Mathf.Max(8, Mathf.Min(mouse.x + 18, w - size.x - 28)), mouse.y + 16, size.x + 20, 26);
+                if (!pen.NoteBad) Card(r, 9);
+                else if (e.type == EventType.Repaint) surface.Fill(r.x, r.y, r.width, r.height, 9, 0xF2A32920);
+                GUI.Label(new Rect(r.x + 10, r.y + 3, size.x + 4, 20), pen.Note, label);
             }
 
             if (Time.unscaledTime < toastUntil)
@@ -160,8 +165,7 @@ namespace Traffic.Lab
             switch (item.Kind)
             {
                 case DockKind.Tool:
-                    bulldozing = item.Index == 1;
-                    replacing = item.Index == 2;
+                    pen.Tool = item.Index;
                     StopDrawing();
                     break;
                 case DockKind.Undo:
@@ -184,22 +188,19 @@ namespace Traffic.Lab
                     later = () => SetBuilding(true);
                     break;
                 case DockKind.Shape:
-                    shape = item.Index;
-                    hasEnd = false;
-                    editVersion++;
+                    pen.Shape = item.Index;
                     break;
                 case DockKind.Road:
                     roadChoice = item.Index;
-                    editVersion++;
+                    pen.Type = RoadType.All[roadChoice];
                     break;
                 case DockKind.Height:
                     levelChoice = item.Index;
-                    editVersion++;
+                    pen.Level = Dock.HeightLevels[levelChoice];
                     break;
                 case DockKind.Snap:
-                    if (item.Index == 0) snapAngles = !snapAngles;
-                    else snapGrid = !snapGrid;
-                    editVersion++;
+                    if (item.Index == 0) pen.SnapAngles = !pen.SnapAngles;
+                    else pen.SnapGrid = !pen.SnapGrid;
                     break;
                 case DockKind.Pause:
                     paused = !paused;
@@ -696,33 +697,41 @@ namespace Traffic.Lab
         {
             Vector2 pixel = e.mousePosition * scale;
             hoverPixel = pixel;
+            pointerOverUi = overUi;
             switch (e.type)
             {
                 case EventType.MouseDown:
-                    if (!overUi && e.button == 1 && building) StepBack(); // right-click takes back the last click of the road being drawn
+                    if (!overUi && e.button == 1 && building) pen.Back(); // right-click takes back the last click of the road being drawn
                     if (!overUi && e.button == 0)
                     {
-                        dragging = true;
-                        dragMoved = 0;
-                        lastMouse = pixel;
+                        // With the move tool, a press on a point or a road takes hold of it; anywhere else it is the view that is dragged.
+                        grabbing = building && GrabAt(pixel);
+                        dragging = !grabbing;
+                        dragMoved = false;
+                        lastMouse = pressPixel = pixel;
                     }
                     break;
                 case EventType.MouseDrag:
-                    if (dragging)
+                    if (grabbing) GrabTo(pixel);
+                    else if (dragging)
                     {
+                        // A hand is never quite still: the view only starts to move once the pointer has clearly left
+                        // where it went down. Anything less is a click.
+                        if (!dragMoved && (pixel - pressPixel).magnitude > Mathf.Max(8f, Screen.height / 120f)) dragMoved = true;
+                        if (!dragMoved) break;
                         Vector2 d = pixel - lastMouse;
                         lastMouse = pixel;
-                        dragMoved += Mathf.Abs(d.x) + Mathf.Abs(d.y);
                         Pan(d.x, d.y);
                     }
                     break;
                 case EventType.MouseUp:
-                    if (dragging && dragMoved < 6)
+                    if (grabbing) GrabDrop();
+                    else if (dragging && !dragMoved)
                     {
                         if (building) EditClick(pixel);
                         else ClickAt(pixel);
                     }
-                    dragging = false;
+                    dragging = grabbing = false;
                     break;
                 case EventType.ScrollWheel:
                     if (!overUi) Zoom(Mathf.Exp(e.delta.y * 0.04f));
@@ -733,6 +742,16 @@ namespace Traffic.Lab
                         if (e.keyCode == KeyCode.Escape) StopDrawing();
                         else if (e.keyCode == KeyCode.Z && (e.control || e.command)) Undo(undo, redo);
                         else if (e.keyCode == KeyCode.Y && (e.control || e.command)) Undo(redo, undo);
+                        else if (e.control || e.command || e.alt) break;
+                        // The number keys pick up the road tool in each shape; letters pick up the other tools.
+                        else if (e.keyCode >= KeyCode.Alpha1 && e.keyCode <= KeyCode.Alpha3)
+                        {
+                            pen.Tool = RoadPen.Road;
+                            pen.Shape = e.keyCode - KeyCode.Alpha1;
+                        }
+                        else if (e.keyCode == KeyCode.M) pen.Tool = RoadPen.Move;
+                        else if (e.keyCode == KeyCode.R) pen.Tool = RoadPen.Replace;
+                        else if (e.keyCode == KeyCode.B) pen.Tool = RoadPen.Bulldoze;
                     }
                     else if (e.keyCode == KeyCode.Space) paused = !paused;
                     else if (e.keyCode == KeyCode.Period)
