@@ -17,7 +17,7 @@ namespace Traffic.Ui
         void Text(string text, double x, double y, double w, double h, int size, bool bold, int align, uint color);
     }
 
-    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Pause, Step, Rate }
+    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Snap, Pause, Step, Rate }
 
     /// <summary>A kind of road on offer in the tray: enough to draw its picture and explain it.</summary>
     public sealed class DockRoad
@@ -66,9 +66,11 @@ namespace Traffic.Ui
         /// <summary>True on the map the player draws, which is the only one that can be built on.</summary>
         public bool OwnMap;
         public bool Building, Paused, CanUndo, CanRedo;
-        /// <summary>0 draws roads, 1 bulldozes.</summary>
+        /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen.</summary>
         public int Tool;
         public int Shape, Road, Rate;
+        /// <summary>Snapping: keep new roads to eighth-turn angles, and to a grid.</summary>
+        public bool SnapAngles, SnapGrid;
         /// <summary>Which of HeightLevels is chosen.</summary>
         public int Height;
         /// <summary>The heights a road can be built at, in the order the tray shows them: the ground, three bridges, three tunnels.</summary>
@@ -88,7 +90,7 @@ namespace Traffic.Ui
         private double barX, barY, barW, trayX, trayY, trayW, trayH, noteX, noteY, noteW, width;
         private bool tray, note;
 
-        private bool RoadTool => Building && Tool == 0;
+        private bool RoadTool => Building && Tool != 1;
 
         /// <summary>Work out where everything goes on a screen of the given size.</summary>
         public void Layout(double w, double h)
@@ -106,6 +108,7 @@ namespace Traffic.Ui
             if (Building)
             {
                 Add(DockKind.Tool, 0, Button);
+                Add(DockKind.Tool, 2, Button);
                 Add(DockKind.Tool, 1, Button);
                 Add(DockKind.None, 0, 0);
                 Add(DockKind.Undo, 0, Button);
@@ -160,7 +163,7 @@ namespace Traffic.Ui
                     int columns = (g.Value.Count + 1) / 2;
                     trayW += between + columns * tile + (columns - 1) * Gap;
                 }
-                trayW += between + 4 * high + 3 * Gap;
+                trayW += between + 4 * high + 3 * Gap + between + high;
                 trayH = 12 + 14 + 6 + high * 2 + Gap + 10 + 16 + 10;
                 trayX = Math.Round((w - trayW) / 2);
                 trayY = barY - 10 - trayH;
@@ -187,6 +190,9 @@ namespace Traffic.Ui
                     int column = i == 0 ? 0 : (i - 1) % 3 + 1, row = i > 3 ? 1 : 0;
                     Items.Add(new DockItem { Kind = DockKind.Height, Index = i, X = tx + column * (high + Gap), Y = ty + row * (high + Gap), W = high, H = high });
                 }
+                tx += 4 * high + 3 * Gap + between;
+                headings.Add(new KeyValuePair<string, double>("SNAP", tx));
+                for (int i = 0; i < 2; i++) Items.Add(new DockItem { Kind = DockKind.Snap, Index = i, X = tx, Y = ty + i * (high + Gap), W = high, H = high });
                 Top = trayY;
             }
             else if (note)
@@ -241,7 +247,7 @@ namespace Traffic.Ui
                 switch (item.Kind)
                 {
                     case DockKind.Tool:
-                        Glyph(s, item, item.Index == 0 ? "road" : "bulldoze", Tool == item.Index, hot, true);
+                        Glyph(s, item, item.Index == 0 ? "road" : item.Index == 1 ? "bulldoze" : "replace", Tool == item.Index, hot, true);
                         break;
                     case DockKind.Undo:
                         Glyph(s, item, "undo", false, hot, CanUndo);
@@ -285,6 +291,13 @@ namespace Traffic.Ui
                         break;
                     case DockKind.Height:
                         HeightTile(s, item, HeightLevels[item.Index], Height == item.Index, hot);
+                        break;
+                    case DockKind.Snap:
+                        {
+                            bool on = item.Index == 0 ? SnapAngles : SnapGrid;
+                            if (!on) s.Fill(item.X, item.Y, item.W, item.H, 12, Lift);
+                            Glyph(s, item, item.Index == 0 ? "angle" : "grid", on, hot, true);
+                        }
                         break;
                 }
             }
@@ -410,8 +423,10 @@ namespace Traffic.Ui
             switch (item.Kind)
             {
                 case DockKind.Tool:
-                    title = item.Index == 0 ? "Road" : "Bulldoze";
-                    body = item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground." : "Click a road to remove it.";
+                    title = item.Index == 0 ? "Road" : item.Index == 1 ? "Bulldoze" : "Replace";
+                    body = item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground."
+                        : item.Index == 1 ? "Click a road to remove it."
+                        : "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.";
                     break;
                 case DockKind.Undo:
                     title = "Undo";
@@ -454,6 +469,12 @@ namespace Traffic.Ui
                 case DockKind.Road:
                     title = Roads[item.Index].Title;
                     body = Roads[item.Index].Body;
+                    break;
+                case DockKind.Snap:
+                    title = item.Index == 0 ? "Snap to angles" : "Snap to grid";
+                    body = item.Index == 0 ? "Keeps a straight road to north, south, east, west or halfway between, so corners come out square."
+                        : "Keeps the ends of new roads on a 30 ft grid, so they line up.";
+                    body += "\nJoining an existing road always comes first.";
                     break;
                 case DockKind.Height:
                     {

@@ -3,7 +3,7 @@ namespace Traffic.Ui
     /// <summary>The icons on the toolbar, each drawn in code as a white shape that can be tinted.</summary>
     public static class Icons
     {
-        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star" };
+        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star", "replace", "angle", "grid" };
 
         /// <summary>Draw an icon into a square of the given size. Returns coverage per pixel, rows from the top.</summary>
         public static float[] Draw(string name, int size)
@@ -105,6 +105,23 @@ namespace Traffic.Ui
                             p.Solid(tip[k * 2], tip[k * 2 + 1], dent[k * 2], dent[k * 2 + 1], dent[before * 2], dent[before * 2 + 1]);
                         }
                     }
+                    break;
+                case "replace": // two arrows, one each way: swap one thing for another
+                    p.Line(16, 34, 66, 34, 9);
+                    p.Solid(62, 16, 88, 34, 62, 52);
+                    p.Line(34, 68, 84, 68, 9);
+                    p.Solid(38, 50, 12, 68, 38, 86);
+                    break;
+                case "angle": // two lines from a corner, with an arc between them
+                    p.Line(18, 80, 84, 80, 9);
+                    p.Line(18, 80, 64, 24, 9);
+                    p.Arc(18, 80, 34, -50, 0, 6);
+                    break;
+                case "grid":
+                    p.Line(36, 14, 36, 86, 8);
+                    p.Line(64, 14, 64, 86, 8);
+                    p.Line(14, 36, 86, 36, 8);
+                    p.Line(14, 64, 86, 64, 8);
                     break;
                 case "arrow": // pointing right
                     p.Line(12, 50, 64, 50, 16);

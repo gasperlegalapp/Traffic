@@ -120,6 +120,11 @@ namespace Traffic.Lab
         /// <summary>True while laying out roads; traffic only runs once this is off.</summary>
         private bool building;
         private bool bulldozing;
+        /// <summary>The Replace tool is out: a click changes a road to the kind chosen.</summary>
+        private bool replacing;
+        private bool snapAngles, snapGrid;
+        /// <summary>The spacing of the grid new roads can be kept to, meters (30 ft).</summary>
+        private const double GridStep = 9.144;
         /// <summary>Which of RoadType.All is being drawn.</summary>
         private int roadChoice;
         /// <summary>The length and price of the road about to be placed, shown beside the pointer.</summary>
@@ -273,6 +278,7 @@ namespace Traffic.Lab
         private string BuildHint()
         {
             if (bulldozing) return "Click a road to remove it.";
+            if (replacing) return "Click a road to change it to the kind chosen.";
             if (!hasStart) return drawing.Segments.Count == 0 ? "Click where the road starts. An open road end is where traffic comes in." : "Click where the road starts. Touch or cross another road to make an intersection.";
             if (shape == 2) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
             if (shape == 1 && hasEnd) return "Move the pointer to pull the road into a curve, then click. Right-click to go back.";
@@ -320,6 +326,14 @@ namespace Traffic.Lab
                 if (drawing.RemoveNear(p)) DrawingChanged(before);
                 return;
             }
+            if (replacing)
+            {
+                string no = drawing.TryReplace(p, DrawType, true);
+                if (no != null) Toast(no);
+                else DrawingChanged(before);
+                return;
+            }
+            p = Snapped(p);
             if (shape == 2)
             {
                 // A roundabout: the first click is its middle, the second sets its size.
@@ -367,6 +381,28 @@ namespace Traffic.Lab
             DrawingChanged(before);
         }
 
+        /// <summary>
+        /// Where a click really lands once snapping has had its say. Joining an existing road
+        /// always wins; otherwise the point is kept to the grid, and a straight road being
+        /// drawn is kept to an eighth of a turn.
+        /// </summary>
+        private Vec Snapped(Vec p)
+        {
+            Snap near = drawing.SnapTo(p);
+            if (near.Node >= 0 || near.Segment >= 0) return p;
+            if (snapGrid) p = new Vec(System.Math.Round(p.X / GridStep) * GridStep, System.Math.Round(p.Y / GridStep) * GridStep);
+            if (snapAngles && hasStart && shape == 0)
+            {
+                double dx = p.X - chainStart.X, dy = p.Y - chainStart.Y, length = Geo.Hypot(dx, dy);
+                double heading = System.Math.Round(System.Math.Atan2(dy, dx) / (System.Math.PI / 4)) * (System.Math.PI / 4);
+                // The length along that heading, so the end stays under the pointer as nearly as it can.
+                length = dx * System.Math.Cos(heading) + dy * System.Math.Sin(heading);
+                if (snapGrid) length = System.Math.Round(length / GridStep) * GridStep;
+                p = new Vec(chainStart.X + System.Math.Cos(heading) * length, chainStart.Y + System.Math.Sin(heading) * length);
+            }
+            return p;
+        }
+
         /// <summary>Right-click or Esc while drawing: go back one click.</summary>
         private void StepBack()
         {
@@ -384,15 +420,25 @@ namespace Traffic.Lab
 
             Vec hover;
             if (!GroundAt(hoverPixel, out hover)) return;
-            if (bulldozing)
+            if (bulldozing || replacing)
             {
                 Vec on;
                 int seg = drawing.NearestSegment(hover, EditableMap.SnapRoad * 1.5, out on);
                 if (seg < 0) return;
-                Polyline(drawing.Trace(drawing.Segments[seg]), new Color(1, 0.3f, 0.3f, 1));
-                Mark(on, 4, new Color(1, 0.3f, 0.3f, 1));
+                // Red for a road about to go; white for one about to change, or red if it cannot.
+                bool red = bulldozing || drawing.TryReplace(hover, DrawType, false) != null;
+                Color mark = red ? new Color(1, 0.3f, 0.3f, 1) : Color.white;
+                Vec[] road = drawing.Trace(drawing.Segments[seg]);
+                Polyline(road, mark);
+                if (replacing && !red)
+                {
+                    Polyline(Geo.Offset(road, DrawType.Width / 2), mark);
+                    Polyline(Geo.Offset(road, -DrawType.Width / 2), mark);
+                }
+                Mark(on, 4, mark);
                 return;
             }
+            hover = Snapped(hover);
             // White shows up on both grass and asphalt.
             var good = new Color(1, 1, 1, 1);
             if (shape == 2)

@@ -108,7 +108,9 @@ namespace Traffic.Lab
             dock.Paused = paused;
             dock.CanUndo = undo.Count > 0;
             dock.CanRedo = redo.Count > 0;
-            dock.Tool = bulldozing ? 1 : 0;
+            dock.Tool = bulldozing ? 1 : replacing ? 2 : 0;
+            dock.SnapAngles = snapAngles;
+            dock.SnapGrid = snapGrid;
             dock.Shape = shape;
             if (dock.Roads.Length == 0) dock.Roads = RoadTiles();
             dock.Road = roadChoice;
@@ -158,6 +160,7 @@ namespace Traffic.Lab
             {
                 case DockKind.Tool:
                     bulldozing = item.Index == 1;
+                    replacing = item.Index == 2;
                     StopDrawing();
                     break;
                 case DockKind.Undo:
@@ -190,6 +193,11 @@ namespace Traffic.Lab
                     break;
                 case DockKind.Height:
                     levelChoice = item.Index;
+                    editVersion++;
+                    break;
+                case DockKind.Snap:
+                    if (item.Index == 0) snapAngles = !snapAngles;
+                    else snapGrid = !snapGrid;
                     editVersion++;
                     break;
                 case DockKind.Pause:

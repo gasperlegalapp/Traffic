@@ -643,6 +643,25 @@ namespace Traffic.Tests
             Assert.AreEqual(0, sim.Strays);
         }
 
+        [Test]
+        public void ARoadCanBeReplacedWithAnotherKind()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(0, -200), P(0, 0), T("s2"), true));
+            double before = map.Cost();
+            // Widen the western half of the main road into an avenue with two lanes each way.
+            Assert.IsNull(map.TryReplace(P(-100, 0), T("a4"), true));
+            Assert.AreEqual(1, map.Segments.Count(s => s.Type.Id == "a4"));
+            Assert.AreEqual(before + 200 * (6 - 2), map.Cost(), 0.5);
+            Assert.AreEqual(4, map.ToWorld().Lanes.Count(l => l.Kind == LaneKind.Road && l.SpeedLimit > 15));
+            Assert.IsNotNull(map.TryReplace(P(-100, 0), T("a4"), true), "already that kind");
+            Assert.IsNotNull(map.TryReplace(P(300, 300), T("a4"), true), "no road there");
+            // A tight curve cannot become a highway.
+            Assert.IsNull(map.TryAdd(P(200, 0), P(240, 40), T("s2"), true, P(228.3, 11.7)));
+            Assert.IsNotNull(map.TryReplace(P(228, 12), T("h2"), true));
+        }
+
         // ---------------------------------------------------------------- levels
 
         /// <summary>One way of solving each level, in order.</summary>

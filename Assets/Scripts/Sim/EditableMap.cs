@@ -560,19 +560,61 @@ namespace Traffic.Sim
 
             foreach (int node in touched)
             {
-                var headings = new List<double>();
-                foreach (EditSegment s in Segments) if (s.A == node || s.B == node) headings.Add(HeadingFrom(s, node));
-                if (headings.Count > MaxArms) return "No more than " + MaxArms + " roads can meet at one point.";
-                // A one-way road may run in alongside another road, or peel off it: that is a merge, not an intersection.
-                if (JoinAt(node) != null) continue;
-                for (int i = 0; i < headings.Count; i++)
+                string problem = NodeProblem(node);
+                if (problem != null) return problem;
+            }
+            return null;
+        }
+
+        /// <summary>What is wrong with the way roads meet at a point, if anything.</summary>
+        private string NodeProblem(int node)
+        {
+            var headings = new List<double>();
+            foreach (EditSegment s in Segments) if (s.A == node || s.B == node) headings.Add(HeadingFrom(s, node));
+            if (headings.Count > MaxArms) return "No more than " + MaxArms + " roads can meet at one point.";
+            // A one-way road may run in alongside another road, or peel off it: that is a merge, not an intersection.
+            if (JoinAt(node) != null) return null;
+            for (int i = 0; i < headings.Count; i++)
+            {
+                for (int k = i + 1; k < headings.Count; k++)
                 {
-                    for (int k = i + 1; k < headings.Count; k++)
-                    {
-                        double between = Math.Abs(Math.Atan2(Math.Sin(headings[i] - headings[k]), Math.Cos(headings[i] - headings[k])));
-                        if (between < MinAngle) return "Too sharp an angle. Only a one-way road can join that closely, on the right of the traffic it joins.";
-                    }
+                    double between = Math.Abs(Math.Atan2(Math.Sin(headings[i] - headings[k]), Math.Cos(headings[i] - headings[k])));
+                    if (between < MinAngle) return "Too sharp an angle. Only a one-way road can join that closely, on the right of the traffic it joins.";
                 }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Change the road nearest a point into another kind: wider, narrower, faster, one-way.
+        /// Returns null if it was changed, or a short reason why it cannot be.
+        /// </summary>
+        public string TryReplace(Vec p, RoadType type, bool commit)
+        {
+            Vec on;
+            int seg = NearestSegment(p, SnapRoad * 1.5, out on);
+            if (seg < 0) return "There is no road there.";
+            if (Segments[seg].Locked) return "That road came with the level.";
+            if (Segments[seg].Ring) return "A roundabout's ring cannot be changed.";
+            if (Segments[seg].Type.Id == type.Id) return "It is already that kind of road.";
+            EditableMap work = Clone();
+            EditSegment s = work.Segments[seg];
+            s.Type = type;
+            if (s.Curved && TightestRadius(work.Trace(s)) < type.MinRadius) return "Its curve is too tight for that kind of road.";
+            string problem = work.NodeProblem(s.A) ?? work.NodeProblem(s.B);
+            if (problem != null) return problem;
+            try
+            {
+                work.ToWorld();
+            }
+            catch (Exception)
+            {
+                return "There is not room for that kind of road there.";
+            }
+            if (commit)
+            {
+                Nodes = work.Nodes;
+                Segments = work.Segments;
             }
             return null;
         }
