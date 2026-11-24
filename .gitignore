@@ -16,4 +16,5 @@ obj/
 *.sln
 !Tools/SimTests/SimTests.csproj
 !Tools/LabCompile/LabCompile.csproj
+!Tools/UiPreview/UiPreview.csproj
 .vs/

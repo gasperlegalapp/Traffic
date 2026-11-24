@@ -60,6 +60,7 @@ namespace Traffic.Sim
             public double Speed;
             public double ShiftA, ShiftB;
             public bool Bridge;
+            public bool Traced;
         }
 
         private readonly List<Vec> nodePos = new List<Vec>();
@@ -94,6 +95,16 @@ namespace Traffic.Sim
             });
         }
 
+        /// <summary>
+        /// A curved road whose centerline is traced by points running all the way from node a to
+        /// node b. The builder drops the points that fall inside either intersection and aims the
+        /// road's ends at the curve, so the caller does not need to know how big they are.
+        /// </summary>
+        public void AddCurvedRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] trace, double speed)
+        {
+            roads.Add(new RoadSpec { A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = trace, Speed = speed, Traced = true });
+        }
+
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
         public void AllowUTurn(int node, int arrivingFrom)
         {
@@ -123,19 +134,61 @@ namespace Traffic.Sim
 
             // How far each intersection's stop lines sit from its center.
             var radius = new double[nodePos.Count];
-            for (int i = 0; i < radius.Length; i++) radius[i] = 12;
+            // For each node, the direction and half-width of every road end that meets it.
+            var endsAt = new List<double[]>[nodePos.Count];
+            for (int i = 0; i < radius.Length; i++)
+            {
+                radius[i] = 12;
+                endsAt[i] = new List<double[]>();
+            }
             foreach (RoadSpec r in roads)
             {
                 int atA = Math.Max(MaxSlot(r.Back, true), MaxSlot(r.Fwd, false)) + 1;
                 int atB = Math.Max(MaxSlot(r.Fwd, true), MaxSlot(r.Back, false)) + 1;
                 radius[r.A] = Math.Max(radius[r.A], atA * LaneW + CornerRadius);
                 radius[r.B] = Math.Max(radius[r.B], atB * LaneW + CornerRadius);
+
+                // Roughly which way the road leaves each node: for a traced curve, toward where it is a little way out.
+                Vec a = nodePos[r.A], b = nodePos[r.B];
+                Vec fromA = b, fromB = a;
+                if (r.Traced)
+                {
+                    foreach (Vec v in r.Via) if (Geo.Hypot(v.X - a.X, v.Y - a.Y) > 15) { fromA = v; break; }
+                    for (int i = r.Via.Length - 1; i >= 0; i--) if (Geo.Hypot(r.Via[i].X - b.X, r.Via[i].Y - b.Y) > 15) { fromB = r.Via[i]; break; }
+                    endsAt[r.A].Add(new[] { Math.Atan2(fromA.Y - a.Y, fromA.X - a.X), atA * LaneW });
+                    endsAt[r.B].Add(new[] { Math.Atan2(fromB.Y - b.Y, fromB.X - b.X), atB * LaneW });
+                }
+                else if (r.Via.Length >= 2)
+                {
+                    int m = r.Via.Length;
+                    endsAt[r.A].Add(new[] { Math.Atan2(r.Via[1].Y - r.Via[0].Y, r.Via[1].X - r.Via[0].X), atA * LaneW });
+                    endsAt[r.B].Add(new[] { Math.Atan2(r.Via[m - 2].Y - r.Via[m - 1].Y, r.Via[m - 2].X - r.Via[m - 1].X), atB * LaneW });
+                }
+                else
+                {
+                    endsAt[r.A].Add(new[] { Math.Atan2(b.Y - a.Y, b.X - a.X), atA * LaneW });
+                    endsAt[r.B].Add(new[] { Math.Atan2(a.Y - b.Y, a.X - b.X), atB * LaneW });
+                }
             }
             for (int i = 0; i < nodePos.Count; i++)
             {
                 int ends = EndsAt(i);
                 if (ends == 1) radius[i] = 0; // the edge of the map
                 else if (ends > 2 && nodeMode[i] == JunctionMode.Free) radius[i] = FreeRadius; // a ramp leaving or joining
+                else
+                {
+                    // Roads that meet at a narrow angle need a bigger intersection, so that they
+                    // have come apart by the time they reach their stop lines.
+                    List<double[]> around = endsAt[i];
+                    around.Sort((x, y) => x[0].CompareTo(y[0]));
+                    for (int k = 0; k < around.Count; k++)
+                    {
+                        double[] one = around[k], next = around[(k + 1) % around.Count];
+                        double between = next[0] - one[0];
+                        if (between <= 0) between += 2 * Math.PI;
+                        if (between < Math.PI) radius[i] = Math.Max(radius[i], (one[1] + next[1] + 1) / (2 * Math.Sin(between / 2)));
+                    }
+                }
                 world.Nodes.Add(new Node { Id = i, Pos = nodePos[i], Radius = radius[i], DefaultMode = nodeMode[i] });
                 extent = Math.Max(extent, Math.Max(Math.Abs(nodePos[i].X), Math.Abs(nodePos[i].Y)));
             }
@@ -146,18 +199,33 @@ namespace Traffic.Sim
                 Vec b = nodePos[r.B];
                 // A straight road runs node to node. A curved one leaves a in the direction its via
                 // points start out in, and arrives at b in the direction they end in.
-                int m = r.Via.Length;
-                Vec from0 = m >= 2 ? r.Via[0] : a, from1 = m >= 2 ? r.Via[1] : m == 1 ? r.Via[0] : b;
-                Vec to0 = m >= 2 ? r.Via[m - 2] : m == 1 ? r.Via[0] : a, to1 = m >= 2 ? r.Via[m - 1] : b;
+                Vec[] via = r.Via;
+                if (r.Traced)
+                {
+                    // Keep only the part of the trace that lies clear of both intersections.
+                    var kept = new List<Vec>();
+                    foreach (Vec v in via)
+                    {
+                        if (Geo.Hypot(v.X - a.X, v.Y - a.Y) > radius[r.A] + 3 && Geo.Hypot(v.X - b.X, v.Y - b.Y) > radius[r.B] + 3) kept.Add(v);
+                    }
+                    via = kept.ToArray();
+                }
+                int m = via.Length;
+                // A traced road aims straight from each node at the nearest point kept; any other
+                // curved road sets its own direction with its first and last two points.
+                bool own = m >= 2 && !r.Traced;
+                Vec from0 = own ? via[0] : a, from1 = own ? via[1] : m >= 1 ? via[0] : b;
+                Vec to0 = own ? via[m - 2] : m >= 1 ? via[m - 1] : a, to1 = own ? via[m - 1] : b;
                 double la = Geo.Hypot(from1.X - from0.X, from1.Y - from0.Y);
                 double lb = Geo.Hypot(to1.X - to0.X, to1.Y - to0.Y);
                 double ax = (from1.X - from0.X) / la, ay = (from1.Y - from0.Y) / la;
                 double bx = (to1.X - to0.X) / lb, by = (to1.Y - to0.Y) / lb;
                 var line = new List<Vec> { new Vec(a.X + ax * radius[r.A] + ay * r.ShiftA, a.Y + ay * radius[r.A] - ax * r.ShiftA) };
-                line.AddRange(r.Via);
+                line.AddRange(via);
                 line.Add(new Vec(b.X - bx * radius[r.B] + by * r.ShiftB, b.Y - by * radius[r.B] - bx * r.ShiftB));
                 // Resample to about a meter between points.
                 var path = new LanePath(line);
+                if (path.Length < 15) throw new InvalidOperationException("Two intersections are too close together for the road between them.");
                 int n = (int)Math.Ceiling(path.Length);
                 var center = new List<Vec>();
                 for (int i = 0; i <= n; i++)

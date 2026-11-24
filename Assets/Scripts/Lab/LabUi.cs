@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using Traffic.Sim;
+using Traffic.Ui;
 using UnityEngine;
 
 namespace Traffic.Lab
@@ -13,7 +15,6 @@ namespace Traffic.Lab
         private static readonly string[] SliderNames = { "Reaction time", "Speed", "Following gap", "Aggression", "Politeness", "Obeys lights and signs", "Weaving between lanes", "Swerving (drunk)", "Looking away (phone)" };
         private static readonly string[] StateNames = { "CRUISE", "FOLLOW", "BRAKE", "STOPPING", "WAIT", "YIELD", "LETTING IN", "MERGE", "LANE CHANGE", "STARTLED", "CRASH", "SCARED", "WARY", "LOOKING AWAY", "RUBBERNECKING" };
         private static readonly float[] Speeds = { 0.25f, 1, 2, 4 };
-        private static readonly string[] SpeedNames = { "1/4x", "1x", "2x", "4x" };
 
         private static readonly Color Accent = MeshKit.Hex(0x5ee0c0);
         private static readonly Color Dim = MeshKit.Hex(0x8d9aa3);
@@ -21,6 +22,8 @@ namespace Traffic.Lab
         private static readonly Color Info = MeshKit.Hex(0x6cb8ff);
         private static readonly Color Bad = MeshKit.Hex(0xff5d5d);
 
+        private readonly Dock dock = new Dock();
+        private GuiSurface surface;
         private Texture2D white;
         private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint;
         private Vector2 labScroll;
@@ -33,15 +36,23 @@ namespace Traffic.Lab
             white = new Texture2D(1, 1);
             white.SetPixel(0, 0, Color.white);
             white.Apply();
-            Texture2D Solid(Color c)
+            // A small rounded square that stretches to any size, for buttons.
+            Texture2D Pill(Color c)
             {
-                var t = new Texture2D(1, 1);
-                t.SetPixel(0, 0, c);
+                const int size = 24;
+                var paint = new Painter(size);
+                paint.Box(0, 0, 100, 100, 30);
+                var t = new Texture2D(size, size, TextureFormat.RGBA32, false);
+                var pixels = new Color32[size * size];
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = new Color(c.r, c.g, c.b, c.a * paint.Ink[i]);
+                t.SetPixels32(pixels);
+                t.wrapMode = TextureWrapMode.Clamp;
                 t.Apply();
                 return t;
             }
+            surface = new GuiSurface();
+            // The panels draw their own rounded backs (see Card), so the style only sets the padding.
             panel = new GUIStyle { padding = new RectOffset(14, 14, 12, 12) };
-            panel.normal.background = Solid(new Color(0.06f, 0.075f, 0.086f, 0.9f));
             label = new GUIStyle(GUI.skin.label) { fontSize = 13 };
             label.normal.textColor = MeshKit.Hex(0xe7edf0);
             heading = new GUIStyle(label) { fontSize = 10, fontStyle = FontStyle.Bold };
@@ -53,12 +64,18 @@ namespace Traffic.Lab
             sub.normal.textColor = Accent;
             tagStyle = new GUIStyle(label) { fontSize = 9, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter, padding = new RectOffset(4, 4, 1, 1) };
             stateStyle = new GUIStyle(tagStyle) { fontSize = 11 };
-            button = new GUIStyle(GUI.skin.button) { fontSize = 13, fontStyle = FontStyle.Bold };
+            button = new GUIStyle(GUI.skin.button) { fontSize = 13, fontStyle = FontStyle.Bold, border = new RectOffset(8, 8, 8, 8), padding = new RectOffset(8, 8, 5, 6) };
+            Texture2D plain = Pill(new Color(1, 1, 1, 0.1f)), lit = Pill(new Color(1, 1, 1, 0.2f)), pressed = Pill(new Color(1, 1, 1, 0.3f));
+            button.normal.background = button.focused.background = plain;
+            button.hover.background = lit;
+            button.active.background = pressed;
+            button.normal.textColor = button.hover.textColor = button.active.textColor = button.focused.textColor = MeshKit.Hex(0xe7edf0);
             toggle = new GUIStyle(GUI.skin.toggle) { fontSize = 13 };
             toggle.normal.textColor = toggle.onNormal.textColor = MeshKit.Hex(0xe7edf0);
             buttonOn = new GUIStyle(button);
-            buttonOn.normal.textColor = Accent;
-            buttonOn.hover.textColor = Accent;
+            Texture2D chosen = Pill(new Color(Accent.r, Accent.g, Accent.b, 0.22f));
+            buttonOn.normal.background = buttonOn.hover.background = buttonOn.active.background = buttonOn.focused.background = chosen;
+            buttonOn.normal.textColor = buttonOn.hover.textColor = buttonOn.active.textColor = buttonOn.focused.textColor = Accent;
             hint = new GUIStyle(label) { wordWrap = true, fontSize = 12 };
             hint.normal.textColor = Dim;
         }
@@ -73,41 +90,193 @@ namespace Traffic.Lab
             float w = Screen.width / scale;
             float h = Screen.height / scale;
 
-            if (showLabels && e.type == EventType.Repaint) DrawTags(scale);
+            if (showLabels && !building && e.type == EventType.Repaint) DrawTags(scale);
 
             var top = new Rect(12, 12, 430, 54);
-            var lab = new Rect(12, 76, 300, Mathf.Min(900, h - 150));
-            var transport = new Rect(w / 2 - 150, h - 58, 300, 46);
+            var lab = new Rect(12, 76, 300, building ? 236 : Mathf.Min(900, h - 100));
             float inspectorHeight = Mathf.Min(612, h - 24);
             var inspector = new Rect(w - 300, h - 12 - inspectorHeight, 288, inspectorHeight);
             Car car = Sim.CarById(selected);
 
             DrawTop(top);
             DrawLab(lab);
-            DrawTransport(transport);
             if (car != null) DrawInspector(inspector, car);
+
+            // The toolbar along the bottom.
+            dock.OwnMap = mapIndex == OwnMap;
+            dock.Building = building;
+            dock.Paused = paused;
+            dock.CanUndo = undo.Count > 0;
+            dock.CanRedo = redo.Count > 0;
+            dock.Tool = bulldozing ? 1 : 0;
+            dock.Shape = shape;
+            dock.Road = laneChoice;
+            dock.Limit = speedChoice;
+            dock.Rate = System.Array.IndexOf(Speeds, speed);
+            dock.Hint = building ? BuildHint() : "";
+            dock.Layout(w, h);
+            Vector2 mouse = e.mousePosition;
+            if (e.type == EventType.Repaint) dock.Draw(surface, mouse.x, mouse.y);
+            bool overDock = dock.Contains(mouse.x, mouse.y);
+            if (e.type == EventType.MouseDown && e.button == 0 && overDock)
+            {
+                DockItem hit = dock.ItemAt(mouse.x, mouse.y);
+                if (hit.Kind != DockKind.None) DockClick(hit);
+                e.Use();
+            }
+
             if (Time.unscaledTime < toastUntil)
             {
                 Vector2 size = label.CalcSize(new GUIContent(toast));
-                var r = new Rect(w / 2 - size.x / 2 - 14, h - 108, size.x + 28, 34);
-                GUI.Box(r, GUIContent.none, panel);
-                GUI.Label(new Rect(r.x + 14, r.y + 8, size.x + 4, 20), toast, label);
+                var r = new Rect(w / 2 - size.x / 2 - 16, (float)dock.Top - 46, size.x + 32, 36);
+                Card(r, 18);
+                GUI.Label(new Rect(r.x + 16, r.y + 8, size.x + 4, 20), toast, label);
             }
 
-            bool overUi = top.Contains(e.mousePosition) || lab.Contains(e.mousePosition) || transport.Contains(e.mousePosition) || (car != null && inspector.Contains(e.mousePosition));
+            bool overUi = overDock || top.Contains(mouse) || lab.Contains(mouse) || (car != null && inspector.Contains(mouse));
             HandleSceneInput(e, overUi, scale);
+        }
+
+        /// <summary>Something on the toolbar was clicked.</summary>
+        private void DockClick(DockItem item)
+        {
+            switch (item.Kind)
+            {
+                case DockKind.Tool:
+                    bulldozing = item.Index == 1;
+                    StopDrawing();
+                    break;
+                case DockKind.Undo:
+                    Undo(undo, redo);
+                    break;
+                case DockKind.Redo:
+                    Undo(redo, undo);
+                    break;
+                case DockKind.Clear:
+                    if (drawing.Segments.Count == 0) break;
+                    string before = drawing.Serialize();
+                    drawing.Clear();
+                    StopDrawing();
+                    DrawingChanged(before);
+                    break;
+                case DockKind.Drive:
+                    later = () => SetBuilding(false);
+                    break;
+                case DockKind.Build:
+                    later = () => SetBuilding(true);
+                    break;
+                case DockKind.Shape:
+                    shape = item.Index;
+                    hasControl = false;
+                    editVersion++;
+                    break;
+                case DockKind.Road:
+                    laneChoice = item.Index;
+                    editVersion++;
+                    break;
+                case DockKind.Limit:
+                    speedChoice = item.Index;
+                    editVersion++;
+                    break;
+                case DockKind.Pause:
+                    paused = !paused;
+                    break;
+                case DockKind.Step:
+                    paused = true;
+                    Sim.Step();
+                    break;
+                case DockKind.Rate:
+                    speed = Speeds[item.Index];
+                    paused = false;
+                    break;
+            }
+        }
+
+        /// <summary>The rounded dark back of a panel.</summary>
+        private void Card(Rect r, float radius = 16)
+        {
+            if (Event.current.type == EventType.Repaint) Dock.Card(surface, r.x, r.y, r.width, r.height, radius);
+        }
+
+        /// <summary>Draws the toolbar with Unity's immediate-mode GUI.</summary>
+        private sealed class GuiSurface : ISurface
+        {
+            private readonly Dictionary<string, Texture2D> icons = new Dictionary<string, Texture2D>();
+            private readonly Dictionary<int, GUIStyle> styles = new Dictionary<int, GUIStyle>();
+
+            private static Color Tint(uint c)
+            {
+                return new Color(((c >> 16) & 255) / 255f, ((c >> 8) & 255) / 255f, (c & 255) / 255f, (c >> 24) / 255f);
+            }
+
+            public void Fill(double x, double y, double w, double h, double radius, uint color)
+            {
+                GUI.DrawTexture(new Rect((float)x, (float)y, (float)w, (float)h), Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, Tint(color), 0, (float)radius);
+            }
+
+            public void Stroke(double x, double y, double w, double h, double radius, double width, uint color)
+            {
+                GUI.DrawTexture(new Rect((float)x, (float)y, (float)w, (float)h), Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, Tint(color), (float)width, (float)radius);
+            }
+
+            public void Icon(string name, double x, double y, double size, uint color)
+            {
+                Texture2D t;
+                if (!icons.TryGetValue(name, out t))
+                {
+                    // Drawn large with smaller copies made from it, so it stays smooth at any size.
+                    const int px = 64;
+                    float[] ink = Icons.Draw(name, px);
+                    var pixels = new Color32[px * px];
+                    for (int row = 0; row < px; row++)
+                    {
+                        // The painter's rows run from the top; a texture's run from the bottom.
+                        for (int col = 0; col < px; col++) pixels[(px - 1 - row) * px + col] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(ink[row * px + col] * 255));
+                    }
+                    t = new Texture2D(px, px, TextureFormat.RGBA32, true);
+                    t.SetPixels32(pixels);
+                    t.wrapMode = TextureWrapMode.Clamp;
+                    t.filterMode = FilterMode.Trilinear;
+                    t.Apply(true);
+                    icons[name] = t;
+                }
+                GUI.DrawTexture(new Rect((float)x, (float)y, (float)size, (float)size), t, ScaleMode.StretchToFill, true, 0, Tint(color), 0, 0);
+            }
+
+            public void Text(string text, double x, double y, double w, double h, int size, bool bold, int align, uint color)
+            {
+                int key = size * 8 + align * 2 + (bold ? 1 : 0);
+                GUIStyle style;
+                if (!styles.TryGetValue(key, out style))
+                {
+                    style = new GUIStyle(GUI.skin.label)
+                    {
+                        fontSize = size,
+                        fontStyle = bold ? FontStyle.Bold : FontStyle.Normal,
+                        alignment = align == 1 ? TextAnchor.MiddleCenter : align == 2 ? TextAnchor.MiddleRight : align == 3 ? TextAnchor.UpperLeft : TextAnchor.MiddleLeft,
+                        wordWrap = align == 3,
+                        clipping = TextClipping.Overflow,
+                        padding = new RectOffset(0, 0, 0, 0),
+                        margin = new RectOffset(0, 0, 0, 0),
+                    };
+                    styles[key] = style;
+                }
+                style.normal.textColor = Tint(color);
+                GUI.Label(new Rect((float)x, (float)y, (float)w, (float)h), text, style);
+            }
         }
 
         // ------------------------------------------------------------ panels
 
         private void DrawTop(Rect r)
         {
+            Card(r);
             GUILayout.BeginArea(r, panel);
             GUILayout.BeginHorizontal();
             GUILayout.BeginVertical(GUILayout.Width(96));
             GUILayout.Label("T R A F F I C", big);
             GUILayout.Space(-6);
-            GUILayout.Label("Driver Lab", sub);
+            GUILayout.Label(building ? "Road builder" : "Driver Lab", sub);
             GUILayout.EndVertical();
             double v = 0;
             int moving = 0;
@@ -140,6 +309,7 @@ namespace Traffic.Lab
 
         private void DrawLab(Rect r)
         {
+            Card(r);
             GUILayout.BeginArea(r, panel);
             // Vertical scrolling only, with the content held narrower than the panel so
             // the scroll bar never covers the values on the right.
@@ -151,13 +321,27 @@ namespace Traffic.Lab
             {
                 if (GUILayout.Button(Maps.All[i].Name, i == mapIndex ? buttonOn : button) && i != mapIndex)
                 {
-                    LoadMap(i);
-                    Toast(Maps.All[i].Name + ": " + Maps.All[i].Blurb + ".");
+                    // Changing map changes what this panel holds, so it waits until the panel has finished drawing.
+                    int pick = i;
+                    later = () =>
+                    {
+                        LoadMap(pick);
+                        Toast(Maps.All[pick].Name + ": " + Maps.All[pick].Blurb + ".");
+                    };
                 }
             }
-            if (GUILayout.Button("Draw your own", mapIndex == OwnMap ? buttonOn : button) && mapIndex != OwnMap) LoadOwnMap();
-            if (mapIndex == OwnMap) DrawBuildControls();
-            if (world.Entries.Count > 0 && !building)
+            if (GUILayout.Button("Draw your own", mapIndex == OwnMap ? buttonOn : button) && mapIndex != OwnMap) later = LoadOwnMap;
+            if (building)
+            {
+                // While building, the tools are on the toolbar at the bottom and the rest of this panel waits.
+                GUILayout.Space(8);
+                GUILayout.Label("Draw the roads with the toolbar at the bottom of the screen, then press Drive to let the traffic in.", hint);
+                GUILayout.EndVertical();
+                GUILayout.EndScrollView();
+                GUILayout.EndArea();
+                return;
+            }
+            if (world.Entries.Count > 0)
             {
                 arrivals = Slider("New arrivals per entry lane", arrivals.ToString("0") + " a minute", arrivals, 0, 20);
             }
@@ -256,56 +440,6 @@ namespace Traffic.Lab
             GUILayout.EndArea();
         }
 
-        /// <summary>Controls for drawing roads: build or drive, the tool, and the kind of road.</summary>
-        private void DrawBuildControls()
-        {
-            GUILayout.Space(10);
-            GUILayout.Label("ROADS", heading);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Build", building ? buttonOn : button) && !building) SetBuilding(true);
-            if (GUILayout.Button("Drive", building ? button : buttonOn) && building) SetBuilding(false);
-            GUILayout.EndHorizontal();
-            if (!building)
-            {
-                GUILayout.Label("Traffic is running. Press Build to change the roads.", hint);
-                return;
-            }
-
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Draw", bulldozing ? button : buttonOn)) bulldozing = false;
-            if (GUILayout.Button("Bulldoze", bulldozing ? buttonOn : button))
-            {
-                bulldozing = true;
-                hasStart = false;
-            }
-            if (GUILayout.Button("Clear", button))
-            {
-                drawing.Clear();
-                hasStart = false;
-                SaveDrawing();
-                RebuildDrawing();
-            }
-            GUILayout.EndHorizontal();
-
-            GUILayout.Label("Lanes", label);
-            GUILayout.BeginHorizontal();
-            string[] laneNames = { "One-way", "2 lanes", "4 lanes" };
-            for (int i = 0; i < laneNames.Length; i++) if (GUILayout.Button(laneNames[i], i == laneChoice ? buttonOn : button)) laneChoice = i;
-            GUILayout.EndHorizontal();
-
-            GUILayout.Label("Speed limit", label);
-            GUILayout.BeginHorizontal();
-            for (int i = 0; i < EditableMap.SpeedChoices.Length; i++)
-            {
-                if (GUILayout.Button(EditableMap.SpeedChoices[i] + " mph", i == speedChoice ? buttonOn : button)) speedChoice = i;
-            }
-            GUILayout.EndHorizontal();
-
-            GUILayout.Label(bulldozing
-                ? "Click a road to remove it."
-                : "Click to start a road and click again to end it. Keep clicking to carry on; right-click or Esc to stop. Cross or touch another road to make an intersection. A road end left open is where traffic comes in and leaves.", hint);
-        }
-
         private void DriverSliders(DriverParams drv, int count)
         {
             for (int i = 0; i < count; i++)
@@ -330,30 +464,9 @@ namespace Traffic.Lab
             return GUILayout.HorizontalSlider(v, lo, hi);
         }
 
-        private void DrawTransport(Rect r)
-        {
-            GUILayout.BeginArea(r, panel);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button(paused ? "Play" : "Pause", button, GUILayout.Width(62))) paused = !paused;
-            if (GUILayout.Button("Step", button, GUILayout.Width(50)))
-            {
-                paused = true;
-                Sim.Step();
-            }
-            for (int i = 0; i < Speeds.Length; i++)
-            {
-                if (GUILayout.Button(SpeedNames[i], speed == Speeds[i] ? buttonOn : button))
-                {
-                    speed = Speeds[i];
-                    paused = false;
-                }
-            }
-            GUILayout.EndHorizontal();
-            GUILayout.EndArea();
-        }
-
         private void DrawInspector(Rect r, Car car)
         {
+            Card(r);
             GUILayout.BeginArea(r, panel);
             GUILayout.BeginHorizontal();
             Rect dot = GUILayoutUtility.GetRect(14, 14, GUILayout.Width(14));
@@ -489,7 +602,7 @@ namespace Traffic.Lab
             switch (e.type)
             {
                 case EventType.MouseDown:
-                    if (!overUi && e.button == 1 && building) hasStart = false; // right-click ends the road being drawn
+                    if (!overUi && e.button == 1 && building) StepBack(); // right-click takes back the last click of the road being drawn
                     if (!overUi && e.button == 0)
                     {
                         dragging = true;
@@ -518,7 +631,13 @@ namespace Traffic.Lab
                     if (!overUi) Zoom(Mathf.Exp(e.delta.y * 0.04f));
                     break;
                 case EventType.KeyDown:
-                    if (e.keyCode == KeyCode.Space) paused = !paused;
+                    if (building)
+                    {
+                        if (e.keyCode == KeyCode.Escape) StopDrawing();
+                        else if (e.keyCode == KeyCode.Z && (e.control || e.command)) Undo(undo, redo);
+                        else if (e.keyCode == KeyCode.Y && (e.control || e.command)) Undo(redo, undo);
+                    }
+                    else if (e.keyCode == KeyCode.Space) paused = !paused;
                     else if (e.keyCode == KeyCode.Period)
                     {
                         paused = true;
@@ -526,7 +645,6 @@ namespace Traffic.Lab
                     }
                     else if (e.keyCode == KeyCode.Escape)
                     {
-                        hasStart = false;
                         Select(-1);
                         SelectNode(-1);
                     }

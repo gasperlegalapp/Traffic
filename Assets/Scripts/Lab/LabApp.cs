@@ -110,9 +110,21 @@ namespace Traffic.Lab
         private bool bulldozing;
         private int laneChoice = 1;
         private int speedChoice = 1;
+        /// <summary>0 draws straight roads, 1 draws curves.</summary>
+        private int shape;
         private bool hasStart;
         private Vec chainStart;
+        /// <summary>For a curve, the corner it bends round, once that has been clicked.</summary>
+        private bool hasControl;
+        private Vec controlPoint;
         private Vector2 hoverPixel;
+        /// <summary>Earlier states of the drawing, for undo and redo.</summary>
+        private readonly List<string> undo = new List<string>();
+        private readonly List<string> redo = new List<string>();
+        // The check on the road about to be placed is only redone when something has changed.
+        private int editVersion, previewVersion = -1;
+        private Vec previewAt;
+        private bool previewOk;
 
         private int DrawLanes => EditableMap.LaneChoices[laneChoice];
         private int DrawMph => EditableMap.SpeedChoices[speedChoice];
@@ -123,20 +135,95 @@ namespace Traffic.Lab
             mapIndex = OwnMap;
             drawing = EditableMap.Parse(PlayerPrefs.GetString(SaveKey, ""));
             building = true;
-            hasStart = false;
-            RebuildDrawing();
+            StopDrawing();
+            RebuildDrawing(false);
             Fit();
             dist *= 0.55f;
         }
 
-        /// <summary>Rebuild the roads from the drawing. In drive mode this also starts traffic afresh.</summary>
-        private void RebuildDrawing()
+        /// <summary>How many cars wander the roads while they are being built: only a few, to give the place some life.</summary>
+        private int AmbientCars => Mathf.Clamp(drawing.Segments.Count + 1, 2, 6);
+
+        /// <summary>
+        /// Rebuild the roads from the drawing. In drive mode this starts traffic afresh. In build
+        /// mode a few cars drive around, and with keepCars they carry on from where they were.
+        /// </summary>
+        private void RebuildDrawing(bool keepCars)
         {
+            List<Car> before = keepCars && building && Sim != null ? new List<Car>(Sim.Cars) : null;
             StartWorld(drawing.ToWorld());
-            if (building) return;
-            // A few cars to start with, wherever there is room; the rest arrive at the open road ends.
-            int starters = Mathf.Min(10, drawing.Segments.Count * 2);
-            for (int i = 0; i < starters; i++) Sim.Spawn(newDriver, variation, PickVehicle());
+            editVersion++;
+            if (!building)
+            {
+                // A few cars to start with, wherever there is room; the rest arrive at the open road ends.
+                int starters = Mathf.Min(10, drawing.Segments.Count * 2);
+                for (int i = 0; i < starters; i++) Sim.Spawn(newDriver, variation, PickVehicle());
+                return;
+            }
+            if (before != null) foreach (Car old in before) Carry(old);
+            // With no way in from outside, put the few cars on the roads directly.
+            int want = world.Entries.Count == 0 ? AmbientCars : AmbientCars / 2;
+            for (int i = Sim.Cars.Count; i < want; i++) Sim.Spawn(DriverParams.Normal, 0.3, VehicleKind.Car);
+        }
+
+        /// <summary>Put a car from before a rebuild back on the road it was on, if that road is still there.</summary>
+        private void Carry(Car old)
+        {
+            if (old.Crashed) return;
+            Lane best = null;
+            double bestS = 0, bestD = 1.5;
+            foreach (Lane lane in Sim.Lanes)
+            {
+                if (lane.Kind != LaneKind.Road) continue;
+                Projection p = lane.Path.Project(old.X, old.Y);
+                if (p.D >= bestD || p.S < 8 || p.S > lane.Length - 8) continue;
+                if (System.Math.Cos(lane.Path.At(p.S).H - old.H) < 0.7) continue;
+                best = lane;
+                bestS = p.S;
+                bestD = p.D;
+            }
+            if (best == null) return;
+            foreach (Car c in Sim.Cars) if (c.Lane == best.Id && System.Math.Abs(c.S - bestS) < 12) return;
+            Car again = Sim.AddCar(best.Id, bestS, old.V, old.Drv, null, old.Vehicle.Kind);
+            again.Color = old.Color;
+        }
+
+        /// <summary>Forget the road that was half drawn.</summary>
+        private void StopDrawing()
+        {
+            hasStart = false;
+            hasControl = false;
+            editVersion++;
+        }
+
+        /// <summary>The drawing has changed: save it and rebuild the roads.</summary>
+        private void DrawingChanged(string before)
+        {
+            undo.Add(before);
+            if (undo.Count > 200) undo.RemoveAt(0);
+            redo.Clear();
+            SaveDrawing();
+            RebuildDrawing(true);
+        }
+
+        private void Undo(List<string> from, List<string> to)
+        {
+            if (!building || from.Count == 0) return;
+            to.Add(drawing.Serialize());
+            drawing = EditableMap.Parse(from[from.Count - 1]);
+            from.RemoveAt(from.Count - 1);
+            StopDrawing();
+            SaveDrawing();
+            RebuildDrawing(true);
+        }
+
+        /// <summary>A line of help about what the next click will do.</summary>
+        private string BuildHint()
+        {
+            if (bulldozing) return "Click a road to remove it.";
+            if (!hasStart) return drawing.Segments.Count == 0 ? "Click where the road starts. An open road end is where traffic comes in." : "Click where the road starts. Touch or cross another road to make an intersection.";
+            if (shape == 1 && !hasControl) return "Click the corner the road should bend round. Right-click to go back.";
+            return "Click where the road ends. Right-click to stop.";
         }
 
         private void SaveDrawing()
@@ -148,8 +235,9 @@ namespace Traffic.Lab
         private void SetBuilding(bool on)
         {
             building = on;
-            hasStart = false;
-            RebuildDrawing();
+            paused = false;
+            StopDrawing();
+            RebuildDrawing(false);
             if (!on && world.Entries.Count == 0 && drawing.Segments.Count > 0) Toast("No road runs off the map, so no traffic will arrive. Leave a road end open.");
         }
 
@@ -169,20 +257,27 @@ namespace Traffic.Lab
         {
             Vec p;
             if (!GroundAt(pixel, out p)) return;
+            string before = drawing.Serialize();
+            editVersion++;
             if (bulldozing)
             {
-                if (!drawing.RemoveNear(p)) return;
-                SaveDrawing();
-                RebuildDrawing();
+                if (drawing.RemoveNear(p)) DrawingChanged(before);
                 return;
             }
             if (!hasStart)
             {
                 chainStart = drawing.SnapTo(p).Point;
                 hasStart = true;
+                hasControl = false;
                 return;
             }
-            string problem = drawing.TryAdd(chainStart, p, DrawLanes, DrawMph, true);
+            if (shape == 1 && !hasControl)
+            {
+                controlPoint = p;
+                hasControl = true;
+                return;
+            }
+            string problem = drawing.TryAdd(chainStart, p, DrawLanes, DrawMph, true, shape == 1 ? controlPoint : (Vec?)null);
             if (problem != null)
             {
                 Toast(problem);
@@ -190,8 +285,16 @@ namespace Traffic.Lab
             }
             // Carry on from where this stretch ended, so a road can be drawn as a chain of clicks.
             chainStart = drawing.SnapTo(p).Point;
-            SaveDrawing();
-            RebuildDrawing();
+            hasControl = false;
+            DrawingChanged(before);
+        }
+
+        /// <summary>Right-click or Esc while drawing: go back one click.</summary>
+        private void StepBack()
+        {
+            if (hasControl) hasControl = false;
+            else hasStart = false;
+            editVersion++;
         }
 
         /// <summary>Guide lines while building: a mark on every point, and the road about to be placed.</summary>
@@ -207,33 +310,55 @@ namespace Traffic.Lab
                 Vec on;
                 int seg = drawing.NearestSegment(hover, EditableMap.SnapRoad * 1.5, out on);
                 if (seg < 0) return;
-                Vec a = drawing.Nodes[drawing.Segments[seg].A], b = drawing.Nodes[drawing.Segments[seg].B];
-                Segment(a.X, a.Y, b.X, b.Y, new Color(1, 0.3f, 0.3f, 1), 0);
+                Polyline(drawing.Trace(drawing.Segments[seg]), new Color(1, 0.3f, 0.3f, 1));
                 Mark(on, 4, new Color(1, 0.3f, 0.3f, 1));
                 return;
             }
             Vec end = drawing.SnapTo(hover).Point;
+            var good = new Color(0.37f, 0.88f, 0.75f, 1);
             if (!hasStart)
             {
-                Mark(end, 4, Accent);
+                Mark(end, 4, good);
                 return;
             }
-            bool ok = drawing.TryAdd(chainStart, hover, DrawLanes, DrawMph, false) == null;
-            Color c = ok ? new Color(0.37f, 0.88f, 0.75f, 1) : new Color(1, 0.3f, 0.3f, 1);
-            Segment(chainStart.X, chainStart.Y, end.X, end.Y, c, 0);
-            // Show how wide it will be. A one-way lane lies to the right of the line drawn.
-            double dx = end.X - chainStart.X, dy = end.Y - chainStart.Y;
-            double len = Geo.Hypot(dx, dy);
-            if (len > 1)
+            if (shape == 1 && !hasControl)
             {
-                double rx = dy / len, ry = -dx / len;
-                double right = (DrawLanes == 4 ? 2 : 1) * NetworkBuilder.LaneW;
-                double left = DrawLanes == 1 ? 0 : right;
-                Segment(chainStart.X + rx * right, chainStart.Y + ry * right, end.X + rx * right, end.Y + ry * right, c, 0);
-                if (left > 0) Segment(chainStart.X - rx * left, chainStart.Y - ry * left, end.X - rx * left, end.Y - ry * left, c, 0);
+                // Choosing the corner of a curve: show the way the road sets off.
+                Segment(chainStart.X, chainStart.Y, hover.X, hover.Y, faint, 0);
+                Mark(chainStart, 4, good);
+                Mark(hover, 3, good);
+                return;
+            }
+            bool curved = shape == 1;
+            if (previewVersion != editVersion || Geo.Hypot(hover.X - previewAt.X, hover.Y - previewAt.Y) > 0.4)
+            {
+                previewOk = drawing.TryAdd(chainStart, hover, DrawLanes, DrawMph, false, curved ? controlPoint : (Vec?)null) == null;
+                previewVersion = editVersion;
+                previewAt = hover;
+            }
+            Color c = previewOk ? good : new Color(1, 0.3f, 0.3f, 1);
+            Vec[] line = EditableMap.Trace(chainStart, end, curved, controlPoint, 24);
+            Polyline(line, c);
+            // Show how wide it will be. A single lane lies to the right of the line drawn.
+            if (Geo.Hypot(end.X - chainStart.X, end.Y - chainStart.Y) > 1)
+            {
+                double side = (DrawLanes == 4 ? 2 : 1) * NetworkBuilder.LaneW;
+                Polyline(Geo.Offset(line, side), c);
+                if (DrawLanes != 1) Polyline(Geo.Offset(line, -side), c);
+            }
+            if (curved)
+            {
+                Segment(chainStart.X, chainStart.Y, controlPoint.X, controlPoint.Y, faint, 0);
+                Segment(controlPoint.X, controlPoint.Y, end.X, end.Y, faint, 0);
+                Mark(controlPoint, 3, faint);
             }
             Mark(chainStart, 4, c);
             Mark(end, 4, c);
+        }
+
+        private void Polyline(Vec[] pts, Color c)
+        {
+            for (int i = 0; i + 1 < pts.Length; i++) Segment(pts[i].X, pts[i].Y, pts[i + 1].X, pts[i + 1].Y, c, 0);
         }
 
         private void Mark(Vec p, double size, Color c)
@@ -364,18 +489,30 @@ namespace Traffic.Lab
             SelectNode(NodeAt(ray.origin - ray.direction * (ray.origin.y / ray.direction.y)));
         }
 
+        /// <summary>Something asked for from inside the on-screen controls, to do once they have finished drawing.</summary>
+        private System.Action later;
+
         private void Update()
         {
+            if (later != null)
+            {
+                System.Action todo = later;
+                later = null;
+                todo();
+            }
+
             // New arrivals at the edge of the map follow the same settings as cars added by hand.
-            Sim.ArrivalsPerMinute = arrivals;
+            // While building, only a handful of cars drive around.
+            Sim.ArrivalsPerMinute = building ? 3 : arrivals;
+            Sim.MaxCars = building ? AmbientCars : 320;
             Sim.ArrivalDriver = newDriver;
             Sim.ArrivalVariation = variation;
             Sim.ArrivalTrucks = truckShare;
             Sim.ArrivalMotorcycles = bikeShare;
 
-            if (!paused && !building)
+            if (building || !paused)
             {
-                owed += Mathf.Min(Time.unscaledDeltaTime, 0.1f) * speed;
+                owed += Mathf.Min(Time.unscaledDeltaTime, 0.1f) * (building ? 1 : speed);
                 int steps = 0;
                 while (owed >= Simulation.Dt && steps < 24)
                 {

@@ -103,6 +103,119 @@ namespace Traffic.Tests
             Assert.AreEqual(0, EditableMap.Parse("").Segments.Count);
         }
 
+        [Test]
+        public void ACurveBendsTowardItsControlPoint()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 200), 2, 40, true, P(200, 0)));
+            Assert.AreEqual(1, map.Segments.Count);
+            Assert.IsTrue(map.Segments[0].Curved);
+            World world = map.ToWorld();
+            // The road should pass well to the lower right of the straight line between its ends.
+            Lane lane = world.Lanes.First(l => l.Kind == LaneKind.Road);
+            double furthest = 0;
+            for (double d = 0; d <= lane.Length; d += 5)
+            {
+                PathPose at = lane.Path.At(d);
+                furthest = Math.Max(furthest, (at.X - at.Y) / Math.Sqrt(2));
+            }
+            Assert.Greater(furthest, 40);
+        }
+
+        [Test]
+        public void AControlPointOnTheLineJustMakesAStraightRoad()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), 2, 40, true, P(100, 1)));
+            Assert.IsFalse(map.Segments[0].Curved);
+        }
+
+        [Test]
+        public void ACurveThatCrossesARoadMakesAnIntersectionAndStaysCurved()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-250, 60), P(250, 60), 2, 40, true));
+            Assert.IsNull(map.TryAdd(P(-200, -150), P(200, -150), 2, 40, true, P(0, 400))); // an arch that crosses the road twice
+            Assert.AreEqual(6, map.Nodes.Count, "four road ends and the two places they cross");
+            Assert.AreEqual(6, map.Segments.Count);
+            Assert.AreEqual(3, map.Segments.Count(s => s.Curved));
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count(n => n.Arms.Count == 4));
+        }
+
+        [Test]
+        public void DrawingFromTheMiddleOfACurveSplitsItIntoTwoCurves()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(300, 300), 2, 25, true, P(300, 0)));
+            Vec onCurve = EditableMap.CurvePoint(P(0, 0), P(300, 0), P(300, 300), 0.5);
+            Assert.IsNull(map.TryAdd(onCurve, P(onCurve.X + 120, onCurve.Y - 120), 2, 25, true));
+            Assert.AreEqual(3, map.Segments.Count);
+            Assert.AreEqual(2, map.Segments.Count(s => s.Curved));
+            Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Arms.Count == 3));
+        }
+
+        [Test]
+        public void RefusesACurveThatIsTooTight()
+        {
+            var map = new EditableMap();
+            Assert.IsNotNull(map.TryAdd(P(0, 0), P(50, 0), 2, 25, true, P(25, 200)));
+            Assert.AreEqual(0, map.Segments.Count);
+        }
+
+        [Test]
+        public void SavesAndLoadsCurves()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 200), 4, 55, true, P(200, 0)));
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.IsTrue(loaded.Segments[0].Curved);
+        }
+
+        /// <summary>A drawn map made mostly of curves: a winding main road, a loop off it, and a curved one-way cut-through.</summary>
+        public static EditableMap CurvyTown()
+        {
+            var map = new EditableMap();
+            Action<Vec, Vec, int, int, Vec?> add = (p, q, lanes, mph, c) => Assert.IsNull(map.TryAdd(p, q, lanes, mph, true, c), "from " + p.X + "," + p.Y + " to " + q.X + "," + q.Y);
+            // The main road winds across the map in two bends.
+            Vec west = P(-350, -80), middle = P(-60, 40), east = P(350, -40);
+            Vec bendOne = P(-200, 120), bendTwo = P(120, -120);
+            add(west, middle, 4, 40, bendOne);
+            add(middle, east, 4, 40, bendTwo);
+            // A street loops north from the middle of it and comes back down further east.
+            Vec top = P(60, 300), corner = P(300, 120), loopBend = P(280, 320);
+            add(middle, top, 2, 25, P(-120, 220));
+            add(top, corner, 2, 25, loopBend);
+            add(corner, EditableMap.CurvePoint(middle, bendTwo, east, 0.7), 2, 25, null);
+            // A curved road comes in from the south-west and joins the first bend.
+            add(P(-250, -300), EditableMap.CurvePoint(west, bendOne, middle, 0.45), 2, 40, P(-150, -150));
+            // A one-way street leaves the loop, crosses the main road and runs off the map to the south.
+            add(EditableMap.CurvePoint(top, loopBend, corner, 0.45), P(140, -300), 1, 25, P(60, -40));
+            return map;
+        }
+
+        [Test]
+        public void ACurvyTownBuildsAndCarriesTraffic()
+        {
+            EditableMap map = CurvyTown();
+            Assert.Greater(map.Segments.Count(s => s.Curved), 6);
+            World world = map.ToWorld();
+            Assert.GreaterOrEqual(world.Nodes.Count(n => n.Controlled), 4);
+            var sim = new Simulation(world, 4);
+            sim.ArrivalsPerMinute = 5;
+            Action obey = () =>
+            {
+                foreach (Car c in sim.Cars) c.Drv.Compliance = 1;
+            };
+            Grid.Run(sim, 300, obey);
+            int leftByHalfway = sim.Left;
+            Grid.Run(sim, 300, obey);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(leftByHalfway, 30);
+            Assert.Greater(sim.Left - leftByHalfway, 30);
+        }
+
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>
         private static EditableMap Town()
         {
