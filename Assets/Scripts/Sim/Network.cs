@@ -149,6 +149,8 @@ namespace Traffic.Sim
     {
         public int Id;
         public Vec Pos;
+        /// <summary>A name for a place at the edge of the map that traffic comes from or goes to. Null for most nodes.</summary>
+        public string Name;
         /// <summary>Distance from the center to the stop lines.</summary>
         public double Radius;
         public List<Approach> Arms = new List<Approach>();

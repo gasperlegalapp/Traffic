@@ -585,6 +585,64 @@ namespace Traffic.Tests
             Assert.IsTrue(sawOver && sawUnder);
         }
 
+        // ---------------------------------------------------------------- routes
+
+        [Test]
+        public void RoutesKnowWhichEdgesOfTheMapCanReachWhichOthers()
+        {
+            // A highway running east with an exit but no way on: the side road can be reached, but nothing can come from it.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-420, 0), P(420, 0), T("h2"), true));
+            Assert.IsNull(map.TryAdd(P(150, 0), P(380, -150), T("h1"), true, P(250, -45)));
+            World world = map.ToWorld();
+            int west = world.Nodes.First(n => n.Terminal && n.Pos.X < -400).Id, east = world.Nodes.First(n => n.Terminal && n.Pos.X > 400).Id, side = world.Nodes.First(n => n.Terminal && n.Pos.Y < -100).Id;
+            var routes = new Routes(world);
+            Assert.IsTrue(routes.Connected(west, east));
+            Assert.IsTrue(routes.Connected(west, side));
+            Assert.IsFalse(routes.Connected(east, west), "the highway is one-way");
+            Assert.IsFalse(routes.Connected(side, east), "the ramp only leads away");
+            Assert.AreEqual(840 / 29.1, routes.Best(west, east), 1.5, "seconds along the highway at 65 mph");
+        }
+
+        [TestCase(1u)]
+        [TestCase(2u)]
+        public void DriversWithSomewhereToGoGetThere(uint seed)
+        {
+            var sim = new Simulation(TypedTown().ToWorld(), seed);
+            sim.UseRoutes = true;
+            sim.ArrivalsPerMinute = 5;
+            Action obey = () =>
+            {
+                foreach (Car c in sim.Cars) c.Drv.Compliance = 1;
+            };
+            Grid.Run(sim, 600, obey);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Arrived, 150);
+            // A few miss a turn they could not get over for in time, and on this map of one-way roads cannot get back.
+            Assert.Less(sim.Strays, sim.Arrived / 8, "nearly everyone should leave where they meant to");
+            Assert.Greater(sim.TripSeconds, sim.TripIdeal, "a real drive is never quicker than an empty road");
+        }
+
+        [Test]
+        public void TrafficFollowsTheDemandItIsGiven()
+        {
+            World world = CrossroadsRoundabout().ToWorld();
+            int west = world.Nodes.First(n => n.Terminal && n.Pos.X < -200).Id, north = world.Nodes.First(n => n.Terminal && n.Pos.Y > 200).Id;
+            var sim = new Simulation(world, 6);
+            sim.UseRoutes = true;
+            sim.Demand.Add(new Trip { From = west, To = north, Weight = 1 });
+            sim.ArrivalsPerMinute = 8;
+            int elsewhere = 0;
+            Action watch = () =>
+            {
+                foreach (Car c in sim.Cars) if (c.Dest != north) elsewhere++;
+            };
+            Grid.Run(sim, 240, watch);
+            Assert.AreEqual(0, elsewhere, "only the west to north trip was asked for");
+            Assert.Greater(sim.Arrived, 15);
+            Assert.AreEqual(0, sim.Strays);
+        }
+
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>
         private static EditableMap Town()
         {

@@ -155,6 +155,10 @@ namespace Traffic.Sim
         public double X, Y, H;
         /// <summary>Height above the ground: more than 0 on a bridge.</summary>
         public double Height;
+        /// <summary>The node at the edge of the map this driver is heading for, or -1 to wander, turning at random.</summary>
+        public int Dest = -1;
+        /// <summary>When the journey began, and how long it would take on empty roads.</summary>
+        public double Born, Ideal;
         /// <summary>Position on the lane centerline (ignores the sideways offset).</summary>
         public double Cx, Cy;
 
@@ -228,6 +232,20 @@ namespace Traffic.Sim
         public double ArrivalMotorcycles = 0.06;
         /// <summary>No new arrivals while this many vehicles are on the map.</summary>
         public int MaxCars = 320;
+        /// <summary>
+        /// When true, vehicles that arrive are going somewhere: each picks a way off the map
+        /// that it can reach and takes the quickest route. When false they turn at random.
+        /// </summary>
+        public bool UseRoutes;
+        /// <summary>The journeys traffic wants to make. Empty means every arrival may head for any other way off the map.</summary>
+        public List<Trip> Demand = new List<Trip>();
+        /// <summary>Journeys finished at the place they were heading for, and vehicles that left somewhere else.</summary>
+        public int Arrived, Strays;
+        /// <summary>For finished journeys: the seconds they took in all, and the seconds they would have taken on empty roads.</summary>
+        public double TripSeconds, TripIdeal;
+        private Routes routes;
+        /// <summary>How to get to each way off the map.</summary>
+        public Routes Routes => routes ?? (routes = new Routes(World));
         /// <summary>Allow turning right at a red light after stopping.</summary>
         public bool RightOnRed = true;
         /// <summary>Cars that have made it through an intersection.</summary>
@@ -403,7 +421,19 @@ namespace Traffic.Sim
                         double room = ahead.S - ahead.Len / 2 - length - 1;
                         speed = Math.Min(speed, ahead.V * 0.8 + Math.Sqrt(2 * 1.5 * Math.Max(room - 6, 0)));
                     }
-                    AddCar(id, length / 2 + 0.5, speed, Vary(ArrivalDriver ?? DriverParams.Normal, ArrivalVariation), null, kind);
+                    // Where is this one going? With nowhere it can get to, it does not set out.
+                    int dest = -1;
+                    if (UseRoutes)
+                    {
+                        dest = PickDestination(entry.Node, id);
+                        if (dest < 0)
+                        {
+                            nextArrival[id] = Time + 2;
+                            continue;
+                        }
+                    }
+                    Car arrival = AddCar(id, length / 2 + 0.5, speed, Vary(ArrivalDriver ?? DriverParams.Normal, ArrivalVariation), null, kind);
+                    if (dest >= 0) SetDestination(arrival, dest);
 
                     // Faster roads carry more traffic per lane.
                     double perSecond = ArrivalsPerMinute / 60 * (lane.SpeedLimit / NetworkBuilder.CitySpeed);
@@ -487,10 +517,50 @@ namespace Traffic.Sim
         private static readonly double[] TurnWeights = { 0.22, 0.5, 0.22, 0.06 };
 
         /// <summary>Choose the turn a car will make at the intersection its lane leads to.</summary>
+        /// <summary>Choose where a vehicle setting out from a lane at the edge of the map is going. -1 if it can get nowhere.</summary>
+        private int PickDestination(int fromNode, int laneId)
+        {
+            var options = new List<Trip>();
+            if (Demand.Count > 0)
+            {
+                foreach (Trip trip in Demand) if (trip.From == fromNode) options.Add(trip);
+            }
+            else
+            {
+                foreach (int exit in Routes.Exits) if (exit != fromNode) options.Add(new Trip { From = fromNode, To = exit, Weight = 1 });
+            }
+            double total = 0;
+            for (int i = options.Count - 1; i >= 0; i--)
+            {
+                if (double.IsInfinity(Routes.CostTo(options[i].To)[laneId]) || options[i].Weight <= 0) options.RemoveAt(i);
+                else total += options[i].Weight;
+            }
+            if (options.Count == 0) return -1;
+            double r = Rng.Next() * total;
+            foreach (Trip trip in options)
+            {
+                r -= trip.Weight;
+                if (r < 0) return trip.To;
+            }
+            return options[options.Count - 1].To;
+        }
+
+        /// <summary>Send a vehicle to a way off the map by the quickest route from where it is.</summary>
+        public void SetDestination(Car car, int exitNode)
+        {
+            car.Dest = exitNode;
+            car.Born = Time;
+            car.Ideal = Routes.CostTo(exitNode)[car.Lane];
+            car.Turn = PickTurn(car, Lanes[car.Lane]);
+        }
+
         private Turn PickTurn(Car car, Lane lane)
         {
             bool[] offered = lane.ApproachTurns;
             if (offered == null) return Turn.Straight;
+            // A driver who is going somewhere takes the turn that gets there soonest.
+            Turn toward;
+            if (car.Dest >= 0 && Routes.TurnToward(car.Dest, lane, car.Vehicle.CanUTurn, out toward)) return toward;
             double total = 0;
             // A truck cannot get round a U-turn.
             bool noUTurn = !car.Vehicle.CanUTurn;
@@ -1579,6 +1649,13 @@ namespace Traffic.Sim
                             // Drove off the edge of the map.
                             car.Gone = true;
                             Left++;
+                            if (car.Dest >= 0 && lane.ApproachNode == car.Dest)
+                            {
+                                Arrived++;
+                                TripSeconds += Time - car.Born;
+                                TripIdeal += car.Ideal;
+                            }
+                            else if (car.Dest >= 0) Strays++;
                             removed = true;
                             break;
                         }
