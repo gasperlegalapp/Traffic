@@ -63,6 +63,39 @@ namespace Traffic.Lab
             return new Material(shader) { color = color };
         }
 
+        private static Material shade;
+
+        /// <summary>
+        /// The material for soft shading laid over the ground (see ShadeBuilder). It only ever
+        /// darkens what is beneath it, by the amount each corner of the mesh says, so it looks
+        /// right in sun and in shadow alike. It uses the same built-in shader as the guide lines.
+        /// </summary>
+        public static Material Shade
+        {
+            get
+            {
+                if (shade != null) return shade;
+                Shader shader = Find("Hidden/Internal-Colored", "Sprites/Default");
+                shade = new Material(shader);
+                shade.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                shade.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                shade.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+                shade.SetInt("_ZWrite", 0);
+                shade.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.LessEqual);
+                // After everything solid, before anything else see-through.
+                shade.renderQueue = 2900;
+                return shade;
+            }
+        }
+
+        /// <summary>A material that reacts to light and shadow and is covered with a texture.</summary>
+        public static Material Textured(Texture texture, Color tint, float smoothness = 0.08f)
+        {
+            Material m = Lit(tint, smoothness);
+            if (texture != null) m.mainTexture = texture;
+            return m;
+        }
+
         public static GameObject Spawn(string name, Mesh mesh, Material material, Transform parent, bool shadows = true)
         {
             var go = new GameObject(name);
@@ -123,6 +156,224 @@ namespace Traffic.Lab
             mesh.SetVertices(verts);
             mesh.SetTriangles(tris, 0);
             mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+    }
+
+    /// <summary>
+    /// Collects textured surfaces (asphalt, sidewalks, shoulders) and turns them into one mesh.
+    /// Road and ground surfaces take their texture from where they are on the map, so it runs
+    /// unbroken from one piece of road into the next; a sidewalk takes it from along its own length.
+    /// </summary>
+    public sealed class SurfaceBuilder
+    {
+        private readonly List<Vector3> verts = new List<Vector3>();
+        private readonly List<Vector3> normals = new List<Vector3>();
+        private readonly List<Vector2> uvs = new List<Vector2>();
+        private readonly List<int> tris = new List<int>();
+        /// <summary>How many meters of ground one copy of the texture covers.</summary>
+        private readonly float tile;
+
+        public SurfaceBuilder(float tile)
+        {
+            this.tile = tile;
+        }
+
+        public bool Empty => verts.Count == 0;
+
+        private int Flat(Vec p, float y)
+        {
+            verts.Add(MeshKit.ToWorld(p.X, p.Y, y));
+            normals.Add(Vector3.up);
+            uvs.Add(new Vector2((float)p.X / tile, (float)p.Y / tile));
+            return verts.Count - 1;
+        }
+
+        private int Mapped(Vec p, float y, float u, float v, Vector3 normal)
+        {
+            verts.Add(MeshKit.ToWorld(p.X, p.Y, y));
+            normals.Add(normal);
+            uvs.Add(new Vector2(u, v));
+            return verts.Count - 1;
+        }
+
+        /// <summary>Both ways round, so it shows whichever way the corners were given.</summary>
+        private void Tri(int a, int b, int c)
+        {
+            tris.Add(a); tris.Add(b); tris.Add(c);
+            tris.Add(a); tris.Add(c); tris.Add(b);
+        }
+
+        /// <summary>A strip of ground between two lines. Heights, if given, lift each pair of points (a bridge).</summary>
+        public void Strip(IList<Vec> left, IList<Vec> right, float y, IList<double> heights = null)
+        {
+            int l0 = Flat(left[0], y + (heights != null ? (float)heights[0] : 0));
+            int r0 = Flat(right[0], y + (heights != null ? (float)heights[0] : 0));
+            for (int i = 1; i < left.Count; i++)
+            {
+                float h = y + (heights != null ? (float)heights[i] : 0);
+                int l1 = Flat(left[i], h);
+                int r1 = Flat(right[i], h);
+                Tri(l0, r0, l1);
+                Tri(r0, r1, l1);
+                l0 = l1;
+                r0 = r1;
+            }
+        }
+
+        public void Fan(Vec center, IList<Vec> ring, float y)
+        {
+            int c = Flat(center, y);
+            int first = Flat(ring[0], y);
+            int prev = first;
+            for (int i = 1; i < ring.Count; i++)
+            {
+                int cur = Flat(ring[i], y);
+                Tri(c, prev, cur);
+                prev = cur;
+            }
+            Tri(c, prev, first);
+        }
+
+        /// <summary>
+        /// A band along a line, such as a sidewalk: the texture runs across it from its inner
+        /// edge to its outer one, and repeats every so many meters along it.
+        /// </summary>
+        public void Ribbon(IList<Vec> inner, IList<Vec> outer, float y, float every)
+        {
+            float along = 0;
+            int a0 = Mapped(inner[0], y, 0, 0, Vector3.up), b0 = Mapped(outer[0], y, 1, 0, Vector3.up);
+            for (int i = 1; i < inner.Count; i++)
+            {
+                along += (float)Geo.Hypot(inner[i].X - inner[i - 1].X, inner[i].Y - inner[i - 1].Y) / every;
+                int a1 = Mapped(inner[i], y, 0, along, Vector3.up), b1 = Mapped(outer[i], y, 1, along, Vector3.up);
+                Tri(a0, b0, a1);
+                Tri(b0, b1, a1);
+                a0 = a1;
+                b0 = b1;
+            }
+        }
+
+        /// <summary>An upright face along a line, such as the side of a curb. It faces the given side (1 for the right of the line).</summary>
+        public void Wall(IList<Vec> line, float bottom, float top, float every, int side)
+        {
+            float along = 0;
+            int low0 = -1, high0 = -1;
+            for (int i = 0; i < line.Count; i++)
+            {
+                Vec before = line[System.Math.Max(i - 1, 0)], after = line[System.Math.Min(i + 1, line.Count - 1)];
+                double dx = after.X - before.X, dy = after.Y - before.Y, len = System.Math.Max(Geo.Hypot(dx, dy), 1e-6);
+                var normal = new Vector3((float)(dy / len) * side, 0, (float)(-dx / len) * side);
+                if (i > 0) along += (float)Geo.Hypot(line[i].X - line[i - 1].X, line[i].Y - line[i - 1].Y) / every;
+                int low1 = Mapped(line[i], bottom, 0.02f, along, normal), high1 = Mapped(line[i], top, 0.1f, along, normal);
+                if (i > 0)
+                {
+                    Tri(low0, high0, low1);
+                    Tri(high0, high1, low1);
+                }
+                low0 = low1;
+                high0 = high1;
+            }
+        }
+
+        public Mesh Build()
+        {
+            var mesh = new Mesh();
+            if (verts.Count > 65000) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.SetVertices(verts);
+            mesh.SetNormals(normals);
+            mesh.SetUVs(0, uvs);
+            mesh.SetTriangles(tris, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+    }
+
+    /// <summary>
+    /// Collects soft, see-through shading to lay over the ground: the dark of wheel tracks in a
+    /// lane, the grime along a curb, the shade under a tree. Each corner carries how dark it is,
+    /// and the darkness fades smoothly between corners, so nothing has a hard edge.
+    /// </summary>
+    public sealed class ShadeBuilder
+    {
+        private readonly List<Vector3> verts = new List<Vector3>();
+        private readonly List<Color> colors = new List<Color>();
+        private readonly List<int> tris = new List<int>();
+
+        public bool Empty => verts.Count == 0;
+
+        private int Point(double x, double y, float height, float dark)
+        {
+            verts.Add(MeshKit.ToWorld(x, y, height));
+            colors.Add(new Color(0, 0, 0, dark));
+            return verts.Count - 1;
+        }
+
+        /// <summary>
+        /// Shading along a line. Across it, at each given distance to the right of the line
+        /// (negative for the left), it is as dark as the matching amount; along it, it fades in
+        /// and out over a few meters at each end when asked to.
+        /// </summary>
+        public void Along(IList<Vec> line, double[] across, float[] dark, float height, bool fadeEnds, int step = 1)
+        {
+            if (line.Count < 2) return;
+            var along = new double[line.Count];
+            for (int i = 1; i < line.Count; i++) along[i] = along[i - 1] + Geo.Hypot(line[i].X - line[i - 1].X, line[i].Y - line[i - 1].Y);
+            double total = along[line.Count - 1];
+            int previous = -1;
+            for (int i = 0; i < line.Count; i = i == line.Count - 1 ? line.Count : System.Math.Min(i + step, line.Count - 1))
+            {
+                Vec before = line[System.Math.Max(i - 1, 0)], after = line[System.Math.Min(i + 1, line.Count - 1)];
+                double dx = after.X - before.X, dy = after.Y - before.Y, len = System.Math.Max(Geo.Hypot(dx, dy), 1e-6);
+                double rx = dy / len, ry = -dx / len;
+                float fade = fadeEnds ? Mathf.Clamp01((float)(System.Math.Min(along[i], total - along[i]) / 6)) : 1;
+                int first = verts.Count;
+                for (int k = 0; k < across.Length; k++) Point(line[i].X + rx * across[k], line[i].Y + ry * across[k], height, dark[k] * fade);
+                if (previous >= 0)
+                {
+                    for (int k = 0; k + 1 < across.Length; k++)
+                    {
+                        tris.Add(previous + k); tris.Add(first + k); tris.Add(previous + k + 1);
+                        tris.Add(previous + k + 1); tris.Add(first + k); tris.Add(first + k + 1);
+                    }
+                }
+                previous = first;
+            }
+        }
+
+        /// <summary>A round patch of shade, darkest in the middle and gone at its rim.</summary>
+        public void Disc(double x, double y, double radius, float height, float dark)
+        {
+            int center = Point(x, y, height, dark);
+            const int sides = 14;
+            int first = verts.Count;
+            for (int i = 0; i < sides; i++)
+            {
+                double a = System.Math.PI * 2 * i / sides;
+                Point(x + System.Math.Cos(a) * radius * 0.55, y + System.Math.Sin(a) * radius * 0.55, height, dark * 0.75f);
+            }
+            for (int i = 0; i < sides; i++)
+            {
+                double a = System.Math.PI * 2 * i / sides;
+                Point(x + System.Math.Cos(a) * radius, y + System.Math.Sin(a) * radius, height, 0);
+            }
+            for (int i = 0; i < sides; i++)
+            {
+                int j = (i + 1) % sides;
+                tris.Add(center); tris.Add(first + j); tris.Add(first + i);
+                tris.Add(first + i); tris.Add(first + j); tris.Add(first + sides + i);
+                tris.Add(first + j); tris.Add(first + sides + j); tris.Add(first + sides + i);
+            }
+        }
+
+        public Mesh Build()
+        {
+            var mesh = new Mesh();
+            if (verts.Count > 65000) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.SetVertices(verts);
+            mesh.SetColors(colors);
+            mesh.SetTriangles(tris, 0);
             mesh.RecalculateBounds();
             return mesh;
         }

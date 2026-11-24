@@ -449,7 +449,7 @@ namespace Traffic.Sim
             from.OutRight = right[0];
             // Pavement runs from the centerline out, or, on a road centered on its line, from the left edge of its lanes.
             double[] lift = Lift(center, peak, ramp);
-            world.Surfaces.Add(new Strip { Left = inner < 0 ? Geo.Offset(center, i => left[i]) : center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak, Heights = lift });
+            world.Surfaces.Add(new Strip { Left = inner < 0 ? Geo.Offset(center, i => left[i]) : center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak, Heights = lift, Speed = speed, LeftIsEdge = inner < 0 });
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14, Peak = peak, Heights = lift });
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true, Peak = peak, Heights = lift });
 
@@ -871,6 +871,8 @@ namespace Traffic.Sim
                 double mx = node.Pos.X + dx * node.Radius, my = node.Pos.Y + dy * node.Radius;
                 double toCw = wOut + arm.Shift;
                 double toCcw = wIn - arm.Shift;
+                arm.EdgeCw = toCw;
+                arm.EdgeCcw = toCcw;
                 cw[i] = new Vec(mx + dy * toCw, my - dx * toCw);
                 ccw[i] = new Vec(mx - dy * toCcw, my + dx * toCcw);
             }
@@ -885,15 +887,22 @@ namespace Traffic.Sim
                 double d1x = Math.Cos(arms[i].Angle), d1y = Math.Sin(arms[i].Angle);
                 double d2x = Math.Cos(arms[j].Angle), d2y = Math.Sin(arms[j].Angle);
                 double cross = d1x * d2y - d1y * d2x;
-                if (Math.Abs(cross) < 0.05) continue; // the two edges run nearly side by side: join them straight
-                double t = ((q.X - p.X) * d2y - (q.Y - p.Y) * d2x) / cross;
-                var c = new Vec(p.X + d1x * t, p.Y + d1y * t);
-                for (int k = 1; k < 8; k++)
+                var corner = new List<Vec> { p };
+                if (Math.Abs(cross) >= 0.05) // otherwise the two edges run nearly side by side: join them straight
                 {
-                    double u = k / 8.0;
-                    double w0 = (1 - u) * (1 - u), w1 = 2 * u * (1 - u), w2 = u * u;
-                    node.Box.Add(new Vec(w0 * p.X + w1 * c.X + w2 * q.X, w0 * p.Y + w1 * c.Y + w2 * q.Y));
+                    double t = ((q.X - p.X) * d2y - (q.Y - p.Y) * d2x) / cross;
+                    var c = new Vec(p.X + d1x * t, p.Y + d1y * t);
+                    for (int k = 1; k < 8; k++)
+                    {
+                        double u = k / 8.0;
+                        double w0 = (1 - u) * (1 - u), w1 = 2 * u * (1 - u), w2 = u * u;
+                        var pt = new Vec(w0 * p.X + w1 * c.X + w2 * q.X, w0 * p.Y + w1 * c.Y + w2 * q.Y);
+                        node.Box.Add(pt);
+                        corner.Add(pt);
+                    }
                 }
+                corner.Add(q);
+                if (Geo.Hypot(q.X - p.X, q.Y - p.Y) > 0.2) node.Corners.Add(corner.ToArray());
             }
         }
 

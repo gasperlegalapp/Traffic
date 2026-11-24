@@ -49,7 +49,7 @@ Controls: add cars, pick or tune the driver for new cars, click a car to inspect
 
 ## Art
 
-The cars, trucks, trees, bushes and rocks are from [Kenney's](https://www.kenney.nl) Car Kit and Nature Kit, which are public domain (CC0). The sources are in `Art/`; `Tools/BakeArt/bake.py` converts them into the one file the game loads. Motorcycles, roads, signals and the interface are drawn by code.
+The cars, trucks and rocks are from [Kenney's](https://www.kenney.nl) Car Kit and Nature Kit, and the ground, asphalt, concrete and gravel textures are built from photo scans by [ambientCG](https://ambientcg.com). All are public domain (CC0). Trees and bushes are shaped in code and covered with a foliage texture. The sources are in `Art/`; `Tools/BakeArt/bake.py` converts them into the one file the game loads. Motorcycles, roads, signals and the interface are drawn by code.
 
 ## Run it
 

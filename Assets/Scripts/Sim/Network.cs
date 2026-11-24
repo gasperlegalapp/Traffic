@@ -141,6 +141,8 @@ namespace Traffic.Sim
         public double InLeft, InRight, OutLeft, OutRight;
         /// <summary>How far this road's centerline is moved sideways where it meets the node, toward the clockwise side looking outward. Used to hang a ramp off the edge of a highway.</summary>
         public double Shift;
+        /// <summary>How far the pavement reaches either side of the road's line where it meets the intersection: to the right and to the left, looking away from it.</summary>
+        public double EdgeCw, EdgeCcw;
         /// <summary>How far the innermost lane's left edge is from the road's centerline: half a median, or negative on a one-way road centered on its line.</summary>
         public double Inner;
     }
@@ -157,6 +159,8 @@ namespace Traffic.Sim
         public JunctionMode DefaultMode;
         /// <summary>Outline of the pavement inside the intersection.</summary>
         public List<Vec> Box = new List<Vec>();
+        /// <summary>The edge of the pavement round each corner, from one road to the next, with the pavement on its left.</summary>
+        public List<Vec[]> Corners = new List<Vec[]>();
 
         /// <summary>
         /// A real intersection with a light or stop signs, as opposed to a bend, a place where a
@@ -176,6 +180,10 @@ namespace Traffic.Sim
         public double Peak;
         /// <summary>For a bridge or tunnel: the height at each point. Null on the ground.</summary>
         public double[] Heights;
+        /// <summary>The speed limit of the road it is part of, meters per second.</summary>
+        public double Speed;
+        /// <summary>True when the left side is the edge of the road too (a one-way road), not its centerline.</summary>
+        public bool LeftIsEdge;
     }
 
     public sealed class Marking

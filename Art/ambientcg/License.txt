@@ -1,0 +1,5 @@
+These textures are from ambientCG (https://ambientcg.com), by Lennart Demes.
+They are released under Creative Commons CC0 1.0 Universal (public domain):
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Each file is the 1K color map of the asset it is named after.

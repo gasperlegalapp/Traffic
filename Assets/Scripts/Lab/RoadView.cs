@@ -54,28 +54,85 @@ namespace Traffic.Lab
 
             MeshKit.Spawn("Ground", GroundMesh(3000), GroundMaterial(), root, false);
 
-            // A pale verge runs along every road and round every intersection, under the asphalt.
-            const double verge = 0.9;
-            var edging = new FlatBuilder();
-            var asphalt = new FlatBuilder();
-            var deck = new FlatBuilder();
+            // What the roads are made of. Asphalt and gravel take their texture from where they lie
+            // on the map; a sidewalk takes it from along its own length, a slab at a time.
+            Texture2D asphaltPhoto = ArtKit.Photo("asphalt"), walkPhoto = ArtKit.Photo("sidewalk"), gravelPhoto = ArtKit.Photo("gravel");
+            var asphalt = new SurfaceBuilder(64);
+            var deck = new SurfaceBuilder(64);
+            var walks = new SurfaceBuilder(1);
+            var shoulders = new SurfaceBuilder(12);
+            var lawn = new SurfaceBuilder(GroundTile);
             var skirt = new FlatBuilder();
             var buried = new FlatBuilder();
             var mouths = new FlatBuilder();
+            var grime = new ShadeBuilder();
+
+            // Where the lanes are, so that a sidewalk can be kept off the next road at a sharp corner.
+            var lanePoints = new Dictionary<long, List<Vec>>();
+            foreach (Lane lane in world.Lanes)
+            {
+                if (lane.Kind != LaneKind.Road) continue;
+                for (double d = 0; d <= lane.Length; d += 2)
+                {
+                    PathPose at = lane.Path.At(d);
+                    long key = Key((int)System.Math.Floor(at.X / 4), (int)System.Math.Floor(at.Y / 4));
+                    List<Vec> list;
+                    if (!lanePoints.TryGetValue(key, out list)) lanePoints[key] = list = new List<Vec>();
+                    list.Add(at.Point);
+                }
+            }
+            bool OnALane(Vec p)
+            {
+                int cx = (int)System.Math.Floor(p.X / 4), cy = (int)System.Math.Floor(p.Y / 4);
+                for (int i = cx - 1; i <= cx + 1; i++)
+                {
+                    for (int j = cy - 1; j <= cy + 1; j++)
+                    {
+                        List<Vec> list;
+                        if (!lanePoints.TryGetValue(Key(i, j), out list)) continue;
+                        foreach (Vec q in list) if (Geo.Hypot(q.X - p.X, q.Y - p.Y) < LaneReach) return true;
+                    }
+                }
+                return false;
+            }
+            // The roadside along one edge of the pavement: a raised sidewalk with a curb on a street,
+            // a gravel shoulder on a highway. Side is 1 for the right of the line, -1 for the left.
+            void Roadside(IList<Vec> edge, int side, bool fast)
+            {
+                if (edge.Count < 2) return;
+                if (fast)
+                {
+                    Vec[] outer = Geo.Offset(new List<Vec>(edge), side * ShoulderWidth);
+                    if (side > 0) shoulders.Strip(edge, outer, 0.022f);
+                    else shoulders.Strip(outer, edge, 0.022f);
+                    return;
+                }
+                var list = new List<Vec>(edge);
+                Vec[] full = Geo.Offset(list, side * WalkWidth), slim = Geo.Offset(list, side * 0.35);
+                var far = new Vec[edge.Count];
+                for (int i = 0; i < far.Length; i++) far[i] = OnALane(full[i]) ? slim[i] : full[i];
+                walks.Ribbon(edge, far, CurbHeight, 1.6f);
+                walks.Wall(edge, 0.02f, CurbHeight, 1.6f, -side);
+                // The road is darker along the curb, where the dirt gathers.
+                grime.Along(list, new[] { 0, -side * 0.25, -side * 0.9 }, new[] { 0.3f, 0.2f, 0f }, 0.04f, false, 2);
+            }
+
             bool anyBridge = false, anyTunnel = false;
             foreach (Strip s in world.Surfaces)
             {
+                bool fast = s.Speed >= FastRoad;
                 if (s.Heights == null)
                 {
                     asphalt.Strip(s.Left, s.Right, 0.03f);
-                    edging.Strip(Geo.Offset(s.Left, -verge), Geo.Offset(s.Right, verge), 0.012f);
+                    Roadside(s.Right, 1, fast);
+                    if (s.LeftIsEdge) Roadside(s.Left, -1, fast);
                     continue;
                 }
                 if (s.Peak > 0)
                 {
                     // A bridge: a raised deck that hides and shades the road beneath, with walls down its sides.
                     anyBridge = true;
-                    deck.Strip(s.Left, s.Right, s.Heights, 0.03f);
+                    deck.Strip(s.Left, s.Right, 0.03f, s.Heights);
                     skirt.Skirt(s.Right, s.Heights, 0.03f);
                     skirt.Skirt(s.Left, s.Heights, 0.03f);
                     continue;
@@ -88,7 +145,8 @@ namespace Traffic.Lab
                 {
                     Vec[] l = Part(s.Left, run), r = Part(s.Right, run);
                     asphalt.Strip(l, r, 0.03f);
-                    edging.Strip(Geo.Offset(l, -verge), Geo.Offset(r, verge), 0.012f);
+                    Roadside(r, 1, true);
+                    if (s.LeftIsEdge) Roadside(l, -1, true);
                 }
                 foreach (int[] run in Runs(s.Heights, true))
                 {
@@ -100,53 +158,72 @@ namespace Traffic.Lab
                     mouths.Strip(Part(l, new[] { l.Length - 1 - deep, l.Length - 1 }), Part(r, new[] { r.Length - 1 - deep, r.Length - 1 }), 0.06f);
                 }
             }
+            // Intersections: their pavement, and the roadside round each corner from one road to the next.
+            foreach (Node node in world.Nodes)
+            {
+                if (node.Box.Count <= 2) continue;
+                asphalt.Fan(node.Pos, node.Box, 0.03f);
+                double fastest = 0;
+                foreach (Lane lane in world.Lanes) if (lane.Kind == LaneKind.Road && lane.ApproachNode == node.Id) fastest = System.Math.Max(fastest, lane.SpeedLimit);
+                foreach (Vec[] corner in node.Corners) Roadside(corner, 1, fastest >= FastRoad);
+            }
+            Material asphaltMaterial = MeshKit.Textured(asphaltPhoto, asphaltPhoto != null ? Color.white : MeshKit.Hex(0x50545a), 0.12f);
+            MeshKit.Spawn("Asphalt", asphalt.Build(), asphaltMaterial, root, false);
+            if (!walks.Empty) MeshKit.Spawn("Sidewalks", walks.Build(), MeshKit.Textured(walkPhoto, walkPhoto != null ? Color.white : MeshKit.Hex(0xb0aea8), 0.05f), root, true);
+            if (!shoulders.Empty) MeshKit.Spawn("Shoulders", shoulders.Build(), MeshKit.Textured(gravelPhoto, gravelPhoto != null ? Color.white : MeshKit.Hex(0x89816f), 0), root, false);
             if (anyBridge)
             {
-                MeshKit.Spawn("Bridge deck", deck.Build(), MeshKit.Lit(MeshKit.Hex(0x3d424b), 0.05f), root, true);
-                MeshKit.Spawn("Bridge sides", skirt.Build(), MeshKit.Lit(MeshKit.Hex(0x7d8088), 0.05f), root, true);
+                MeshKit.Spawn("Bridge deck", deck.Build(), asphaltMaterial, root, true);
+                MeshKit.Spawn("Bridge sides", skirt.Build(), MeshKit.Lit(MeshKit.Hex(0x9a9890), 0.05f), root, true);
             }
             if (anyTunnel)
             {
                 MeshKit.Spawn("Tunnel lines", buried.Build(), MeshKit.Lit(MeshKit.Hex(0xd9dfc8), 0), root, false);
                 MeshKit.Spawn("Tunnel mouths", mouths.Build(), MeshKit.Lit(MeshKit.Hex(0x15181c), 0), root, false);
             }
-            foreach (Node node in world.Nodes)
+
+            // What traffic leaves on the road: two dark wheel tracks and a line of oil down each lane,
+            // heavier through an intersection where everyone brakes and turns.
+            foreach (Lane lane in world.Lanes)
             {
-                if (node.Box.Count <= 2) continue;
-                asphalt.Fan(node.Pos, node.Box, 0.03f);
-                var wider = new List<Vec>();
-                foreach (Vec p in node.Box)
-                {
-                    double away = System.Math.Max(Geo.Hypot(p.X - node.Pos.X, p.Y - node.Pos.Y), 1e-6);
-                    wider.Add(new Vec(p.X + (p.X - node.Pos.X) / away * verge, p.Y + (p.Y - node.Pos.Y) / away * verge));
-                }
-                edging.Fan(node.Pos, wider, 0.012f);
+                if (lane.Peak != 0) continue;
+                bool turning = lane.Kind == LaneKind.Connector;
+                float tyre = turning ? 0.2f : 0.13f, oil = turning ? 0.04f : 0.08f;
+                grime.Along(lane.Path.Pts, new[] { -1.35, -0.85, -0.4, -0.12, 0.12, 0.4, 0.85, 1.35 }, new[] { 0f, tyre, tyre * 0.15f, oil, oil, tyre * 0.15f, tyre, 0f }, 0.045f, true, 2);
             }
-            MeshKit.Spawn("Verge", edging.Build(), MeshKit.Lit(MeshKit.Hex(0xb7b19c), 0), root, false);
+            if (!grime.Empty) MeshKit.Spawn("Wear", grime.Build(), MeshKit.Shade, root, false).GetComponent<MeshRenderer>().receiveShadows = false;
+
             if (world.Medians.Count > 0)
             {
-                // The strip of grass down the middle of a divided road, with a row of bushes along it.
-                var grass = new FlatBuilder();
-                var plants = new SceneryBuilder();
-                List<ArtModel> bushes = ArtKit.Named("bush/");
+                // The strip down the middle of a divided road: grass behind a curb, with a row of bushes along it.
+                var plants = new CanopyBuilder();
                 int planted = 0;
                 foreach (Strip m in world.Medians)
                 {
-                    if (m.Heights == null) grass.Strip(m.Left, m.Right, 0.08f);
-                    else if (m.Peak > 0) grass.Strip(m.Left, m.Right, m.Heights, 0.08f);
-                    else foreach (int[] run in Runs(m.Heights, false)) grass.Strip(Part(m.Left, run), Part(m.Right, run), 0.08f);
-                    if (bushes.Count == 0 || m.Heights != null) continue;
-                    for (int i = 9; i < m.Left.Length - 9; i += 13)
+                    if (m.Heights != null && m.Peak > 0)
                     {
-                        var at = MeshKit.ToWorld((m.Left[i].X + m.Right[i].X) / 2, (m.Left[i].Y + m.Right[i].Y) / 2, 0.08f);
-                        plants.Add(bushes[planted % bushes.Count], at, planted * 1.7f, 0.7f, planted % ArtKit.SummerLeaves);
+                        lawn.Strip(m.Left, m.Right, 0.08f, m.Heights);
+                        continue;
+                    }
+                    List<int[]> runs = m.Heights != null ? Runs(m.Heights, false) : new List<int[]> { new[] { 0, m.Left.Length - 1 } };
+                    foreach (int[] run in runs)
+                    {
+                        Vec[] l = Part(m.Left, run), r = Part(m.Right, run);
+                        lawn.Strip(l, r, CurbHeight);
+                        walks.Wall(l, 0.02f, CurbHeight, 1.6f, -1);
+                        walks.Wall(r, 0.02f, CurbHeight, 1.6f, 1);
+                    }
+                    if (m.Heights != null) continue;
+                    for (int i = 9; i < m.Left.Length - 9; i += 11)
+                    {
+                        var at = MeshKit.ToWorld((m.Left[i].X + m.Right[i].X) / 2, (m.Left[i].Y + m.Right[i].Y) / 2, CurbHeight);
+                        plants.Bush(at, 0.75f, planted % ArtKit.SummerLeaves, planted * 7 + 3);
                         planted++;
                     }
                 }
-                MeshKit.Spawn("Medians", grass.Build(), MeshKit.Lit(MeshKit.Hex(0x6fa858), 0), root, false);
-                if (planted > 0) MeshKit.Spawn("Median plants", plants.Build(), ArtKit.Shared, root, true);
+                MeshKit.Spawn("Medians", lawn.Build(), GroundMaterial(), root, false);
+                if (planted > 0) MeshKit.Spawn("Median plants", plants.Build(), ArtKit.Canopy, root, true);
             }
-            MeshKit.Spawn("Asphalt", asphalt.Build(), MeshKit.Lit(MeshKit.Hex(0x3d4249), 0.05f), root, false);
 
             var white = new FlatBuilder();
             var yellow = new FlatBuilder();
@@ -172,8 +249,30 @@ namespace Traffic.Lab
                 }
             }
             foreach (ArrowMark arrow in world.Arrows) PaintArrows(arrow, white, red);
-            MeshKit.Spawn("White paint", white.Build(), MeshKit.Lit(MeshKit.Hex(0xe8ecf1), 0), root, false);
-            MeshKit.Spawn("Yellow paint", yellow.Build(), MeshKit.Lit(MeshKit.Hex(0xf2c230), 0), root, false);
+            // A crosswalk over each road where it comes into an intersection with a light or stop signs:
+            // a row of bars just beyond the stop lines.
+            foreach (Node node in world.Nodes)
+            {
+                if (!node.Controlled) continue;
+                foreach (Approach arm in node.Arms)
+                {
+                    if (arm.Inbound.Count == 0 && arm.Outbound.Count == 0) continue;
+                    double dx = System.Math.Cos(arm.Angle), dy = System.Math.Sin(arm.Angle);
+                    double near = node.Radius - 3.4, far = node.Radius - 0.9;
+                    for (double x = -arm.EdgeCcw + 0.7; x <= arm.EdgeCw - 0.7; x += 1.25)
+                    {
+                        // Across the road: x to the right of its line, looking away from the intersection.
+                        Vec At(double along, double across)
+                        {
+                            return new Vec(node.Pos.X + dx * along + dy * across, node.Pos.Y + dy * along - dx * across);
+                        }
+                        white.Strip(new[] { At(near, x - 0.28), At(far, x - 0.28) }, new[] { At(near, x + 0.28), At(far, x + 0.28) }, 0.07f);
+                    }
+                }
+            }
+            // Road paint is never quite white, and the yellow is nearer mustard than lemon.
+            MeshKit.Spawn("White paint", white.Build(), MeshKit.Lit(MeshKit.Hex(0xdcdcd2), 0), root, false);
+            MeshKit.Spawn("Yellow paint", yellow.Build(), MeshKit.Lit(MeshKit.Hex(0xdcb23c), 0), root, false);
             MeshKit.Spawn("Red paint", red.Build(), MeshKit.Lit(MeshKit.Hex(0xe5383b), 0), root, false);
 
             foreach (StopLine sl in world.StopLines)
@@ -209,6 +308,11 @@ namespace Traffic.Lab
 
             AddScenery(world, root);
         }
+
+        /// <summary>A road this fast (meters per second) has gravel shoulders; a slower one has curbs and sidewalks.</summary>
+        private const double FastRoad = 24;
+        private const double WalkWidth = 2.2, ShoulderWidth = 2.6, LaneReach = 2.1;
+        private const float CurbHeight = 0.16f;
 
         /// <summary>How far below the ground a tunnel is before it is covered over and out of sight.</summary>
         public const double Covered = 2.4;
@@ -247,7 +351,7 @@ namespace Traffic.Lab
         private static Texture2D groundTexture;
         private static Material groundMaterial;
         /// <summary>How much ground one copy of the ground texture covers, in meters.</summary>
-        private const float GroundTile = 640;
+        private const float GroundTile = 128;
 
         /// <summary>A whole number scrambled into a fraction from 0 to 1. The same numbers always give the same answer.</summary>
         private static float Rand(int x, int y, int salt)
@@ -281,10 +385,19 @@ namespace Traffic.Lab
             return Mathf.Lerp(low, high, fy);
         }
 
-        /// <summary>Grass in soft patches: darker and lusher here, paler and drier there.</summary>
+        /// <summary>
+        /// Open ground: grass, rougher grass and bare earth in drifts, from photographs. Without
+        /// the picture, a painted stand-in of soft green patches.
+        /// </summary>
         private static Material GroundMaterial()
         {
-            if (groundMaterial != null && groundTexture != null) return groundMaterial;
+            if (groundMaterial != null && groundMaterial.mainTexture != null) return groundMaterial;
+            Texture2D photo = ArtKit.Photo("ground");
+            if (photo != null)
+            {
+                groundMaterial = MeshKit.Textured(photo, Color.white, 0);
+                return groundMaterial;
+            }
             const int n = 256;
             Color lush = MeshKit.Hex(0x6e9753), grass = MeshKit.Hex(0x81a65b), dry = MeshKit.Hex(0xa6ad6b);
             var pixels = new Color32[n * n];
@@ -326,7 +439,8 @@ namespace Traffic.Lab
         private sealed class Patch
         {
             public int Signature;
-            public Mesh Mesh;
+            /// <summary>The tree tops and bushes, the rocks, and the shade on the ground under the trees. Any may be null.</summary>
+            public Mesh Leaves, Rocks, Shade;
         }
 
         /// <summary>
@@ -351,12 +465,7 @@ namespace Traffic.Lab
         /// </summary>
         private static void AddScenery(World world, Transform root)
         {
-            List<ArtModel> trees = ArtKit.Named("tree/"), pines = ArtKit.Named("pine/"), bushes = ArtKit.Named("bush/"), rocks = ArtKit.Named("rock/");
-            if (trees.Count == 0 || pines.Count == 0 || bushes.Count == 0 || rocks.Count == 0)
-            {
-                AddTrees(world, root);
-                return;
-            }
+            List<ArtModel> rocks = ArtKit.Named("rock/");
 
             // Mark the ground the roads take up, in small squares, so any spot can be checked at once.
             const double cell = 5;
@@ -405,21 +514,20 @@ namespace Traffic.Lab
                             {
                                 bool pine = Hills((float)x / 240, (float)y / 240, 13) > 0.62f;
                                 bool autumn = Hills((float)x / 130, (float)y / 130, 14) > 0.5f && Rand(i, j, 4) < 0.7f;
-                                List<ArtModel> kinds = pine ? pines : trees;
                                 int leaf = pine ? ArtKit.SummerLeaves + ArtKit.AutumnLeaves + (int)(Rand(i, j, 5) * ArtKit.PineLeaves)
                                     : autumn ? ArtKit.SummerLeaves + (int)(Rand(i, j, 5) * ArtKit.AutumnLeaves)
                                     : (int)(Rand(i, j, 5) * ArtKit.SummerLeaves);
-                                plants.Add(new Plant { Model = kinds[(int)(Rand(i, j, 6) * kinds.Count)], X = x, Y = y, Turn = Rand(i, j, 7) * 6.2832f, Scale = 0.8f + 0.5f * Rand(i, j, 8), Leaf = leaf });
+                                // A dark-leaved tree is narrower and taller than a broad-leaved one.
+                                plants.Add(new Plant { Kind = pine ? 1 : 0, X = x, Y = y, Turn = Rand(i, j, 7) * 6.2832f, Scale = 0.8f + 0.5f * Rand(i, j, 8), Leaf = leaf, Seed = i * 7919 + j });
                                 signature = signature * 31 + (i * 7919 + j) * 2 + 1;
                             }
                             // Undergrowth: a bush in some squares, more of them in the woods, and now and then a rock.
                             double bx = (i + Rand(i, j, 9)) * Plot, by = (j + Rand(i, j, 10)) * Plot;
                             float pick = Rand(i, j, 15);
                             bool bush = pick < 0.06f + wood * 0.3f;
-                            if ((bush || pick > 0.97f) && Open(bx, by))
+                            if ((bush || (pick > 0.97f && rocks.Count > 0)) && Open(bx, by))
                             {
-                                List<ArtModel> kinds = bush ? bushes : rocks;
-                                plants.Add(new Plant { Model = kinds[(int)(Rand(i, j, 16) * kinds.Count)], X = bx, Y = by, Turn = Rand(i, j, 17) * 6.2832f, Scale = 0.9f + 0.7f * Rand(i, j, 18), Leaf = (int)(Rand(i, j, 19) * ArtKit.SummerLeaves) });
+                                plants.Add(new Plant { Kind = bush ? 2 : 3, Model = bush ? null : rocks[(int)(Rand(i, j, 16) * rocks.Count)], X = bx, Y = by, Turn = Rand(i, j, 17) * 6.2832f, Scale = 0.9f + 0.7f * Rand(i, j, 18), Leaf = (int)(Rand(i, j, 19) * ArtKit.SummerLeaves), Seed = i * 104729 + j });
                                 signature = signature * 31 + (i * 7919 + j) * 2;
                             }
                         }
@@ -427,21 +535,40 @@ namespace Traffic.Lab
                     if (plants.Count == 0) continue;
                     Patch patch;
                     long key = Key(px, py);
-                    if (!patches.TryGetValue(key, out patch) || patch.Mesh == null || patch.Signature != signature)
+                    if (!patches.TryGetValue(key, out patch) || patch.Signature != signature || (patch.Leaves == null && patch.Rocks == null))
                     {
-                        if (patch != null && patch.Mesh != null) Object.Destroy(patch.Mesh);
-                        var b = new SceneryBuilder();
-                        foreach (Plant p in plants) b.Add(p.Model, MeshKit.ToWorld(p.X, p.Y), p.Turn, p.Scale, p.Leaf);
-                        patch = new Patch { Signature = signature, Mesh = b.Build() };
+                        if (patch != null) foreach (Mesh old in new[] { patch.Leaves, patch.Rocks, patch.Shade }) if (old != null) Object.Destroy(old);
+                        var leaves = new CanopyBuilder();
+                        var stones = new SceneryBuilder();
+                        var shade = new ShadeBuilder();
+                        foreach (Plant p in plants)
+                        {
+                            Vector3 at = MeshKit.ToWorld(p.X, p.Y);
+                            if (p.Kind == 3) stones.Add(p.Model, at, p.Turn, p.Scale, 0);
+                            else if (p.Kind == 2) leaves.Bush(at, 0.9f * p.Scale, p.Leaf, p.Seed);
+                            else
+                            {
+                                float spread = (p.Kind == 1 ? 2.2f : 3.1f) * p.Scale, height = (p.Kind == 1 ? 10f : 7.5f) * p.Scale;
+                                leaves.Tree(at, spread, height, p.Leaf, p.Seed);
+                                // It is darker on the ground under a tree, whatever the sun is doing.
+                                shade.Disc(p.X, p.Y, spread * 1.3, 0.05f, 0.34f);
+                            }
+                        }
+                        patch = new Patch { Signature = signature, Leaves = leaves.Empty ? null : leaves.Build(), Rocks = stones.Count == 0 ? null : stones.Build(), Shade = shade.Empty ? null : shade.Build() };
                         patches[key] = patch;
                     }
-                    MeshKit.Spawn("Patch", patch.Mesh, ArtKit.Shared, holder, true);
+                    if (patch.Leaves != null) MeshKit.Spawn("Leaves", patch.Leaves, ArtKit.Canopy, holder, true);
+                    if (patch.Rocks != null) MeshKit.Spawn("Rocks", patch.Rocks, ArtKit.Shared, holder, true);
+                    if (patch.Shade != null) MeshKit.Spawn("Shade", patch.Shade, MeshKit.Shade, holder, false).GetComponent<MeshRenderer>().receiveShadows = false;
                 }
             }
         }
 
         private struct Plant
         {
+            /// <summary>0 a broad-leaved tree, 1 a dark, narrow one, 2 a bush, 3 a rock.</summary>
+            public int Kind;
+            public int Seed;
             public ArtModel Model;
             public double X, Y;
             public float Turn, Scale;
@@ -619,7 +746,7 @@ namespace Traffic.Lab
             // Meshes made for these roads would otherwise pile up, one set for every change to the map.
             // The scenery patches are kept, because the next set of roads reuses them.
             var kept = new HashSet<Mesh>();
-            foreach (Patch patch in patches.Values) if (patch.Mesh != null) kept.Add(patch.Mesh);
+            foreach (Patch patch in patches.Values) foreach (Mesh mesh in new[] { patch.Leaves, patch.Rocks, patch.Shade }) if (mesh != null) kept.Add(mesh);
             foreach (MeshFilter filter in rootObject.GetComponentsInChildren<MeshFilter>(true))
             {
                 Mesh mesh = filter.sharedMesh;
