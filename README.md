@@ -38,6 +38,10 @@ Special drivers stand out in a loud color and upset everyone around them:
 
 Controls: add cars, pick or tune the driver for new cars, click a car to inspect and retune it live, click an intersection to change how it is controlled, force a cut-in, pause, step and change speed. Drag to pan, scroll to zoom.
 
+## Art
+
+The cars, trucks, trees, bushes and rocks are from [Kenney's](https://www.kenney.nl) Car Kit and Nature Kit, which are public domain (CC0). The sources are in `Art/`; `Tools/BakeArt/bake.py` converts them into the one file the game loads. Motorcycles, roads, signals and the interface are drawn by code.
+
 ## Run it
 
 Open the folder in Unity Hub (Add, then Add project from disk) with Unity 6000.6.3f1 and press Play. Everything is created by code, so any scene works.

@@ -300,7 +300,7 @@ namespace Traffic.Lab
         /// <summary>Guide lines while building: a mark on every point, and the road about to be placed.</summary>
         private void GuideLines()
         {
-            var faint = new Color(1, 1, 1, 0.55f);
+            var faint = new Color(1, 1, 1, 0.6f);
             foreach (Vec n in drawing.Nodes) Mark(n, 2.5, faint);
 
             Vec hover;
@@ -315,7 +315,8 @@ namespace Traffic.Lab
                 return;
             }
             Vec end = drawing.SnapTo(hover).Point;
-            var good = new Color(0.37f, 0.88f, 0.75f, 1);
+            // White shows up on both grass and asphalt.
+            var good = new Color(1, 1, 1, 1);
             if (!hasStart)
             {
                 Mark(end, 4, good);
@@ -377,7 +378,7 @@ namespace Traffic.Lab
                 cam = go.AddComponent<Camera>();
             }
             cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = MeshKit.Hex(0x1c2622);
+            cam.backgroundColor = MeshKit.Hex(0x7c9f58);
             cam.orthographic = false;
             cam.fieldOfView = 30;
             cam.nearClipPlane = 5;
@@ -393,10 +394,11 @@ namespace Traffic.Lab
             sun.type = LightType.Directional;
             sun.color = MeshKit.Hex(0xfff1d6);
             // The same numbers come out darker under URP than under the built-in pipeline, so each gets its own.
-            sun.intensity = MeshKit.Scriptable ? 1.25f : 0.8f;
+            sun.intensity = MeshKit.Scriptable ? 1.4f : 0.9f;
             sun.shadows = LightShadows.Soft;
-            sun.shadowStrength = 0.6f;
-            sun.transform.rotation = Quaternion.LookRotation(new Vector3(140, -260, 120));
+            sun.shadowStrength = 0.55f;
+            // A fairly low sun, so trees and trucks throw long shadows across the ground.
+            sun.transform.rotation = Quaternion.LookRotation(new Vector3(150, -190, 110));
 
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
             RenderSettings.ambientLight = MeshKit.Scriptable ? MeshKit.Hex(0x8e99a3) : MeshKit.Hex(0x4a5258);

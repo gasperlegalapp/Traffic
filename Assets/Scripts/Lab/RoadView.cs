@@ -1,10 +1,11 @@
 using System.Collections.Generic;
+using Traffic.Art;
 using Traffic.Sim;
 using UnityEngine;
 
 namespace Traffic.Lab
 {
-    /// <summary>Ground, pavement, paint, trees and the traffic signals.</summary>
+    /// <summary>Ground, pavement, paint, scenery and the traffic signals.</summary>
     public sealed class RoadView
     {
         private static readonly Color Green = MeshKit.Hex(0x35e07a);
@@ -51,11 +52,11 @@ namespace Traffic.Lab
             Transform root = rootObject.transform;
             root.SetParent(parent, false);
 
-            var ground = new FlatBuilder();
-            const double g = 3000;
-            ground.Strip(new[] { new Vec(-g, -g), new Vec(-g, g) }, new[] { new Vec(g, -g), new Vec(g, g) }, 0);
-            MeshKit.Spawn("Ground", ground.Build(), MeshKit.Lit(MeshKit.Hex(0x2c3d33), 0), root, false);
+            MeshKit.Spawn("Ground", GroundMesh(3000), GroundMaterial(), root, false);
 
+            // A pale verge runs along every road and round every intersection, under the asphalt.
+            const double verge = 0.9;
+            var edging = new FlatBuilder();
             var asphalt = new FlatBuilder();
             var deck = new FlatBuilder();
             var skirt = new FlatBuilder();
@@ -65,6 +66,7 @@ namespace Traffic.Lab
                 if (s.Peak <= 0)
                 {
                     asphalt.Strip(s.Left, s.Right, 0.03f);
+                    edging.Strip(Geo.Offset(s.Left, -verge), Geo.Offset(s.Right, verge), 0.012f);
                     continue;
                 }
                 // A bridge: a raised deck that hides and shades the road beneath, with walls down its sides.
@@ -77,8 +79,20 @@ namespace Traffic.Lab
                 MeshKit.Spawn("Bridge deck", deck.Build(), MeshKit.Lit(MeshKit.Hex(0x3d424b), 0.05f), root, true);
                 MeshKit.Spawn("Bridge sides", skirt.Build(), MeshKit.Lit(MeshKit.Hex(0x7d8088), 0.05f), root, true);
             }
-            foreach (Node node in world.Nodes) if (node.Box.Count > 2) asphalt.Fan(node.Pos, node.Box, 0.03f);
-            MeshKit.Spawn("Asphalt", asphalt.Build(), MeshKit.Lit(MeshKit.Hex(0x353a42), 0.05f), root, false);
+            foreach (Node node in world.Nodes)
+            {
+                if (node.Box.Count <= 2) continue;
+                asphalt.Fan(node.Pos, node.Box, 0.03f);
+                var wider = new List<Vec>();
+                foreach (Vec p in node.Box)
+                {
+                    double away = System.Math.Max(Geo.Hypot(p.X - node.Pos.X, p.Y - node.Pos.Y), 1e-6);
+                    wider.Add(new Vec(p.X + (p.X - node.Pos.X) / away * verge, p.Y + (p.Y - node.Pos.Y) / away * verge));
+                }
+                edging.Fan(node.Pos, wider, 0.012f);
+            }
+            MeshKit.Spawn("Verge", edging.Build(), MeshKit.Lit(MeshKit.Hex(0xb7b19c), 0), root, false);
+            MeshKit.Spawn("Asphalt", asphalt.Build(), MeshKit.Lit(MeshKit.Hex(0x3d4249), 0.05f), root, false);
 
             var white = new FlatBuilder();
             var yellow = new FlatBuilder();
@@ -126,7 +140,213 @@ namespace Traffic.Lab
             nodeRing = MeshKit.Spawn("Selected intersection", ringMesh.Build(), MeshKit.Unlit(MeshKit.Hex(0x5ee0c0)), root, false).transform;
             nodeRing.gameObject.SetActive(false);
 
-            AddTrees(world, root);
+            AddScenery(world, root);
+        }
+
+        // ------------------------------------------------------------ ground
+
+        private static Texture2D groundTexture;
+        private static Material groundMaterial;
+        /// <summary>How much ground one copy of the ground texture covers, in meters.</summary>
+        private const float GroundTile = 640;
+
+        /// <summary>A whole number scrambled into a fraction from 0 to 1. The same numbers always give the same answer.</summary>
+        private static float Rand(int x, int y, int salt)
+        {
+            unchecked
+            {
+                uint h = (uint)x * 374761393u + (uint)y * 668265263u + (uint)salt * 2246822519u;
+                h = (h ^ (h >> 13)) * 1274126177u;
+                h ^= h >> 16;
+                return (h & 0xffffff) / 16777216f;
+            }
+        }
+
+        /// <summary>Smooth random hills, 0 to 1. With a period it repeats, so a texture made from it tiles.</summary>
+        private static float Hills(float x, float y, int salt, int period = 0)
+        {
+            int x0 = Mathf.FloorToInt(x), y0 = Mathf.FloorToInt(y);
+            float fx = x - x0, fy = y - y0;
+            fx = fx * fx * (3 - 2 * fx);
+            fy = fy * fy * (3 - 2 * fy);
+            int x1 = x0 + 1, y1 = y0 + 1;
+            if (period > 0)
+            {
+                x0 = (x0 % period + period) % period;
+                y0 = (y0 % period + period) % period;
+                x1 = (x1 % period + period) % period;
+                y1 = (y1 % period + period) % period;
+            }
+            float low = Mathf.Lerp(Rand(x0, y0, salt), Rand(x1, y0, salt), fx);
+            float high = Mathf.Lerp(Rand(x0, y1, salt), Rand(x1, y1, salt), fx);
+            return Mathf.Lerp(low, high, fy);
+        }
+
+        /// <summary>Grass in soft patches: darker and lusher here, paler and drier there.</summary>
+        private static Material GroundMaterial()
+        {
+            if (groundMaterial != null && groundTexture != null) return groundMaterial;
+            const int n = 256;
+            Color lush = MeshKit.Hex(0x6e9753), grass = MeshKit.Hex(0x81a65b), dry = MeshKit.Hex(0xa6ad6b);
+            var pixels = new Color32[n * n];
+            for (int y = 0; y < n; y++)
+            {
+                for (int x = 0; x < n; x++)
+                {
+                    float u = x / (float)n, v = y / (float)n;
+                    float t = Hills(u * 4, v * 4, 1, 4) * 0.55f + Hills(u * 12, v * 12, 2, 12) * 0.3f + Hills(u * 48, v * 48, 3, 48) * 0.15f;
+                    t = Mathf.Clamp01((t - 0.5f) * 2.2f + 0.5f);
+                    pixels[y * n + x] = t < 0.5f ? Color.Lerp(lush, grass, t * 2) : Color.Lerp(grass, dry, t * 2 - 1);
+                }
+            }
+            groundTexture = new Texture2D(n, n, TextureFormat.RGBA32, true);
+            groundTexture.SetPixels32(pixels);
+            groundTexture.wrapMode = TextureWrapMode.Repeat;
+            groundTexture.filterMode = FilterMode.Trilinear;
+            groundTexture.Apply(true);
+            groundMaterial = MeshKit.Lit(Color.white, 0);
+            groundMaterial.mainTexture = groundTexture;
+            return groundMaterial;
+        }
+
+        /// <summary>One big flat square, with the ground texture repeating across it.</summary>
+        private static Mesh GroundMesh(float half)
+        {
+            var mesh = new Mesh { name = "Ground" };
+            mesh.vertices = new[] { new Vector3(-half, 0, -half), new Vector3(-half, 0, half), new Vector3(half, 0, half), new Vector3(half, 0, -half) };
+            mesh.normals = new[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up };
+            float r = half / GroundTile;
+            mesh.uv = new[] { new Vector2(-r, -r), new Vector2(-r, r), new Vector2(r, r), new Vector2(r, -r) };
+            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        // ------------------------------------------------------------ scenery
+
+        private sealed class Patch
+        {
+            public int Signature;
+            public Mesh Mesh;
+        }
+
+        /// <summary>
+        /// Scenery is built in square patches and kept from one set of roads to the next, so
+        /// that drawing a road only rebuilds the patches it runs through.
+        /// </summary>
+        private static readonly Dictionary<long, Patch> patches = new Dictionary<long, Patch>();
+        /// <summary>The ground is divided into squares this big, each holding at most one tree.</summary>
+        private const double Plot = 15;
+        /// <summary>How many squares along each side of a patch.</summary>
+        private const int PatchPlots = 8;
+
+        private static long Key(int x, int y)
+        {
+            return ((long)x << 32) ^ (uint)y;
+        }
+
+        /// <summary>
+        /// Woods, bushes and rocks on the open ground. Each square of ground decides what
+        /// grows on it from its own position alone, so the scenery stays where it is when
+        /// the roads change, and only what a new road runs over disappears.
+        /// </summary>
+        private static void AddScenery(World world, Transform root)
+        {
+            List<ArtModel> trees = ArtKit.Named("tree/"), pines = ArtKit.Named("pine/"), bushes = ArtKit.Named("bush/"), rocks = ArtKit.Named("rock/");
+            if (trees.Count == 0 || pines.Count == 0 || bushes.Count == 0 || rocks.Count == 0)
+            {
+                AddTrees(world, root);
+                return;
+            }
+
+            // Mark the ground the roads take up, in small squares, so any spot can be checked at once.
+            const double cell = 5;
+            var taken = new HashSet<long>();
+            void Block(double x, double y, double reach)
+            {
+                int x0 = (int)System.Math.Floor((x - reach) / cell), x1 = (int)System.Math.Floor((x + reach) / cell);
+                int y0 = (int)System.Math.Floor((y - reach) / cell), y1 = (int)System.Math.Floor((y + reach) / cell);
+                for (int i = x0; i <= x1; i++) for (int j = y0; j <= y1; j++) taken.Add(Key(i, j));
+            }
+            bool Open(double x, double y)
+            {
+                return !taken.Contains(Key((int)System.Math.Floor(x / cell), (int)System.Math.Floor(y / cell)));
+            }
+            foreach (Lane lane in world.Lanes)
+            {
+                for (double s = 0; s <= lane.Length; s += 4)
+                {
+                    PathPose p = lane.Path.At(s);
+                    Block(p.X, p.Y, 8.5);
+                }
+            }
+            foreach (Node node in world.Nodes) Block(node.Pos.X, node.Pos.Y, node.Radius + 7);
+
+            var holder = new GameObject("Scenery").transform;
+            holder.SetParent(root, false);
+            if (patches.Count > 900) patches.Clear();
+            double size = Plot * PatchPlots;
+            int reach = (int)System.Math.Ceiling((world.Extent + 130) / size);
+            for (int px = -reach; px < reach; px++)
+            {
+                for (int py = -reach; py < reach; py++)
+                {
+                    // First work out what stands in this patch; build its mesh only if that has changed.
+                    var plants = new List<Plant>();
+                    int signature = 17;
+                    for (int i = px * PatchPlots; i < (px + 1) * PatchPlots; i++)
+                    {
+                        for (int j = py * PatchPlots; j < (py + 1) * PatchPlots; j++)
+                        {
+                            double x = (i + Rand(i, j, 1)) * Plot, y = (j + Rand(i, j, 2)) * Plot;
+                            // Woods come in drifts, with clearings between them.
+                            float wood = Hills((float)x / 170, (float)y / 170, 11) * 0.65f + Hills((float)x / 60, (float)y / 60, 12) * 0.35f;
+                            float chance = Mathf.Clamp01((wood - 0.47f) * 3.4f) * 0.9f + 0.03f;
+                            if (Rand(i, j, 3) < chance && Open(x, y))
+                            {
+                                bool pine = Hills((float)x / 240, (float)y / 240, 13) > 0.62f;
+                                bool autumn = Hills((float)x / 130, (float)y / 130, 14) > 0.5f && Rand(i, j, 4) < 0.7f;
+                                List<ArtModel> kinds = pine ? pines : trees;
+                                int leaf = pine ? ArtKit.SummerLeaves + ArtKit.AutumnLeaves + (int)(Rand(i, j, 5) * ArtKit.PineLeaves)
+                                    : autumn ? ArtKit.SummerLeaves + (int)(Rand(i, j, 5) * ArtKit.AutumnLeaves)
+                                    : (int)(Rand(i, j, 5) * ArtKit.SummerLeaves);
+                                plants.Add(new Plant { Model = kinds[(int)(Rand(i, j, 6) * kinds.Count)], X = x, Y = y, Turn = Rand(i, j, 7) * 6.2832f, Scale = 0.8f + 0.5f * Rand(i, j, 8), Leaf = leaf });
+                                signature = signature * 31 + (i * 7919 + j) * 2 + 1;
+                            }
+                            // Undergrowth: a bush in some squares, more of them in the woods, and now and then a rock.
+                            double bx = (i + Rand(i, j, 9)) * Plot, by = (j + Rand(i, j, 10)) * Plot;
+                            float pick = Rand(i, j, 15);
+                            bool bush = pick < 0.06f + wood * 0.3f;
+                            if ((bush || pick > 0.97f) && Open(bx, by))
+                            {
+                                List<ArtModel> kinds = bush ? bushes : rocks;
+                                plants.Add(new Plant { Model = kinds[(int)(Rand(i, j, 16) * kinds.Count)], X = bx, Y = by, Turn = Rand(i, j, 17) * 6.2832f, Scale = 0.9f + 0.7f * Rand(i, j, 18), Leaf = (int)(Rand(i, j, 19) * ArtKit.SummerLeaves) });
+                                signature = signature * 31 + (i * 7919 + j) * 2;
+                            }
+                        }
+                    }
+                    if (plants.Count == 0) continue;
+                    Patch patch;
+                    long key = Key(px, py);
+                    if (!patches.TryGetValue(key, out patch) || patch.Mesh == null || patch.Signature != signature)
+                    {
+                        if (patch != null && patch.Mesh != null) Object.Destroy(patch.Mesh);
+                        var b = new SceneryBuilder();
+                        foreach (Plant p in plants) b.Add(p.Model, MeshKit.ToWorld(p.X, p.Y), p.Turn, p.Scale, p.Leaf);
+                        patch = new Patch { Signature = signature, Mesh = b.Build() };
+                        patches[key] = patch;
+                    }
+                    MeshKit.Spawn("Patch", patch.Mesh, ArtKit.Shared, holder, true);
+                }
+            }
+        }
+
+        private struct Plant
+        {
+            public ArtModel Model;
+            public double X, Y;
+            public float Turn, Scale;
+            public int Leaf;
         }
 
         /// <summary>
@@ -297,6 +517,15 @@ namespace Traffic.Lab
         /// <summary>Remove everything this view created, before loading another map.</summary>
         public void Destroy()
         {
+            // Meshes made for these roads would otherwise pile up, one set for every change to the map.
+            // The scenery patches are kept, because the next set of roads reuses them.
+            var kept = new HashSet<Mesh>();
+            foreach (Patch patch in patches.Values) if (patch.Mesh != null) kept.Add(patch.Mesh);
+            foreach (MeshFilter filter in rootObject.GetComponentsInChildren<MeshFilter>(true))
+            {
+                Mesh mesh = filter.sharedMesh;
+                if (mesh != null && !kept.Contains(mesh)) Object.Destroy(mesh);
+            }
             Object.Destroy(rootObject);
         }
 

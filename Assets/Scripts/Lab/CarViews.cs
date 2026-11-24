@@ -1,10 +1,14 @@
 using System.Collections.Generic;
+using Traffic.Art;
 using Traffic.Sim;
 using UnityEngine;
 
 namespace Traffic.Lab
 {
-    /// <summary>Draws every car: a simple body with working brake lights and turn signals.</summary>
+    /// <summary>
+    /// Draws every vehicle, with working brake lights and turn signals. Cars and trucks use the
+    /// modeled art when it is there (see ArtKit); otherwise, and for motorcycles, plain shapes.
+    /// </summary>
     public sealed class CarViews
     {
         private sealed class View
@@ -14,6 +18,8 @@ namespace Traffic.Lab
             public MeshRenderer[] Brakes;
             public MeshRenderer[] Left;
             public MeshRenderer[] Right;
+            /// <summary>True for a modeled vehicle. It has lamps of its own, so the added ones only show while lit.</summary>
+            public bool Modeled;
         }
 
         private readonly Transform root;
@@ -21,6 +27,8 @@ namespace Traffic.Lab
         private readonly HashSet<int> seen = new HashSet<int>();
         private readonly List<int> gone = new List<int>();
         private readonly Transform ring;
+        private readonly List<ArtModel> carModels = ArtKit.Named("car/");
+        private readonly List<ArtModel> truckModels = ArtKit.Named("truck/");
 
         private readonly Mesh body = MeshKit.Box(4.5f, 0.8f, 1.9f);
         private readonly Mesh cabin = MeshKit.Box(2.3f, 0.6f, 1.62f);
@@ -65,12 +73,21 @@ namespace Traffic.Lab
         {
             var go = new GameObject("Car " + car.Id);
             go.transform.SetParent(root, false);
-            var v = new View { Root = go, Paint = MeshKit.Lit(MeshKit.Hex(car.Color), 0.5f) };
+            List<ArtModel> models = car.Vehicle.Kind == VehicleKind.Truck ? truckModels : car.Vehicle.Kind == VehicleKind.Car ? carModels : null;
+            ArtModel art = models != null && models.Count > 0 ? models[car.Id % models.Count] : null;
+            var v = new View { Root = go, Modeled = art != null, Paint = art != null ? ArtKit.NewPaint(MeshKit.Hex(car.Color)) : MeshKit.Lit(MeshKit.Hex(car.Color), 0.5f) };
             float halfLen = (float)car.Len / 2;
             float halfWid = (float)car.Wid / 2;
             float lampY = 0.86f;
             Mesh lampMesh = lamp;
-            if (car.Vehicle.Kind == VehicleKind.Truck)
+            if (art != null)
+            {
+                // The model is already the simulation's size and faces +x. Its first part takes the paint.
+                GameObject body = MeshKit.Spawn("Body", ArtKit.MeshOf(art), v.Paint, go.transform);
+                body.GetComponent<MeshRenderer>().sharedMaterials = new[] { v.Paint, ArtKit.Shared };
+                lampY = car.Vehicle.Kind == VehicleKind.Truck ? 1.0f : 0.78f;
+            }
+            else if (car.Vehicle.Kind == VehicleKind.Truck)
             {
                 // A painted cab in front of a pale cargo box.
                 MeshKit.Spawn("Cab", truckCab, v.Paint, go.transform).transform.localPosition = new Vector3(halfLen - 1.0f, 1.25f, 0);
@@ -105,9 +122,21 @@ namespace Traffic.Lab
             v.Brakes = new[] { Lamp(lampMesh, brakeOff, back, inset), Lamp(lampMesh, brakeOff, back, -inset) };
             v.Left = new[] { Lamp(corner, blinkOff, front - 0.12f, edge), Lamp(corner, blinkOff, back + 0.12f, edge) };
             v.Right = new[] { Lamp(corner, blinkOff, front - 0.12f, -edge), Lamp(corner, blinkOff, back + 0.12f, -edge) };
-            Lamp(lampMesh, headlight, front, inset);
-            Lamp(lampMesh, headlight, front, -inset);
+            if (art == null)
+            {
+                Lamp(lampMesh, headlight, front, inset);
+                Lamp(lampMesh, headlight, front, -inset);
+            }
             return v;
+        }
+
+        private static void SetLamps(View v, MeshRenderer[] lamps, bool lit, Material on, Material off)
+        {
+            foreach (MeshRenderer r in lamps)
+            {
+                r.sharedMaterial = lit ? on : off;
+                r.enabled = lit || !v.Modeled;
+            }
         }
 
         /// <summary>Remove everything this view created, before loading another map.</summary>
@@ -134,10 +163,10 @@ namespace Traffic.Lab
                 }
                 v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.X, car.Y, (float)car.Height), MeshKit.Heading(car.H));
                 bool braking = car.A < -0.6 || (car.V < 0.2 && !car.Crashed);
-                foreach (MeshRenderer r in v.Brakes) r.sharedMaterial = braking ? brakeOn : brakeOff;
+                SetLamps(v, v.Brakes, braking, brakeOn, brakeOff);
                 bool hazard = car.Crashed && blink;
-                foreach (MeshRenderer r in v.Left) r.sharedMaterial = hazard || (car.Blinker < 0 && blink) ? blinkOn : blinkOff;
-                foreach (MeshRenderer r in v.Right) r.sharedMaterial = hazard || (car.Blinker > 0 && blink) ? blinkOn : blinkOff;
+                SetLamps(v, v.Left, hazard || (car.Blinker < 0 && blink), blinkOn, blinkOff);
+                SetLamps(v, v.Right, hazard || (car.Blinker > 0 && blink), blinkOn, blinkOff);
                 Color paint = MeshKit.Hex(car.Color);
                 if (car.Flash && time * 3 % 1 < 0.5) paint = Color.Lerp(paint, Color.white, 0.8f);
                 v.Paint.color = !car.Crashed ? paint : car.CrashMajor ? paint * 0.35f : paint * 0.75f;

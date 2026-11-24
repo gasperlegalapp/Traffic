@@ -10,6 +10,8 @@
   <ItemGroup>
     <Compile Include="../../Assets/Scripts/Sim/**/*.cs" />
     <Compile Include="../../Assets/Tests/Sim/**/*.cs" />
+    <Compile Include="../../Assets/Scripts/Art/**/*.cs" />
+    <Compile Include="ArtFileTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
