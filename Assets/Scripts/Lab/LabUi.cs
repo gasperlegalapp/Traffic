@@ -110,8 +110,8 @@ namespace Traffic.Lab
             dock.CanRedo = redo.Count > 0;
             dock.Tool = bulldozing ? 1 : 0;
             dock.Shape = shape;
-            dock.Road = laneChoice;
-            dock.Limit = speedChoice;
+            if (dock.Roads.Length == 0) dock.Roads = RoadTiles();
+            dock.Road = roadChoice;
             dock.Rate = System.Array.IndexOf(Speeds, speed);
             dock.Hint = building ? BuildHint() : "";
             dock.Layout(w, h);
@@ -123,6 +123,15 @@ namespace Traffic.Lab
                 DockItem hit = dock.ItemAt(mouse.x, mouse.y);
                 if (hit.Kind != DockKind.None) DockClick(hit);
                 e.Use();
+            }
+
+            // Beside the pointer while a road is being drawn: how long it is and what it costs.
+            if (building && !overDock && previewNote.Length > 0)
+            {
+                Vector2 size = label.CalcSize(new GUIContent(previewNote));
+                var r = new Rect(mouse.x + 18, mouse.y + 14, size.x + 20, 26);
+                Card(r, 9);
+                GUI.Label(new Rect(r.x + 10, r.y + 3, size.x + 4, 20), previewNote, label);
             }
 
             if (Time.unscaledTime < toastUntil)
@@ -171,11 +180,7 @@ namespace Traffic.Lab
                     editVersion++;
                     break;
                 case DockKind.Road:
-                    laneChoice = item.Index;
-                    editVersion++;
-                    break;
-                case DockKind.Limit:
-                    speedChoice = item.Index;
+                    roadChoice = item.Index;
                     editVersion++;
                     break;
                 case DockKind.Pause:
@@ -291,7 +296,8 @@ namespace Traffic.Lab
             Stat("AVG SPEED", (moving > 0 ? Mathf.RoundToInt((float)(v / moving) * Mph) : 0) + " mph");
             if (world.Entries.Count > 0) Stat("LEFT MAP", Sim.Left.ToString());
             else Stat("THROUGH", Sim.Passes.ToString());
-            if (Sim.CrashesEnabled) Stat("CRASHES", Sim.Crashes.ToString());
+            if (mapIndex == OwnMap) Stat("COST", Money(drawing.Cost()));
+            else if (Sim.CrashesEnabled) Stat("CRASHES", Sim.Crashes.ToString());
             else Stat("BUMPS", Sim.Bumps.ToString());
             Stat("CLOCK", t / 60 + ":" + (t % 60).ToString("00"));
             GUILayout.EndHorizontal();

@@ -5,14 +5,88 @@ using System.Text;
 
 namespace Traffic.Sim
 {
+    /// <summary>
+    /// A kind of road the player can draw: how many lanes run each way, whether a median
+    /// divides them, its speed limit, how tight it may curve and what a meter of it costs.
+    /// </summary>
+    public sealed class RoadType
+    {
+        public const int Street = 0, Avenue = 1, Highway = 2;
+        public static readonly string[] GroupNames = { "Street", "Avenue", "Highway" };
+
+        /// <summary>A short code, used when a drawing is saved.</summary>
+        public string Id;
+        /// <summary>Street, Avenue or Highway.</summary>
+        public int Group;
+        /// <summary>Lanes running the way the road is drawn, and lanes running back. None back makes it one-way.</summary>
+        public int Forward, Backward;
+        /// <summary>Width of the strip of ground between the two directions, meters. 0 for none.</summary>
+        public double Median;
+        /// <summary>Speed limit in miles per hour.</summary>
+        public int Mph;
+        /// <summary>The tightest curve it may be drawn with, meters.</summary>
+        public double MinRadius = 22;
+        /// <summary>Dollars for each meter built.</summary>
+        public double CostPerMeter;
+        /// <summary>A one-way road sits centered on the line it is drawn along. (A road from an older drawing lies to the right of it.)</summary>
+        public bool Centered = true;
+
+        public bool OneWay => Backward == 0;
+        public int Lanes => Forward + Backward;
+        /// <summary>From one edge of the pavement to the other, meters.</summary>
+        public double Width => Lanes * NetworkBuilder.LaneW + (OneWay ? 0 : Median);
+        /// <summary>How far every lane is moved sideways from the line drawn: see NetworkBuilder.AddRoad.</summary>
+        public double Inner => OneWay ? (Centered ? -Forward * NetworkBuilder.LaneW / 2 : 0) : Median / 2;
+
+        public string Name => GroupNames[Group] + ", " + (OneWay
+            ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " one-way"
+            : (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way");
+
+        /// <summary>The roads on offer, in the order the toolbar shows them.</summary>
+        public static readonly RoadType[] All =
+        {
+            new RoadType { Id = "s2", Group = Street, Forward = 1, Backward = 1, Mph = 25, MinRadius = 22, CostPerMeter = 2 },
+            new RoadType { Id = "s1", Group = Street, Forward = 1, Mph = 25, MinRadius = 22, CostPerMeter = 1 },
+            new RoadType { Id = "a2", Group = Avenue, Forward = 1, Backward = 1, Median = 3, Mph = 40, MinRadius = 30, CostPerMeter = 3 },
+            new RoadType { Id = "a4", Group = Avenue, Forward = 2, Backward = 2, Median = 3, Mph = 40, MinRadius = 30, CostPerMeter = 6 },
+            new RoadType { Id = "a1", Group = Avenue, Forward = 1, Mph = 40, MinRadius = 30, CostPerMeter = 2 },
+            new RoadType { Id = "a1x2", Group = Avenue, Forward = 2, Mph = 40, MinRadius = 30, CostPerMeter = 4 },
+            new RoadType { Id = "h1", Group = Highway, Forward = 1, Mph = 65, MinRadius = 60, CostPerMeter = 3 },
+            new RoadType { Id = "h2", Group = Highway, Forward = 2, Mph = 65, MinRadius = 60, CostPerMeter = 6 },
+            new RoadType { Id = "h3", Group = Highway, Forward = 3, Mph = 65, MinRadius = 60, CostPerMeter = 9 },
+            new RoadType { Id = "h4", Group = Highway, Forward = 4, Mph = 65, MinRadius = 60, CostPerMeter = 12 },
+        };
+
+        public static RoadType ById(string id)
+        {
+            foreach (RoadType t in All) if (t.Id == id) return t;
+            return null;
+        }
+
+        /// <summary>
+        /// A road given only by its lane count (1 one-way, 2, or 4) and speed limit, the way
+        /// roads were chosen before there were types. Drawings saved then are made of these.
+        /// </summary>
+        public static RoadType Plain(int lanes, int mph)
+        {
+            return new RoadType
+            {
+                Id = lanes + "@" + mph, Group = mph <= 25 ? Street : mph <= 45 ? Avenue : Highway,
+                Forward = lanes == 4 ? 2 : 1, Backward = lanes == 1 ? 0 : lanes == 4 ? 2 : 1,
+                Mph = mph, MinRadius = 22, CostPerMeter = lanes, Centered = false,
+            };
+        }
+    }
+
     /// <summary>One drawn stretch of road between two points, straight or curved.</summary>
     public sealed class EditSegment
     {
         public int A, B;
+        public RoadType Type;
         /// <summary>1 is a single one-way lane from A to B; 2 is one lane each way; 4 is two lanes each way.</summary>
-        public int Lanes;
+        public int Lanes => Type.Lanes;
         /// <summary>Speed limit in miles per hour.</summary>
-        public int Mph;
+        public int Mph => Type.Mph;
         /// <summary>A curved stretch is part of a circle, from A to B, passing through Mid halfway along.</summary>
         public bool Curved;
         public Vec Mid;
@@ -62,7 +136,7 @@ namespace Traffic.Sim
         {
             var copy = new EditableMap();
             copy.Nodes.AddRange(Nodes);
-            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Lanes = s.Lanes, Mph = s.Mph, Curved = s.Curved, Mid = s.Mid });
+            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid });
             return copy;
         }
 
@@ -272,10 +346,10 @@ namespace Traffic.Sim
         /// through it. Returns null if it was added, or a short reason why it cannot be. With
         /// commit false nothing is changed: use that to preview.
         /// </summary>
-        public string TryAdd(Vec p, Vec q, int lanes, int mph, bool commit, Vec? through = null)
+        public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through = null)
         {
             EditableMap work = Clone();
-            string error = work.Add(p, q, lanes, mph, through);
+            string error = work.Add(p, q, type, through);
             if (error != null) return error;
             // Make sure the result can actually be built before accepting it.
             try
@@ -294,6 +368,27 @@ namespace Traffic.Sim
             return null;
         }
 
+        /// <summary>The same, for a road given by its lane count (1 one-way, 2, or 4) and speed limit.</summary>
+        public string TryAdd(Vec p, Vec q, int lanes, int mph, bool commit, Vec? through = null)
+        {
+            return TryAdd(p, q, RoadType.Plain(lanes, mph), commit, through);
+        }
+
+        /// <summary>What a road from p to q would cost, and how long it would be, before any snapping.</summary>
+        public static double CostOf(Vec p, Vec q, RoadType type, Vec? through, out double length)
+        {
+            length = LengthOf(Trace(p, q, through.HasValue, through ?? default(Vec)));
+            return length * type.CostPerMeter;
+        }
+
+        /// <summary>What everything drawn so far costs.</summary>
+        public double Cost()
+        {
+            double total = 0;
+            foreach (EditSegment s in Segments) total += LengthOf(Trace(s)) * s.Type.CostPerMeter;
+            return total;
+        }
+
         private struct Stop
         {
             public double T;
@@ -307,7 +402,7 @@ namespace Traffic.Sim
             public Vec At;
         }
 
-        private string Add(Vec p, Vec q, int lanes, int mph, Vec? through)
+        private string Add(Vec p, Vec q, RoadType type, Vec? through)
         {
             string error;
             int a = Resolve(p, out error);
@@ -379,7 +474,7 @@ namespace Traffic.Sim
                 int from = chain[i].Node, to = chain[i + 1].Node;
                 touched.Add(from);
                 touched.Add(to);
-                var piece = new EditSegment { A = from, B = to, Lanes = lanes, Mph = mph };
+                var piece = new EditSegment { A = from, B = to, Type = type };
                 if (curved)
                 {
                     // The part of the curve between two positions is a piece of the same circle.
@@ -388,7 +483,7 @@ namespace Traffic.Sim
                 }
                 Vec[] shape = Trace(Nodes[from], Nodes[to], piece.Curved, piece.Mid);
                 if (LengthOf(shape) < MinLength) return "Too short: each stretch of road needs to be at least " + Math.Round(MinLength * 3.28084 / 10) * 10 + " ft.";
-                if (piece.Curved && TightestRadius(shape) < MinRadius) return "That curve is too tight.";
+                if (piece.Curved && TightestRadius(shape) < type.MinRadius) return "That curve is too tight for this kind of road.";
                 foreach (EditSegment s in Segments)
                 {
                     bool same = (s.A == from && s.B == to) || (s.A == to && s.B == from);
@@ -441,7 +536,7 @@ namespace Traffic.Sim
             Vec at = PointAt(s, t);
             Nodes.Add(at);
             int mid = Nodes.Count - 1;
-            var rest = new EditSegment { A = mid, B = s.B, Lanes = s.Lanes, Mph = s.Mph };
+            var rest = new EditSegment { A = mid, B = s.B, Type = s.Type };
             if (s.Curved)
             {
                 // Each part of a curve is a piece of the same circle.
@@ -542,19 +637,23 @@ namespace Traffic.Sim
             }
             foreach (EditSegment s in Segments)
             {
-                TrackSpec[] one = { new TrackSpec(0) };
-                TrackSpec[] two = { new TrackSpec(0), new TrackSpec(1) };
-                TrackSpec[] fwd = s.Lanes == 4 ? two : one;
-                TrackSpec[] back = s.Lanes == 1 ? null : fwd;
+                var fwd = new TrackSpec[s.Type.Forward];
+                for (int i = 0; i < fwd.Length; i++) fwd[i] = new TrackSpec(i);
+                TrackSpec[] back = null;
+                if (!s.Type.OneWay)
+                {
+                    back = new TrackSpec[s.Type.Backward];
+                    for (int i = 0; i < back.Length; i++) back[i] = new TrackSpec(i);
+                }
                 double speed = s.Mph * 0.44704;
                 if (!s.Curved)
                 {
-                    b.AddRoad(s.A, s.B, fwd, back, null, speed);
+                    b.AddRoad(s.A, s.B, fwd, back, null, speed, 0, 0, false, s.Type.Inner);
                     continue;
                 }
                 // Trace the curve with a point every few meters.
                 int steps = Math.Max(8, (int)Math.Ceiling(LengthOf(Trace(s)) / 3));
-                b.AddCurvedRoad(s.A, s.B, fwd, back, Trace(Nodes[s.A], Nodes[s.B], true, s.Mid, steps), speed);
+                b.AddCurvedRoad(s.A, s.B, fwd, back, Trace(Nodes[s.A], Nodes[s.B], true, s.Mid, steps), speed, s.Type.Inner);
             }
             World world = b.Build();
             // Keep the surroundings the same size however much has been drawn.
@@ -577,7 +676,10 @@ namespace Traffic.Sim
             sb.Append('|');
             foreach (EditSegment s in Segments)
             {
-                sb.Append(s.A).Append(',').Append(s.B).Append(',').Append(s.Lanes).Append(',').Append(s.Mph);
+                // A road of one of the listed types is saved by its code; an older, plain one by lanes and speed.
+                sb.Append(s.A).Append(',').Append(s.B).Append(',');
+                if (RoadType.ById(s.Type.Id) != null) sb.Append(s.Type.Id);
+                else sb.Append(s.Lanes).Append(',').Append(s.Mph);
                 if (s.Curved) sb.Append(',').Append(Num(s.Mid.X)).Append(',').Append(Num(s.Mid.Y)).Append(",arc");
                 sb.Append(';');
             }
@@ -600,15 +702,28 @@ namespace Traffic.Sim
                 foreach (string item in halves[1].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
                 {
                     string[] f = item.Split(',');
-                    var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]), Lanes = int.Parse(f[2]), Mph = int.Parse(f[3]) };
+                    var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]) };
                     if (s.A < 0 || s.B < 0 || s.A >= map.Nodes.Count || s.B >= map.Nodes.Count) return new EditableMap();
-                    if (f.Length >= 6)
+                    // The kind of road is either a type's code, or (in older drawings) a lane count and a speed limit.
+                    int lanes, rest;
+                    if (int.TryParse(f[2], out lanes))
+                    {
+                        s.Type = RoadType.Plain(lanes, int.Parse(f[3]));
+                        rest = 4;
+                    }
+                    else
+                    {
+                        s.Type = RoadType.ById(f[2]);
+                        if (s.Type == null) return new EditableMap();
+                        rest = 3;
+                    }
+                    if (f.Length >= rest + 2)
                     {
                         s.Curved = true;
-                        s.Mid = new Vec(double.Parse(f[4], CultureInfo.InvariantCulture), double.Parse(f[5], CultureInfo.InvariantCulture));
+                        s.Mid = new Vec(double.Parse(f[rest], CultureInfo.InvariantCulture), double.Parse(f[rest + 1], CultureInfo.InvariantCulture));
                         // Curves saved before they became round arcs bent toward a corner point;
                         // the middle of that older curve is close to where the arc should pass.
-                        if (f.Length == 6) s.Mid = new Vec((map.Nodes[s.A].X + 2 * s.Mid.X + map.Nodes[s.B].X) / 4, (map.Nodes[s.A].Y + 2 * s.Mid.Y + map.Nodes[s.B].Y) / 4);
+                        if (f.Length == rest + 2) s.Mid = new Vec((map.Nodes[s.A].X + 2 * s.Mid.X + map.Nodes[s.B].X) / 4, (map.Nodes[s.A].Y + 2 * s.Mid.Y + map.Nodes[s.B].Y) / 4);
                     }
                     map.Segments.Add(s);
                 }

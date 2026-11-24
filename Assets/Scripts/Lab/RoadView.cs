@@ -92,6 +92,28 @@ namespace Traffic.Lab
                 edging.Fan(node.Pos, wider, 0.012f);
             }
             MeshKit.Spawn("Verge", edging.Build(), MeshKit.Lit(MeshKit.Hex(0xb7b19c), 0), root, false);
+            if (world.Medians.Count > 0)
+            {
+                // The strip of grass down the middle of a divided road, with a row of bushes along it.
+                var grass = new FlatBuilder();
+                var plants = new SceneryBuilder();
+                List<ArtModel> bushes = ArtKit.Named("bush/");
+                int planted = 0;
+                foreach (Strip m in world.Medians)
+                {
+                    if (m.Peak > 0) grass.Strip(m.Left, m.Right, 0.08f, m.Peak);
+                    else grass.Strip(m.Left, m.Right, 0.08f);
+                    if (bushes.Count == 0 || m.Peak > 0) continue;
+                    for (int i = 9; i < m.Left.Length - 9; i += 13)
+                    {
+                        var at = MeshKit.ToWorld((m.Left[i].X + m.Right[i].X) / 2, (m.Left[i].Y + m.Right[i].Y) / 2, 0.08f);
+                        plants.Add(bushes[planted % bushes.Count], at, planted * 1.7f, 0.7f, planted % ArtKit.SummerLeaves);
+                        planted++;
+                    }
+                }
+                MeshKit.Spawn("Medians", grass.Build(), MeshKit.Lit(MeshKit.Hex(0x6fa858), 0), root, false);
+                if (planted > 0) MeshKit.Spawn("Median plants", plants.Build(), ArtKit.Shared, root, true);
+            }
             MeshKit.Spawn("Asphalt", asphalt.Build(), MeshKit.Lit(MeshKit.Hex(0x3d4249), 0.05f), root, false);
 
             var white = new FlatBuilder();

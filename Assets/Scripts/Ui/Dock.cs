@@ -17,7 +17,18 @@ namespace Traffic.Ui
         void Text(string text, double x, double y, double w, double h, int size, bool bold, int align, uint color);
     }
 
-    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Limit, Pause, Step, Rate }
+    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Pause, Step, Rate }
+
+    /// <summary>A kind of road on offer in the tray: enough to draw its picture and explain it.</summary>
+    public sealed class DockRoad
+    {
+        /// <summary>The heading it sits under, such as "Street".</summary>
+        public string Group = "";
+        public string Title = "", Body = "";
+        /// <summary>Lanes each way. None backward makes it one-way.</summary>
+        public int Forward = 1, Backward;
+        public bool Median;
+    }
 
     /// <summary>One thing on the toolbar that can be pointed at and clicked.</summary>
     public struct DockItem
@@ -47,15 +58,15 @@ namespace Traffic.Ui
         private const double Button = 44, Gap = 6, Pad = 8, BarHeight = 60, Margin = 14;
 
         public static readonly string[] RateNames = { "1/4x", "1x", "2x", "4x" };
-        public static readonly int[] RoadLanes = { 1, 2, 4 };
-        public static readonly int[] Limits = { 25, 40, 55, 65 };
+        /// <summary>The kinds of road in the tray, in order. Roads under the same heading sit together, in two rows.</summary>
+        public DockRoad[] Roads = new DockRoad[0];
 
         /// <summary>True on the map the player draws, which is the only one that can be built on.</summary>
         public bool OwnMap;
         public bool Building, Paused, CanUndo, CanRedo;
         /// <summary>0 draws roads, 1 bulldozes.</summary>
         public int Tool;
-        public int Shape, Road, Limit, Rate;
+        public int Shape, Road, Rate;
         /// <summary>A line of help about what the next click does.</summary>
         public string Hint = "";
 
@@ -64,6 +75,8 @@ namespace Traffic.Ui
         public double Top { get; private set; }
 
         private readonly List<double> dividers = new List<double>();
+        /// <summary>Where each heading over the road tiles goes.</summary>
+        private readonly List<KeyValuePair<string, double>> headings = new List<KeyValuePair<string, double>>();
         private double barX, barY, barW, trayX, trayY, trayW, trayH, noteX, noteY, noteW, width;
         private bool tray, note;
 
@@ -121,18 +134,41 @@ namespace Traffic.Ui
             // The tray of road choices sits above the bar while the road tool is out.
             tray = RoadTool;
             note = Building && !tray && Hint.Length > 0;
+            headings.Clear();
             if (tray)
             {
-                trayW = 668;
-                trayH = 120;
+                // The shapes in a column, then each group of roads in two rows under its heading.
+                const double tile = 84, high = 44, between = 18;
+                var groups = new List<KeyValuePair<string, List<int>>>();
+                for (int i = 0; i < Roads.Length; i++)
+                {
+                    if (groups.Count == 0 || groups[groups.Count - 1].Key != Roads[i].Group) groups.Add(new KeyValuePair<string, List<int>>(Roads[i].Group, new List<int>()));
+                    groups[groups.Count - 1].Value.Add(i);
+                }
+                trayW = 14 + high + 14;
+                foreach (KeyValuePair<string, List<int>> g in groups)
+                {
+                    int columns = (g.Value.Count + 1) / 2;
+                    trayW += between + columns * tile + (columns - 1) * Gap;
+                }
+                trayH = 12 + 14 + 6 + high * 2 + Gap + 10 + 16 + 10;
                 trayX = Math.Round((w - trayW) / 2);
                 trayY = barY - 10 - trayH;
                 double tx = trayX + 14, ty = trayY + 32;
-                for (int i = 0; i < 2; i++) Items.Add(new DockItem { Kind = DockKind.Shape, Index = i, X = tx + i * 58, Y = ty, W = 52, H = 52 });
-                tx += 110 + 18;
-                for (int i = 0; i < 3; i++) Items.Add(new DockItem { Kind = DockKind.Road, Index = i, X = tx + i * 102, Y = ty, W = 96, H = 52 });
-                tx += 300 + 18;
-                for (int i = 0; i < 4; i++) Items.Add(new DockItem { Kind = DockKind.Limit, Index = i, X = tx + i * 50, Y = ty, W = 44, H = 52 });
+                headings.Add(new KeyValuePair<string, double>("SHAPE", tx));
+                for (int i = 0; i < 2; i++) Items.Add(new DockItem { Kind = DockKind.Shape, Index = i, X = tx, Y = ty + i * (high + Gap), W = high, H = high });
+                tx += high;
+                foreach (KeyValuePair<string, List<int>> g in groups)
+                {
+                    tx += between;
+                    headings.Add(new KeyValuePair<string, double>(g.Key.ToUpperInvariant(), tx));
+                    int columns = (g.Value.Count + 1) / 2;
+                    for (int k = 0; k < g.Value.Count; k++)
+                    {
+                        Items.Add(new DockItem { Kind = DockKind.Road, Index = g.Value[k], X = tx + (k % columns) * (tile + Gap), Y = ty + (k / columns) * (high + Gap), W = tile, H = high });
+                    }
+                    tx += columns * tile + (columns - 1) * Gap;
+                }
                 Top = trayY;
             }
             else if (note)
@@ -172,9 +208,7 @@ namespace Traffic.Ui
             if (tray)
             {
                 Card(s, trayX, trayY, trayW, trayH, 20);
-                s.Text("SHAPE", trayX + 14, trayY + 11, 110, 14, 10, true, 0, Dim);
-                s.Text("ROAD", trayX + 142, trayY + 11, 300, 14, 10, true, 0, Dim);
-                s.Text("SPEED LIMIT", trayX + 460, trayY + 11, 194, 14, 10, true, 0, Dim);
+                foreach (KeyValuePair<string, double> heading in headings) s.Text(heading.Key, heading.Value, trayY + 11, 160, 14, 10, true, 0, Dim);
                 s.Text(Hint, trayX + 14, trayY + trayH - 29, trayW - 28, 18, 12, false, 1, Dim);
             }
             else if (note)
@@ -229,10 +263,7 @@ namespace Traffic.Ui
                         s.Text("Build", item.X + 40, item.Y, item.W - 48, item.H, 15, true, 0, Light);
                         break;
                     case DockKind.Road:
-                        RoadTile(s, item, Road == item.Index, hot);
-                        break;
-                    case DockKind.Limit:
-                        LimitTile(s, item, Limit == item.Index, hot);
+                        RoadTile(s, item, Roads[item.Index], Road == item.Index, hot);
                         break;
                 }
             }
@@ -256,49 +287,49 @@ namespace Traffic.Ui
             s.Icon(icon, item.X + (item.W - size) / 2, item.Y + (item.H - size) / 2, size, chosen ? Ink : enabled ? Light : 0x4DE7EDF0);
         }
 
-        /// <summary>A little picture of the road from above, with its lane lines.</summary>
-        private static void RoadTile(ISurface s, DockItem item, bool chosen, bool hot)
+        /// <summary>A little picture of the road from above: its lanes, lane lines, median and which way it runs.</summary>
+        private static void RoadTile(ISurface s, DockItem item, DockRoad road, bool chosen, bool hot)
         {
-            int lanes = RoadLanes[item.Index];
-            const double lane = 8;
-            double high = lanes * lane + 4, top = item.Y + (item.H - high) / 2, mid = item.Y + item.H / 2;
-            s.Fill(item.X, item.Y, item.W, item.H, 10, Grass);
-            s.Fill(item.X, top, item.W, high, 0, Asphalt);
-            s.Fill(item.X, top + 1.4, item.W, 1.2, 0, Paint);
-            s.Fill(item.X, top + high - 2.6, item.W, 1.2, 0, Paint);
-            if (lanes == 1)
+            int lanes = road.Forward + road.Backward;
+            double lane = lanes >= 4 ? 6 : lanes == 3 ? 7 : 8;
+            bool twoWay = road.Backward > 0;
+            double gap = !twoWay ? 0 : road.Median ? 6 : 0;
+            double high = lanes * lane + gap + 4, top = item.Y + (item.H - high) / 2;
+            double left = item.X, wide = item.W;
+            s.Fill(left, item.Y, wide, item.H, 10, Grass);
+            s.Fill(left, top, wide, high, 0, Asphalt);
+            s.Fill(left, top + 1.2, wide, 1.1, 0, Paint);
+            s.Fill(left, top + high - 2.3, wide, 1.1, 0, Paint);
+
+            // Lanes that run back are drawn above the middle and lanes that run forward below it.
+            double y = top + 2;
+            for (int k = 1; k < road.Backward; k++) Dashes(s, left, y + k * lane, wide);
+            y += road.Backward * lane;
+            if (twoWay && road.Median)
             {
-                s.Icon("arrow", item.X + 22, mid - 4, 8, Paint);
-                s.Icon("arrow", item.X + 66, mid - 4, 8, Paint);
+                s.Fill(left, y - 0.6, wide, 1.1, 0, Yellow);
+                s.Fill(left, y + gap - 0.5, wide, 1.1, 0, Yellow);
+                s.Fill(left, y + 1.2, wide, gap - 2.4, 0, 0xFF7DB862);
             }
-            else
+            else if (twoWay)
             {
-                // A double yellow line between the two directions.
-                s.Fill(item.X, mid - 1.9, item.W, 1.2, 0, Yellow);
-                s.Fill(item.X, mid + 0.7, item.W, 1.2, 0, Yellow);
+                s.Fill(left, y - 1.5, wide, 1.1, 0, Yellow);
+                s.Fill(left, y + 0.4, wide, 1.1, 0, Yellow);
             }
-            if (lanes == 4)
+            y += gap;
+            for (int k = 1; k < road.Forward; k++) Dashes(s, left, y + k * lane, wide);
+            if (!twoWay)
             {
-                for (double x = item.X + 5; x < item.X + item.W - 8; x += 18)
-                {
-                    s.Fill(x, mid - lane - 0.6, 9, 1.2, 0, Paint);
-                    s.Fill(x, mid + lane - 0.6, 9, 1.2, 0, Paint);
-                }
+                // Arrows show which way a one-way road runs.
+                double size = Math.Min(lane, 7);
+                for (int k = 0; k < road.Forward; k++) s.Icon("arrow", left + wide / 2 - size / 2, y + k * lane + (lane - size) / 2, size, Paint);
             }
             Ring(s, item, 10, chosen, hot);
         }
 
-        /// <summary>A speed limit sign.</summary>
-        private static void LimitTile(ISurface s, DockItem item, bool chosen, bool hot)
+        private static void Dashes(ISurface s, double left, double y, double wide)
         {
-            s.Fill(item.X, item.Y, item.W, item.H, 10, Lift);
-            double x = item.X + 7, y = item.Y + 5;
-            s.Fill(x, y, 30, 42, 4, 0xFFF4F5F1);
-            s.Stroke(x + 1.5, y + 1.5, 27, 39, 3, 1.3, 0xFF15191C);
-            s.Text("SPEED", x, y + 4, 30, 8, 6, true, 1, 0xFF15191C);
-            s.Text("LIMIT", x, y + 11, 30, 8, 6, true, 1, 0xFF15191C);
-            s.Text(Limits[item.Index].ToString(), x, y + 19, 30, 20, 16, true, 1, 0xFF15191C);
-            Ring(s, item, 10, chosen, hot);
+            for (double x = left + 5; x < left + wide - 7; x += 16) s.Fill(x, y - 0.5, 8, 1, 0, Paint);
         }
 
         private static void Ring(ISurface s, DockItem item, double radius, bool chosen, bool hot)
@@ -332,7 +363,7 @@ namespace Traffic.Ui
             {
                 case DockKind.Tool:
                     title = item.Index == 0 ? "Road" : "Bulldoze";
-                    body = item.Index == 0 ? "Draw roads. Pick a shape, a road and a speed limit, then click on the ground." : "Click a road to remove it.";
+                    body = item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground." : "Click a road to remove it.";
                     break;
                 case DockKind.Undo:
                     title = "Undo";
@@ -373,17 +404,8 @@ namespace Traffic.Ui
                         : "Click where the road starts and where it ends, then pull it into a round curve with the pointer and click again.";
                     break;
                 case DockKind.Road:
-                    title = item.Index == 0 ? "Single lane" : item.Index == 1 ? "Two lanes" : "Four lanes";
-                    body = item.Index == 0 ? "One lane, 12 ft wide. Traffic runs the way you draw it, from the first click to the last."
-                        : item.Index == 1 ? "One lane each way, 24 ft wide, with a double yellow line. Nobody can pass, so one slow driver holds up the rest."
-                        : "Two lanes each way, 48 ft wide. Faster drivers pass slower ones, and it carries about twice the traffic.";
-                    break;
-                case DockKind.Limit:
-                    title = Limits[item.Index] + " mph";
-                    body = item.Index == 0 ? "A neighborhood street. Where only 25 mph streets meet, drivers get stop signs all round."
-                        : item.Index == 1 ? "A city road. Where it meets another road it gets a traffic light."
-                        : item.Index == 2 ? "A highway. Every intersection gets a traffic light, so keep them few."
-                        : "A fast highway. Drivers need a long way to stop, so leave room before an intersection.";
+                    title = Roads[item.Index].Title;
+                    body = Roads[item.Index].Body;
                     break;
             }
         }

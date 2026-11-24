@@ -61,6 +61,7 @@ namespace Traffic.Sim
             public double ShiftA, ShiftB;
             public bool Bridge;
             public bool Traced;
+            public double Inner;
         }
 
         private readonly List<Vec> nodePos = new List<Vec>();
@@ -87,11 +88,16 @@ namespace Traffic.Sim
         /// join at the outside lane of a highway instead of its centerline.
         /// </summary>
         /// <remarks>A bridge rises over whatever it crosses; traffic on it and under it does not interact.</remarks>
-        public void AddRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] via = null, double speed = CitySpeed, double shiftA = 0, double shiftB = 0, bool bridge = false)
+        /// <remarks>
+        /// Inner moves every lane sideways from the centerline. Half the width of a median puts a
+        /// strip of ground between the two directions. On a one-way road, minus half the road's
+        /// width centers the lanes on the line instead of laying them all to its right.
+        /// </remarks>
+        public void AddRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] via = null, double speed = CitySpeed, double shiftA = 0, double shiftB = 0, bool bridge = false, double inner = 0)
         {
             roads.Add(new RoadSpec
             {
-                A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = via ?? new Vec[0], Speed = speed, ShiftA = shiftA, ShiftB = shiftB, Bridge = bridge,
+                A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = via ?? new Vec[0], Speed = speed, ShiftA = shiftA, ShiftB = shiftB, Bridge = bridge, Inner = inner,
             });
         }
 
@@ -100,9 +106,9 @@ namespace Traffic.Sim
         /// node b. The builder drops the points that fall inside either intersection and aims the
         /// road's ends at the curve, so the caller does not need to know how big they are.
         /// </summary>
-        public void AddCurvedRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] trace, double speed)
+        public void AddCurvedRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] trace, double speed, double inner = 0)
         {
-            roads.Add(new RoadSpec { A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = trace, Speed = speed, Traced = true });
+            roads.Add(new RoadSpec { A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = trace, Speed = speed, Traced = true, Inner = inner });
         }
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
@@ -145,8 +151,10 @@ namespace Traffic.Sim
             {
                 int atA = Math.Max(MaxSlot(r.Back, true), MaxSlot(r.Fwd, false)) + 1;
                 int atB = Math.Max(MaxSlot(r.Fwd, true), MaxSlot(r.Back, false)) + 1;
-                radius[r.A] = Math.Max(radius[r.A], atA * LaneW + CornerRadius);
-                radius[r.B] = Math.Max(radius[r.B], atB * LaneW + CornerRadius);
+                // How far the road reaches to either side of its centerline at each end.
+                double halfA = atA * LaneW + r.Inner, halfB = atB * LaneW + r.Inner;
+                radius[r.A] = Math.Max(radius[r.A], halfA + CornerRadius);
+                radius[r.B] = Math.Max(radius[r.B], halfB + CornerRadius);
 
                 // Roughly which way the road leaves each node: for a traced curve, toward where it is a little way out.
                 Vec a = nodePos[r.A], b = nodePos[r.B];
@@ -155,19 +163,19 @@ namespace Traffic.Sim
                 {
                     foreach (Vec v in r.Via) if (Geo.Hypot(v.X - a.X, v.Y - a.Y) > 15) { fromA = v; break; }
                     for (int i = r.Via.Length - 1; i >= 0; i--) if (Geo.Hypot(r.Via[i].X - b.X, r.Via[i].Y - b.Y) > 15) { fromB = r.Via[i]; break; }
-                    endsAt[r.A].Add(new[] { Math.Atan2(fromA.Y - a.Y, fromA.X - a.X), atA * LaneW });
-                    endsAt[r.B].Add(new[] { Math.Atan2(fromB.Y - b.Y, fromB.X - b.X), atB * LaneW });
+                    endsAt[r.A].Add(new[] { Math.Atan2(fromA.Y - a.Y, fromA.X - a.X), halfA });
+                    endsAt[r.B].Add(new[] { Math.Atan2(fromB.Y - b.Y, fromB.X - b.X), halfB });
                 }
                 else if (r.Via.Length >= 2)
                 {
                     int m = r.Via.Length;
-                    endsAt[r.A].Add(new[] { Math.Atan2(r.Via[1].Y - r.Via[0].Y, r.Via[1].X - r.Via[0].X), atA * LaneW });
-                    endsAt[r.B].Add(new[] { Math.Atan2(r.Via[m - 2].Y - r.Via[m - 1].Y, r.Via[m - 2].X - r.Via[m - 1].X), atB * LaneW });
+                    endsAt[r.A].Add(new[] { Math.Atan2(r.Via[1].Y - r.Via[0].Y, r.Via[1].X - r.Via[0].X), halfA });
+                    endsAt[r.B].Add(new[] { Math.Atan2(r.Via[m - 2].Y - r.Via[m - 1].Y, r.Via[m - 2].X - r.Via[m - 1].X), halfB });
                 }
                 else
                 {
-                    endsAt[r.A].Add(new[] { Math.Atan2(b.Y - a.Y, b.X - a.X), atA * LaneW });
-                    endsAt[r.B].Add(new[] { Math.Atan2(a.Y - b.Y, a.X - b.X), atB * LaneW });
+                    endsAt[r.A].Add(new[] { Math.Atan2(b.Y - a.Y, b.X - a.X), halfA });
+                    endsAt[r.B].Add(new[] { Math.Atan2(a.Y - b.Y, a.X - b.X), halfB });
                 }
             }
             for (int i = 0; i < nodePos.Count; i++)
@@ -241,9 +249,15 @@ namespace Traffic.Sim
                 Approach armB = AddArm(r.B, Math.Atan2(-by, -bx), r.A);
                 armA.Shift = r.ShiftA;
                 armB.Shift = -r.ShiftB;
+                armA.Inner = armB.Inner = r.Inner;
                 double peak = r.Bridge ? BridgeHeight : 0;
-                BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak);
-                BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak);
+                BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak, r.Inner);
+                BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak, r.Inner);
+                // A divided road has a strip of ground down the middle, a little narrower than the gap between its yellow lines.
+                if (r.Inner > 0.5 && r.Fwd.Length > 0 && r.Back.Length > 0)
+                {
+                    world.Medians.Add(new Strip { Left = Geo.Offset(center, -(r.Inner - 0.3)), Right = Geo.Offset(center, r.Inner - 0.3), Peak = peak });
+                }
             }
             world.Extent = extent + 30;
 
@@ -268,7 +282,7 @@ namespace Traffic.Sim
 
         // ------------------------------------------------------------ roads
 
-        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed, double peak)
+        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed, double peak, double inner)
         {
             if (specs.Length == 0) return;
             int n = center.Count - 1;
@@ -291,7 +305,7 @@ namespace Traffic.Sim
                 fromSt[k] = Resolve(spec.From, len);
                 toSt[k] = Resolve(spec.To, len);
                 maxSlot = Math.Max(maxSlot, spec.Slot);
-                Vec[] offset = Geo.Offset(center, (spec.Slot + 0.5) * LaneW);
+                Vec[] offset = Geo.Offset(center, (spec.Slot + 0.5) * LaneW + inner);
                 var pts = new List<Vec>();
                 for (int i = 0; i <= n; i++) if (st[i] >= fromSt[k] - 1e-6 && st[i] <= toSt[k] + 1e-6) pts.Add(offset[i]);
                 var path = new LanePath(pts);
@@ -349,7 +363,7 @@ namespace Traffic.Sim
             double rx = Math.Sin(h);
             double ry = -Math.Cos(h);
             to.H = h;
-            double postOff = (maxReaching + 1) * LaneW + 1.6;
+            double postOff = (maxReaching + 1) * LaneW + inner + 1.6;
             to.Post = new Vec(p1.X + rx * postOff, p1.Y + ry * postOff);
 
             // Pavement and paint. The road narrows gradually past the end of a lane.
@@ -372,21 +386,22 @@ namespace Traffic.Sim
                     r = Math.Max(r, (sorted[k].Slot + c) * LaneW);
                     l = Math.Min(l, (sorted[k].Slot + 1 - c) * LaneW);
                 }
-                right[i] = r;
-                left[i] = double.IsInfinity(l) ? 0 : l;
+                right[i] = r + inner;
+                left[i] = (double.IsInfinity(l) ? 0 : l) + inner;
             }
             to.InLeft = left[n];
             to.InRight = right[n];
             from.OutLeft = left[0];
             from.OutRight = right[0];
-            world.Surfaces.Add(new Strip { Left = center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak });
+            // Pavement runs from the centerline out, or, on a road centered on its line, from the left edge of its lanes.
+            world.Surfaces.Add(new Strip { Left = inner < 0 ? Geo.Offset(center, i => left[i]) : center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak });
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14, Peak = peak });
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true, Peak = peak });
 
             bool controlled = EndsAt(to.Node) > 2 && nodeMode[to.Node] != JunctionMode.Free;
             for (int slot = 0; slot < maxSlot; slot++)
             {
-                Vec[] divider = Geo.Offset(center, (slot + 1) * LaneW);
+                Vec[] divider = Geo.Offset(center, (slot + 1) * LaneW + inner);
                 int runStart = -1;
                 for (int i = 0; i <= n + 1; i++)
                 {
@@ -654,7 +669,7 @@ namespace Traffic.Sim
                     Lane innerOut = world.Lanes[world.Lanes[innerConn].Next];
                     Lane outerOut = world.Lanes[world.Lanes[outerConn].Next];
                     if (outer.Slot != inner.Slot + 1 || outerOut.Slot != innerOut.Slot + 1) continue;
-                    world.Markings.Add(new Marking { Pts = Curve(outer.Slot * LaneW, outerOut.Slot * LaneW), Width = 0.14 });
+                    world.Markings.Add(new Marking { Pts = Curve(outer.Slot * LaneW + arm.Inner, outerOut.Slot * LaneW + other.Inner), Width = 0.14 });
                 }
             }
         }
@@ -775,8 +790,14 @@ namespace Traffic.Sim
             {
                 Approach arm = arms[i];
                 double dx = Math.Cos(arm.Angle), dy = Math.Sin(arm.Angle);
-                double wIn = arm.Inbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Inbound) + 1) * LaneW;
-                double wOut = arm.Outbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Outbound) + 1) * LaneW;
+                double wIn = arm.Inbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Inbound) + 1) * LaneW + arm.Inner;
+                double wOut = arm.Outbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Outbound) + 1) * LaneW + arm.Inner;
+                if (arm.Inner < 0)
+                {
+                    // A one-way road centered on its line reaches as far to its left as to its right.
+                    wIn = Math.Max(wIn, -arm.Inner);
+                    wOut = Math.Max(wOut, -arm.Inner);
+                }
                 double mx = node.Pos.X + dx * node.Radius, my = node.Pos.Y + dy * node.Radius;
                 double toCw = wOut + arm.Shift;
                 double toCcw = wIn - arm.Shift;

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Traffic.Sim;
+using Traffic.Ui;
 using UnityEngine;
 
 namespace Traffic.Lab
@@ -108,8 +109,10 @@ namespace Traffic.Lab
         /// <summary>True while laying out roads; traffic only runs once this is off.</summary>
         private bool building;
         private bool bulldozing;
-        private int laneChoice = 1;
-        private int speedChoice = 1;
+        /// <summary>Which of RoadType.All is being drawn.</summary>
+        private int roadChoice;
+        /// <summary>The length and price of the road about to be placed, shown beside the pointer.</summary>
+        private string previewNote = "";
         /// <summary>0 draws straight roads, 1 draws curves.</summary>
         private int shape;
         private bool hasStart;
@@ -126,8 +129,7 @@ namespace Traffic.Lab
         private Vec previewAt;
         private bool previewOk;
 
-        private int DrawLanes => EditableMap.LaneChoices[laneChoice];
-        private int DrawMph => EditableMap.SpeedChoices[speedChoice];
+        private RoadType DrawType => RoadType.All[roadChoice];
 
         /// <summary>Open the player's own map, as it was last left.</summary>
         private void LoadOwnMap()
@@ -280,7 +282,7 @@ namespace Traffic.Lab
                 return;
             }
             Vec end = shape == 1 ? endPoint : p;
-            string problem = drawing.TryAdd(chainStart, end, DrawLanes, DrawMph, true, shape == 1 ? p : (Vec?)null);
+            string problem = drawing.TryAdd(chainStart, end, DrawType, true, shape == 1 ? p : (Vec?)null);
             if (problem != null)
             {
                 Toast(problem);
@@ -304,6 +306,7 @@ namespace Traffic.Lab
         private void GuideLines()
         {
             var faint = new Color(1, 1, 1, 0.6f);
+            previewNote = "";
             foreach (Vec n in drawing.Nodes) Mark(n, 2.5, faint);
 
             Vec hover;
@@ -331,23 +334,49 @@ namespace Traffic.Lab
             Vec to = curved ? endPoint : hover;
             if (previewVersion != editVersion || Geo.Hypot(hover.X - previewAt.X, hover.Y - previewAt.Y) > 0.4)
             {
-                previewOk = drawing.TryAdd(chainStart, to, DrawLanes, DrawMph, false, curved ? hover : (Vec?)null) == null;
+                previewOk = drawing.TryAdd(chainStart, to, DrawType, false, curved ? hover : (Vec?)null) == null;
                 previewVersion = editVersion;
                 previewAt = hover;
             }
             Color c = previewOk ? good : new Color(1, 0.3f, 0.3f, 1);
             Vec[] line = EditableMap.Trace(chainStart, end, curved, hover, 48);
             Polyline(line, c);
-            // Show how wide it will be. A single lane lies to the right of the line drawn.
+            // Show how wide it will be, and what it will cost.
             if (Geo.Hypot(end.X - chainStart.X, end.Y - chainStart.Y) > 1)
             {
-                double side = (DrawLanes == 4 ? 2 : 1) * NetworkBuilder.LaneW;
+                double side = DrawType.Width / 2;
                 Polyline(Geo.Offset(line, side), c);
-                if (DrawLanes != 1) Polyline(Geo.Offset(line, -side), c);
+                Polyline(Geo.Offset(line, -side), c);
+                double length;
+                double cost = EditableMap.CostOf(chainStart, end, DrawType, curved ? hover : (Vec?)null, out length);
+                previewNote = Mathf.RoundToInt((float)length * Feet) + " ft   " + Money(cost);
             }
             if (curved) Mark(hover, 3, faint);
             Mark(chainStart, 4, c);
             Mark(end, 4, c);
+        }
+
+        private static string Money(double dollars)
+        {
+            return "$" + System.Math.Round(dollars).ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>What the toolbar needs to know about each kind of road: its picture and its explanation.</summary>
+        private static DockRoad[] RoadTiles()
+        {
+            var tiles = new DockRoad[RoadType.All.Length];
+            for (int i = 0; i < tiles.Length; i++)
+            {
+                RoadType t = RoadType.All[i];
+                string body = t.Mph + " mph.  " + Money(t.CostPerMeter) + " a meter.  " + Mathf.RoundToInt((float)t.Width * Feet) + " ft wide.\n";
+                body += t.OneWay ? "Traffic runs the way you draw it, from the first click to the last."
+                    : t.Median > 0 ? "A grass median divides the two directions."
+                    : "A double yellow line divides the two directions.";
+                body += t.Group == RoadType.Street ? "\nWhere only streets meet, drivers get stop signs all round." : "\nWhere it meets another road it gets a traffic light.";
+                body += "\nCurves no tighter than " + Mathf.RoundToInt((float)t.MinRadius * Feet / 10) * 10 + " ft.";
+                tiles[i] = new DockRoad { Group = RoadType.GroupNames[t.Group], Title = t.Name, Body = body, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0 };
+            }
+            return tiles;
         }
 
         private void Polyline(Vec[] pts, Color c)

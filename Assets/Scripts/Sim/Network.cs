@@ -139,6 +139,8 @@ namespace Traffic.Sim
         public double InLeft, InRight, OutLeft, OutRight;
         /// <summary>How far this road's centerline is moved sideways where it meets the node, toward the clockwise side looking outward. Used to hang a ramp off the edge of a highway.</summary>
         public double Shift;
+        /// <summary>How far the innermost lane's left edge is from the road's centerline: half a median, or negative on a one-way road centered on its line.</summary>
+        public double Inner;
     }
 
     public sealed class Node
@@ -207,6 +209,8 @@ namespace Traffic.Sim
         public double LaneWidth;
         public List<Strip> Surfaces = new List<Strip>();
         public List<Marking> Markings = new List<Marking>();
+        /// <summary>The strips of ground between the two directions of a divided road.</summary>
+        public List<Strip> Medians = new List<Strip>();
         public List<StopLine> StopLines = new List<StopLine>();
         public List<ArrowMark> Arrows = new List<ArrowMark>();
         /// <summary>Roads that come in from the edge of the map, where new vehicles arrive.</summary>

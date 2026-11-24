@@ -168,7 +168,7 @@ namespace Traffic.Tests
         public void RefusesACurveThatIsTooTight()
         {
             var map = new EditableMap();
-            Assert.AreEqual("That curve is too tight.", map.TryAdd(P(0, 0), P(40, 0), 2, 25, true, P(20, 20)));
+            StringAssert.StartsWith("That curve is too tight", map.TryAdd(P(0, 0), P(40, 0), 2, 25, true, P(20, 20)));
             Assert.AreEqual(0, map.Segments.Count);
         }
 
@@ -242,6 +242,111 @@ namespace Traffic.Tests
             Assert.AreEqual(0, sim.Crashes);
             Assert.Greater(leftByHalfway, 30);
             Assert.Greater(sim.Left - leftByHalfway, 30);
+        }
+
+        // ---------------------------------------------------------------- road types
+
+        private static RoadType T(string id)
+        {
+            return RoadType.ById(id);
+        }
+
+        [Test]
+        public void EveryRoadTypeBuildsWithItsLanesCenteredOnTheLineDrawn()
+        {
+            foreach (RoadType type in RoadType.All)
+            {
+                var map = new EditableMap();
+                Assert.IsNull(map.TryAdd(P(-150, 0), P(150, 0), type, true), type.Name);
+                World world = map.ToWorld();
+                var lanes = world.Lanes.Where(l => l.Kind == LaneKind.Road).ToList();
+                Assert.AreEqual(type.Lanes, lanes.Count, type.Name);
+                // Eastbound lanes lie south of the line and westbound lanes north, or all around it when one-way.
+                double lowest = lanes.Min(l => l.Path.At(l.Length / 2).Y), highest = lanes.Max(l => l.Path.At(l.Length / 2).Y);
+                Assert.AreEqual(0, (lowest + highest) / 2, 0.01, type.Name + " is not centered");
+                Assert.AreEqual(type.Width - NetworkBuilder.LaneW, highest - lowest, 0.01, type.Name + " is not as wide as it says");
+                Assert.AreEqual(type.OneWay ? 0 : type.Backward, lanes.Count(l => Math.Cos(l.Path.At(l.Length / 2).H) < 0), type.Name);
+                Assert.AreEqual(type.Median > 0 && !type.OneWay ? 1 : 0, world.Medians.Count, type.Name);
+            }
+        }
+
+        [Test]
+        public void CostIsLengthTimesThePriceOfEachRoad()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(200, 0), P(200, 100), T("s2"), true));
+            Assert.AreEqual(200 * 6 + 100 * 2, map.Cost(), 0.5);
+            double length;
+            Assert.AreEqual(300, EditableMap.CostOf(P(0, 0), P(0, 100), T("h1"), null, out length), 0.5);
+            Assert.AreEqual(100, length, 0.01);
+        }
+
+        [Test]
+        public void AFastRoadNeedsAWiderCurveThanASlowOne()
+        {
+            // A quarter circle of radius 40 m: fine for a street, too tight for a highway.
+            var map = new EditableMap();
+            Vec mid = P(40 - 40 * Math.Cos(Math.PI / 4), 40 * Math.Sin(Math.PI / 4));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(40, 40), T("s2"), false, mid));
+            Assert.IsNotNull(map.TryAdd(P(0, 0), P(40, 40), T("h2"), false, mid));
+        }
+
+        [Test]
+        public void SavesAndLoadsRoadTypesAndStillLoadsPlainRoads()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(200, 0), P(300, 200), T("h3"), true, P(290, 80)));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 200), 2, 25, true));
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.AreEqual("a4", loaded.Segments[0].Type.Id);
+            Assert.AreEqual(3, loaded.Segments[1].Type.Forward);
+            Assert.IsTrue(loaded.Segments[1].Curved);
+            Assert.AreEqual(25, loaded.Segments[2].Mph);
+        }
+
+        /// <summary>A town drawn with the listed road types: a divided avenue, streets, a one-way pair and a curved highway.</summary>
+        public static EditableMap TypedTown()
+        {
+            var map = new EditableMap();
+            Action<Vec, Vec, string, Vec?> add = (p, q, id, via) => Assert.IsNull(map.TryAdd(p, q, T(id), true, via), id + " from " + p.X + "," + p.Y + " to " + q.X + "," + q.Y);
+            add(P(-380, 0), P(380, 0), "a4", null);             // a wide divided avenue across the middle
+            add(P(-200, -280), P(-200, 280), "a2", null);       // a divided avenue crossing it
+            add(P(120, -280), P(120, 280), "s2", null);         // a street crossing it
+            add(P(-200, 160), P(120, 160), "s2", null);         // a street joining the two, north of the avenue
+            add(P(120, -160), P(-200, -160), "a1x2", null);     // two lanes one-way, westbound, south of it
+            add(P(-380, 250), P(-200, 280), "h2", P(-290, 285)); // a curved one-way highway arriving from the north-west
+            add(P(120, 280), P(380, 200), "s1", P(260, 270));   // a one-way street curving away to the east
+            return map;
+        }
+
+        [TestCase(2u)]
+        [TestCase(7u)]
+        public void TrafficRunsOnATownOfEveryKindOfRoad(uint seed)
+        {
+            EditableMap map = TypedTown();
+            World world = map.ToWorld();
+            Assert.GreaterOrEqual(world.Nodes.Count(n => n.Controlled), 5);
+            Assert.GreaterOrEqual(world.Medians.Count, 2, "the avenues should have medians");
+            foreach (Lane lane in world.Lanes)
+            {
+                if (lane.Kind != LaneKind.Road || lane.IsExit) continue;
+                Assert.IsTrue(lane.Connectors != null && lane.Connectors.Any(c => c >= 0), "lane " + lane.Id + " leads nowhere");
+            }
+            var sim = new Simulation(world, seed);
+            sim.ArrivalsPerMinute = 5;
+            Action obey = () =>
+            {
+                foreach (Car c in sim.Cars) c.Drv.Compliance = 1;
+            };
+            Grid.Run(sim, 300, obey);
+            int leftByHalfway = sim.Left;
+            Grid.Run(sim, 300, obey);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(leftByHalfway, 40);
+            Assert.Greater(sim.Left - leftByHalfway, 40);
         }
 
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>
