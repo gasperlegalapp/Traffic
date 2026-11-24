@@ -92,7 +92,8 @@ namespace Traffic.Lab
 
             if (showLabels && !building && e.type == EventType.Repaint) DrawTags(scale);
 
-            var top = new Rect(12, 12, 430, 54);
+            // A level shows its budget and its routes as well, so its bar is wider.
+            var top = new Rect(12, 12, level != null ? 660 : 430, 54);
             var lab = new Rect(12, 76, 300, Mathf.Min(building ? (level != null ? 560 : 400) : 900, h - 100));
             float inspectorHeight = Mathf.Min(612, h - 24);
             var inspector = new Rect(w - 300, h - 12 - inspectorHeight, 288, inspectorHeight);
