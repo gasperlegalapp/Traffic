@@ -133,7 +133,7 @@ internal static class Program
         var states = new (string Name, Action<Dock> Set, DockKind Point, int Index)[]
         {
             ("Building, pointing at the two-lane road", d => { d.Building = true; d.Road = 1; d.Limit = 1; d.CanUndo = true; d.Hint = "Click where the road starts."; }, DockKind.Road, 1),
-            ("Building a curve, pointing at 65 mph", d => { d.Building = true; d.Shape = 1; d.Road = 2; d.Limit = 3; d.CanUndo = true; d.CanRedo = true; d.Hint = "Click the corner the road should bend round."; }, DockKind.Limit, 3),
+            ("Building a curve, pointing at 65 mph", d => { d.Building = true; d.Shape = 1; d.Road = 2; d.Limit = 3; d.CanUndo = true; d.CanRedo = true; d.Hint = "Move the pointer to pull the road into a curve, then click."; }, DockKind.Limit, 3),
             ("Bulldozing", d => { d.Building = true; d.Tool = 1; d.Hint = "Click a road to remove it."; }, DockKind.Tool, 1),
             ("Driving on your own map", d => { d.Rate = 1; }, DockKind.Build, 0),
             ("Driving, paused, on a built-in map", d => { d.OwnMap = false; d.Paused = true; d.Rate = 2; }, DockKind.Pause, 0),

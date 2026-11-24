@@ -104,26 +104,30 @@ namespace Traffic.Tests
         }
 
         [Test]
-        public void ACurveBendsTowardItsControlPoint()
+        public void ACurveIsPartOfACircleThroughThePointGiven()
         {
             var map = new EditableMap();
+            // Half a circle centered on (100, 100): from the south-west, round by the south-east, to the north-east.
             Assert.IsNull(map.TryAdd(P(0, 0), P(200, 200), 2, 40, true, P(200, 0)));
             Assert.AreEqual(1, map.Segments.Count);
             Assert.IsTrue(map.Segments[0].Curved);
             World world = map.ToWorld();
-            // The road should pass well to the lower right of the straight line between its ends.
-            Lane lane = world.Lanes.First(l => l.Kind == LaneKind.Road);
-            double furthest = 0;
-            for (double d = 0; d <= lane.Length; d += 5)
+            double radius = Math.Sqrt(2) * 100, furthest = 0;
+            foreach (Lane lane in world.Lanes.Where(l => l.Kind == LaneKind.Road))
             {
-                PathPose at = lane.Path.At(d);
-                furthest = Math.Max(furthest, (at.X - at.Y) / Math.Sqrt(2));
+                for (double d = 0; d <= lane.Length; d += 5)
+                {
+                    PathPose at = lane.Path.At(d);
+                    // Each lane keeps half a lane's width from the middle of the road, all the way round.
+                    Assert.AreEqual(radius, Geo.Hypot(at.X - 100, at.Y - 100), NetworkBuilder.LaneW / 2 + 0.3);
+                    furthest = Math.Max(furthest, (at.X - at.Y) / Math.Sqrt(2));
+                }
             }
-            Assert.Greater(furthest, 40);
+            Assert.Greater(furthest, 130, "the road should reach the point it was pulled through");
         }
 
         [Test]
-        public void AControlPointOnTheLineJustMakesAStraightRoad()
+        public void APointOnTheLineJustMakesAStraightRoad()
         {
             var map = new EditableMap();
             Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), 2, 40, true, P(100, 1)));
@@ -135,7 +139,7 @@ namespace Traffic.Tests
         {
             var map = new EditableMap();
             Assert.IsNull(map.TryAdd(P(-250, 60), P(250, 60), 2, 40, true));
-            Assert.IsNull(map.TryAdd(P(-200, -150), P(200, -150), 2, 40, true, P(0, 400))); // an arch that crosses the road twice
+            Assert.IsNull(map.TryAdd(P(-200, -150), P(200, -150), 2, 40, true, P(0, 150))); // an arch that crosses the road twice
             Assert.AreEqual(6, map.Nodes.Count, "four road ends and the two places they cross");
             Assert.AreEqual(6, map.Segments.Count);
             Assert.AreEqual(3, map.Segments.Count(s => s.Curved));
@@ -153,10 +157,23 @@ namespace Traffic.Tests
             Assert.AreEqual(3, map.Segments.Count);
             Assert.AreEqual(2, map.Segments.Count(s => s.Curved));
             Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Arms.Count == 3));
+            // Both halves still lie on the circle the whole curve was drawn on.
+            foreach (EditSegment s in map.Segments.Where(s => s.Curved))
+            {
+                foreach (Vec pt in map.Trace(s)) Assert.AreEqual(150 * Math.Sqrt(2), Geo.Hypot(pt.X - 150, pt.Y - 150), 0.5);
+            }
         }
 
         [Test]
         public void RefusesACurveThatIsTooTight()
+        {
+            var map = new EditableMap();
+            Assert.AreEqual("That curve is too tight.", map.TryAdd(P(0, 0), P(40, 0), 2, 25, true, P(20, 20)));
+            Assert.AreEqual(0, map.Segments.Count);
+        }
+
+        [Test]
+        public void RefusesACurveThatGoesNearlyAllTheWayRound()
         {
             var map = new EditableMap();
             Assert.IsNotNull(map.TryAdd(P(0, 0), P(50, 0), 2, 25, true, P(25, 200)));
@@ -173,6 +190,17 @@ namespace Traffic.Tests
             Assert.IsTrue(loaded.Segments[0].Curved);
         }
 
+        [Test]
+        public void StillLoadsACurveSavedBeforeCurvesBecameRound()
+        {
+            // The older kind of curve bent toward a corner point, here (200, 0), and passed halfway to it.
+            EditableMap loaded = EditableMap.Parse("0.0,0.0;200.0,200.0;|0,1,4,55,200.0,0.0;");
+            Assert.AreEqual(1, loaded.Segments.Count);
+            Assert.IsTrue(loaded.Segments[0].Curved);
+            Assert.AreEqual(150, loaded.Segments[0].Mid.X, 0.01);
+            Assert.AreEqual(50, loaded.Segments[0].Mid.Y, 0.01);
+        }
+
         /// <summary>A drawn map made mostly of curves: a winding main road, a loop off it, and a curved one-way cut-through.</summary>
         public static EditableMap CurvyTown()
         {
@@ -180,18 +208,18 @@ namespace Traffic.Tests
             Action<Vec, Vec, int, int, Vec?> add = (p, q, lanes, mph, c) => Assert.IsNull(map.TryAdd(p, q, lanes, mph, true, c), "from " + p.X + "," + p.Y + " to " + q.X + "," + q.Y);
             // The main road winds across the map in two bends.
             Vec west = P(-350, -80), middle = P(-60, 40), east = P(350, -40);
-            Vec bendOne = P(-200, 120), bendTwo = P(120, -120);
+            Vec bendOne = P(-200, 80), bendTwo = P(130, -60);
             add(west, middle, 4, 40, bendOne);
             add(middle, east, 4, 40, bendTwo);
             // A street loops north from the middle of it and comes back down further east.
-            Vec top = P(60, 300), corner = P(300, 120), loopBend = P(280, 320);
-            add(middle, top, 2, 25, P(-120, 220));
+            Vec top = P(60, 300), corner = P(300, 120), loopBend = P(230, 265);
+            add(middle, top, 2, 25, P(40, 150));
             add(top, corner, 2, 25, loopBend);
             add(corner, EditableMap.CurvePoint(middle, bendTwo, east, 0.7), 2, 25, null);
             // A curved road comes in from the south-west and joins the first bend.
-            add(P(-250, -300), EditableMap.CurvePoint(west, bendOne, middle, 0.45), 2, 40, P(-150, -150));
+            add(P(-250, -300), EditableMap.CurvePoint(west, bendOne, middle, 0.45), 2, 40, P(-165, -125));
             // A one-way street leaves the loop, crosses the main road and runs off the map to the south.
-            add(EditableMap.CurvePoint(top, loopBend, corner, 0.45), P(140, -300), 1, 25, P(60, -40));
+            add(EditableMap.CurvePoint(top, loopBend, corner, 0.45), P(140, -300), 1, 25, P(115, 0));
             return map;
         }
 

@@ -13,9 +13,9 @@ namespace Traffic.Sim
         public int Lanes;
         /// <summary>Speed limit in miles per hour.</summary>
         public int Mph;
-        /// <summary>A curved stretch bends toward Control: it leaves A heading for it and arrives at B coming from it.</summary>
+        /// <summary>A curved stretch is part of a circle, from A to B, passing through Mid halfway along.</summary>
         public bool Curved;
-        public Vec Control;
+        public Vec Mid;
     }
 
     /// <summary>Where a point lands when it is dropped on the map.</summary>
@@ -46,6 +46,8 @@ namespace Traffic.Sim
         public const double MinAngle = 40 * Math.PI / 180;
         /// <summary>The tightest curve allowed, as a turning radius in meters.</summary>
         public const double MinRadius = 22;
+        /// <summary>The furthest round one curve may turn: two thirds of a circle.</summary>
+        public const double MaxTurn = 240 * Math.PI / 180;
         public const int MaxArms = 4;
         public static readonly int[] LaneChoices = { 1, 2, 4 };
         public static readonly int[] SpeedChoices = { 25, 40, 55, 65 };
@@ -60,7 +62,7 @@ namespace Traffic.Sim
         {
             var copy = new EditableMap();
             copy.Nodes.AddRange(Nodes);
-            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Lanes = s.Lanes, Mph = s.Mph, Curved = s.Curved, Control = s.Control });
+            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Lanes = s.Lanes, Mph = s.Mph, Curved = s.Curved, Mid = s.Mid });
             return copy;
         }
 
@@ -76,30 +78,73 @@ namespace Traffic.Sim
             return Geo.Hypot(a.X - b.X, a.Y - b.Y);
         }
 
-        /// <summary>A point on the curve from p0 to p1 that bends toward c: t runs 0 to 1.</summary>
-        public static Vec CurvePoint(Vec p0, Vec c, Vec p1, double t)
+        /// <summary>
+        /// The circle through three points, as the arc that runs from a through via to b: its
+        /// center and radius, the angle it starts at and how far round it turns (positive is
+        /// counter-clockwise). False if the points are in a line, which has no circle.
+        /// </summary>
+        private static bool Arc(Vec a, Vec via, Vec b, out Vec center, out double radius, out double start, out double sweep)
         {
-            double u = 1 - t;
-            return new Vec(u * u * p0.X + 2 * u * t * c.X + t * t * p1.X, u * u * p0.Y + 2 * u * t * c.Y + t * t * p1.Y);
+            center = default(Vec);
+            radius = start = sweep = 0;
+            double d = 2 * (a.X * (via.Y - b.Y) + via.X * (b.Y - a.Y) + b.X * (a.Y - via.Y));
+            double chord = Dist(a, b);
+            if (Math.Abs(d) < 1e-9 * Math.Max(1, chord * chord)) return false;
+            double a2 = a.X * a.X + a.Y * a.Y, v2 = via.X * via.X + via.Y * via.Y, b2 = b.X * b.X + b.Y * b.Y;
+            center = new Vec((a2 * (via.Y - b.Y) + v2 * (b.Y - a.Y) + b2 * (a.Y - via.Y)) / d, (a2 * (b.X - via.X) + v2 * (a.X - b.X) + b2 * (via.X - a.X)) / d);
+            radius = Dist(center, a);
+            if (radius > 1e6) return false;
+            start = Math.Atan2(a.Y - center.Y, a.X - center.X);
+            sweep = Math.Atan2(b.Y - center.Y, b.X - center.X) - start;
+            // Going a, via, b is counter-clockwise when b lies to the left of the line from a to via.
+            bool left = (via.X - a.X) * (b.Y - a.Y) - (via.Y - a.Y) * (b.X - a.X) > 0;
+            if (left) while (sweep <= 0) sweep += 2 * Math.PI;
+            else while (sweep >= 0) sweep -= 2 * Math.PI;
+            return true;
         }
 
-        /// <summary>The line a stretch of road follows, as points from one end to the other.</summary>
-        public static Vec[] Trace(Vec p0, Vec p1, bool curved, Vec control, int steps = CurveSteps)
+        /// <summary>A point on the round curve from p0 to p1 that passes through via: t runs 0 to 1.</summary>
+        public static Vec CurvePoint(Vec p0, Vec via, Vec p1, double t)
         {
-            if (!curved) return new[] { p0, p1 };
+            Vec c;
+            double r, start, sweep;
+            if (!Arc(p0, via, p1, out c, out r, out start, out sweep)) return Lerp(p0, p1, t);
+            return new Vec(c.X + Math.Cos(start + sweep * t) * r, c.Y + Math.Sin(start + sweep * t) * r);
+        }
+
+        /// <summary>How far round a curve through three points turns, in radians. A straight line turns 0.</summary>
+        public static double CurveTurn(Vec p0, Vec via, Vec p1)
+        {
+            Vec c;
+            double r, start, sweep;
+            return Arc(p0, via, p1, out c, out r, out start, out sweep) ? Math.Abs(sweep) : 0;
+        }
+
+        /// <summary>
+        /// The line a stretch of road follows, as points from one end to the other. A curved
+        /// stretch is the part of a circle from p0 to p1 that passes through via.
+        /// </summary>
+        public static Vec[] Trace(Vec p0, Vec p1, bool curved, Vec via, int steps = CurveSteps)
+        {
+            Vec c;
+            double r, start, sweep;
+            if (!curved || !Arc(p0, via, p1, out c, out r, out start, out sweep)) return new[] { p0, p1 };
             var pts = new Vec[steps + 1];
-            for (int i = 0; i <= steps; i++) pts[i] = CurvePoint(p0, control, p1, (double)i / steps);
+            for (int i = 0; i <= steps; i++) pts[i] = new Vec(c.X + Math.Cos(start + sweep * i / steps) * r, c.Y + Math.Sin(start + sweep * i / steps) * r);
+            // The ends are exactly the points given, whatever the rounding.
+            pts[0] = p0;
+            pts[steps] = p1;
             return pts;
         }
 
         public Vec[] Trace(EditSegment s)
         {
-            return Trace(Nodes[s.A], Nodes[s.B], s.Curved, s.Control);
+            return Trace(Nodes[s.A], Nodes[s.B], s.Curved, s.Mid);
         }
 
         private Vec PointAt(EditSegment s, double t)
         {
-            return s.Curved ? CurvePoint(Nodes[s.A], s.Control, Nodes[s.B], t) : Lerp(Nodes[s.A], Nodes[s.B], t);
+            return s.Curved ? CurvePoint(Nodes[s.A], s.Mid, Nodes[s.B], t) : Lerp(Nodes[s.A], Nodes[s.B], t);
         }
 
         private static double LengthOf(Vec[] pts)
@@ -161,7 +206,8 @@ namespace Traffic.Sim
         private double HeadingFrom(EditSegment s, int node)
         {
             Vec from = Nodes[node];
-            Vec toward = s.Curved ? s.Control : Nodes[s.A == node ? s.B : s.A];
+            // A curve sets off along the circle, not toward its far end.
+            Vec toward = s.Curved ? PointAt(s, s.A == node ? 0.02 : 0.98) : Nodes[s.A == node ? s.B : s.A];
             return Math.Atan2(toward.Y - from.Y, toward.X - from.X);
         }
 
@@ -222,14 +268,14 @@ namespace Traffic.Sim
         // ---------------------------------------------------------------- drawing
 
         /// <summary>
-        /// Draw a road from p to q, straight, or curved toward a control point. Returns null if
-        /// it was added, or a short reason why it cannot be. With commit false nothing is
-        /// changed: use that to preview.
+        /// Draw a road from p to q: straight, or, given a third point, a round curve that passes
+        /// through it. Returns null if it was added, or a short reason why it cannot be. With
+        /// commit false nothing is changed: use that to preview.
         /// </summary>
-        public string TryAdd(Vec p, Vec q, int lanes, int mph, bool commit, Vec? control = null)
+        public string TryAdd(Vec p, Vec q, int lanes, int mph, bool commit, Vec? through = null)
         {
             EditableMap work = Clone();
-            string error = work.Add(p, q, lanes, mph, control);
+            string error = work.Add(p, q, lanes, mph, through);
             if (error != null) return error;
             // Make sure the result can actually be built before accepting it.
             try
@@ -261,7 +307,7 @@ namespace Traffic.Sim
             public Vec At;
         }
 
-        private string Add(Vec p, Vec q, int lanes, int mph, Vec? control)
+        private string Add(Vec p, Vec q, int lanes, int mph, Vec? through)
         {
             string error;
             int a = Resolve(p, out error);
@@ -271,15 +317,16 @@ namespace Traffic.Sim
             if (a == b) return "Too short.";
 
             Vec pa = Nodes[a], pb = Nodes[b];
-            // A control point that is almost on the straight line makes no real curve.
+            // A point that is almost on the straight line makes no real curve.
             bool curved = false;
             Vec c = default(Vec);
-            if (control.HasValue)
+            if (through.HasValue)
             {
                 double t0;
                 Vec on;
-                curved = Project(new[] { pa, pb }, control.Value, out t0, out on) > 3;
-                c = control.Value;
+                curved = Project(new[] { pa, pb }, through.Value, out t0, out on) > 3;
+                c = through.Value;
+                if (curved && CurveTurn(pa, c, pb) > MaxTurn) return "That curve goes too far round. Draw it in two parts.";
             }
             Vec[] path = Trace(pa, pb, curved, c);
 
@@ -335,15 +382,11 @@ namespace Traffic.Sim
                 var piece = new EditSegment { A = from, B = to, Lanes = lanes, Mph = mph };
                 if (curved)
                 {
-                    // The part of the curve between two positions is itself a curve of the same kind.
-                    double t0 = chain[i].T, t1 = chain[i + 1].T;
-                    Vec start = CurvePoint(pa, c, pb, t0);
-                    double dx = 2 * ((1 - t0) * (c.X - pa.X) + t0 * (pb.X - c.X));
-                    double dy = 2 * ((1 - t0) * (c.Y - pa.Y) + t0 * (pb.Y - c.Y));
+                    // The part of the curve between two positions is a piece of the same circle.
                     piece.Curved = true;
-                    piece.Control = new Vec(start.X + dx * (t1 - t0) / 2, start.Y + dy * (t1 - t0) / 2);
+                    piece.Mid = CurvePoint(pa, c, pb, (chain[i].T + chain[i + 1].T) / 2);
                 }
-                Vec[] shape = Trace(Nodes[from], Nodes[to], piece.Curved, piece.Control);
+                Vec[] shape = Trace(Nodes[from], Nodes[to], piece.Curved, piece.Mid);
                 if (LengthOf(shape) < MinLength) return "Too short: each stretch of road needs to be at least " + Math.Round(MinLength * 3.28084 / 10) * 10 + " ft.";
                 if (piece.Curved && TightestRadius(shape) < MinRadius) return "That curve is too tight.";
                 foreach (EditSegment s in Segments)
@@ -401,10 +444,10 @@ namespace Traffic.Sim
             var rest = new EditSegment { A = mid, B = s.B, Lanes = s.Lanes, Mph = s.Mph };
             if (s.Curved)
             {
-                // Each half of a curve is a curve of the same kind.
+                // Each part of a curve is a piece of the same circle.
                 rest.Curved = true;
-                rest.Control = Lerp(s.Control, Nodes[s.B], t);
-                s.Control = Lerp(Nodes[s.A], s.Control, t);
+                rest.Mid = PointAt(s, (1 + t) / 2);
+                s.Mid = PointAt(s, t / 2);
             }
             Segments.Add(rest);
             s.B = mid;
@@ -511,7 +554,7 @@ namespace Traffic.Sim
                 }
                 // Trace the curve with a point every few meters.
                 int steps = Math.Max(8, (int)Math.Ceiling(LengthOf(Trace(s)) / 3));
-                b.AddCurvedRoad(s.A, s.B, fwd, back, Trace(Nodes[s.A], Nodes[s.B], true, s.Control, steps), speed);
+                b.AddCurvedRoad(s.A, s.B, fwd, back, Trace(Nodes[s.A], Nodes[s.B], true, s.Mid, steps), speed);
             }
             World world = b.Build();
             // Keep the surroundings the same size however much has been drawn.
@@ -535,7 +578,7 @@ namespace Traffic.Sim
             foreach (EditSegment s in Segments)
             {
                 sb.Append(s.A).Append(',').Append(s.B).Append(',').Append(s.Lanes).Append(',').Append(s.Mph);
-                if (s.Curved) sb.Append(',').Append(Num(s.Control.X)).Append(',').Append(Num(s.Control.Y));
+                if (s.Curved) sb.Append(',').Append(Num(s.Mid.X)).Append(',').Append(Num(s.Mid.Y)).Append(",arc");
                 sb.Append(';');
             }
             return sb.ToString();
@@ -562,7 +605,10 @@ namespace Traffic.Sim
                     if (f.Length >= 6)
                     {
                         s.Curved = true;
-                        s.Control = new Vec(double.Parse(f[4], CultureInfo.InvariantCulture), double.Parse(f[5], CultureInfo.InvariantCulture));
+                        s.Mid = new Vec(double.Parse(f[4], CultureInfo.InvariantCulture), double.Parse(f[5], CultureInfo.InvariantCulture));
+                        // Curves saved before they became round arcs bent toward a corner point;
+                        // the middle of that older curve is close to where the arc should pass.
+                        if (f.Length == 6) s.Mid = new Vec((map.Nodes[s.A].X + 2 * s.Mid.X + map.Nodes[s.B].X) / 4, (map.Nodes[s.A].Y + 2 * s.Mid.Y + map.Nodes[s.B].Y) / 4);
                     }
                     map.Segments.Add(s);
                 }

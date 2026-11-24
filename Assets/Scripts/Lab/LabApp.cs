@@ -114,9 +114,9 @@ namespace Traffic.Lab
         private int shape;
         private bool hasStart;
         private Vec chainStart;
-        /// <summary>For a curve, the corner it bends round, once that has been clicked.</summary>
-        private bool hasControl;
-        private Vec controlPoint;
+        /// <summary>For a curve, where it ends, once that has been clicked. The pointer then pulls the bend out.</summary>
+        private bool hasEnd;
+        private Vec endPoint;
         private Vector2 hoverPixel;
         /// <summary>Earlier states of the drawing, for undo and redo.</summary>
         private readonly List<string> undo = new List<string>();
@@ -192,7 +192,7 @@ namespace Traffic.Lab
         private void StopDrawing()
         {
             hasStart = false;
-            hasControl = false;
+            hasEnd = false;
             editVersion++;
         }
 
@@ -222,7 +222,7 @@ namespace Traffic.Lab
         {
             if (bulldozing) return "Click a road to remove it.";
             if (!hasStart) return drawing.Segments.Count == 0 ? "Click where the road starts. An open road end is where traffic comes in." : "Click where the road starts. Touch or cross another road to make an intersection.";
-            if (shape == 1 && !hasControl) return "Click the corner the road should bend round. Right-click to go back.";
+            if (shape == 1 && hasEnd) return "Move the pointer to pull the road into a curve, then click. Right-click to go back.";
             return "Click where the road ends. Right-click to stop.";
         }
 
@@ -268,31 +268,34 @@ namespace Traffic.Lab
             {
                 chainStart = drawing.SnapTo(p).Point;
                 hasStart = true;
-                hasControl = false;
+                hasEnd = false;
                 return;
             }
-            if (shape == 1 && !hasControl)
+            if (shape == 1 && !hasEnd)
             {
-                controlPoint = p;
-                hasControl = true;
+                // A curve: the second click fixes the far end, and the third pulls the bend out.
+                endPoint = drawing.SnapTo(p).Point;
+                if (Geo.Hypot(endPoint.X - chainStart.X, endPoint.Y - chainStart.Y) < 1) return;
+                hasEnd = true;
                 return;
             }
-            string problem = drawing.TryAdd(chainStart, p, DrawLanes, DrawMph, true, shape == 1 ? controlPoint : (Vec?)null);
+            Vec end = shape == 1 ? endPoint : p;
+            string problem = drawing.TryAdd(chainStart, end, DrawLanes, DrawMph, true, shape == 1 ? p : (Vec?)null);
             if (problem != null)
             {
                 Toast(problem);
                 return;
             }
             // Carry on from where this stretch ended, so a road can be drawn as a chain of clicks.
-            chainStart = drawing.SnapTo(p).Point;
-            hasControl = false;
+            chainStart = drawing.SnapTo(end).Point;
+            hasEnd = false;
             DrawingChanged(before);
         }
 
         /// <summary>Right-click or Esc while drawing: go back one click.</summary>
         private void StepBack()
         {
-            if (hasControl) hasControl = false;
+            if (hasEnd) hasEnd = false;
             else hasStart = false;
             editVersion++;
         }
@@ -322,23 +325,18 @@ namespace Traffic.Lab
                 Mark(end, 4, good);
                 return;
             }
-            if (shape == 1 && !hasControl)
-            {
-                // Choosing the corner of a curve: show the way the road sets off.
-                Segment(chainStart.X, chainStart.Y, hover.X, hover.Y, faint, 0);
-                Mark(chainStart, 4, good);
-                Mark(hover, 3, good);
-                return;
-            }
-            bool curved = shape == 1;
+            // A curve whose far end is fixed bends through the pointer; anything else runs straight to it.
+            bool curved = shape == 1 && hasEnd;
+            if (curved) end = endPoint;
+            Vec to = curved ? endPoint : hover;
             if (previewVersion != editVersion || Geo.Hypot(hover.X - previewAt.X, hover.Y - previewAt.Y) > 0.4)
             {
-                previewOk = drawing.TryAdd(chainStart, hover, DrawLanes, DrawMph, false, curved ? controlPoint : (Vec?)null) == null;
+                previewOk = drawing.TryAdd(chainStart, to, DrawLanes, DrawMph, false, curved ? hover : (Vec?)null) == null;
                 previewVersion = editVersion;
                 previewAt = hover;
             }
             Color c = previewOk ? good : new Color(1, 0.3f, 0.3f, 1);
-            Vec[] line = EditableMap.Trace(chainStart, end, curved, controlPoint, 24);
+            Vec[] line = EditableMap.Trace(chainStart, end, curved, hover, 48);
             Polyline(line, c);
             // Show how wide it will be. A single lane lies to the right of the line drawn.
             if (Geo.Hypot(end.X - chainStart.X, end.Y - chainStart.Y) > 1)
@@ -347,12 +345,7 @@ namespace Traffic.Lab
                 Polyline(Geo.Offset(line, side), c);
                 if (DrawLanes != 1) Polyline(Geo.Offset(line, -side), c);
             }
-            if (curved)
-            {
-                Segment(chainStart.X, chainStart.Y, controlPoint.X, controlPoint.Y, faint, 0);
-                Segment(controlPoint.X, controlPoint.Y, end.X, end.Y, faint, 0);
-                Mark(controlPoint, 3, faint);
-            }
+            if (curved) Mark(hover, 3, faint);
             Mark(chainStart, 4, c);
             Mark(end, 4, c);
         }

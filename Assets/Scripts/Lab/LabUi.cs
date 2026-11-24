@@ -167,7 +167,7 @@ namespace Traffic.Lab
                     break;
                 case DockKind.Shape:
                     shape = item.Index;
-                    hasControl = false;
+                    hasEnd = false;
                     editVersion++;
                     break;
                 case DockKind.Road:

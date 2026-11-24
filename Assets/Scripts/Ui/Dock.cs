@@ -370,7 +370,7 @@ namespace Traffic.Ui
                     title = item.Index == 0 ? "Straight" : "Curve";
                     body = item.Index == 0
                         ? "Click where the road starts, then where it ends. Keep clicking to carry on from there."
-                        : "Click where the road starts, then the corner it should bend round, then where it ends.";
+                        : "Click where the road starts and where it ends, then pull it into a round curve with the pointer and click again.";
                     break;
                 case DockKind.Road:
                     title = item.Index == 0 ? "Single lane" : item.Index == 1 ? "Two lanes" : "Four lanes";
