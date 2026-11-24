@@ -497,12 +497,14 @@ namespace Traffic.Sim
                 var headings = new List<double>();
                 foreach (EditSegment s in Segments) if (s.A == node || s.B == node) headings.Add(HeadingFrom(s, node));
                 if (headings.Count > MaxArms) return "No more than " + MaxArms + " roads can meet at one point.";
+                // A one-way road may run in alongside another road, or peel off it: that is a merge, not an intersection.
+                if (JoinAt(node) != null) continue;
                 for (int i = 0; i < headings.Count; i++)
                 {
                     for (int k = i + 1; k < headings.Count; k++)
                     {
                         double between = Math.Abs(Math.Atan2(Math.Sin(headings[i] - headings[k]), Math.Cos(headings[i] - headings[k])));
-                        if (between < MinAngle) return "Those roads meet at too sharp an angle.";
+                        if (between < MinAngle) return "Too sharp an angle. Only a one-way road can join that closely, on the right of the traffic it joins.";
                     }
                 }
             }
@@ -574,6 +576,102 @@ namespace Traffic.Sim
             return found;
         }
 
+        // ---------------------------------------------------------------- merging
+
+        /// <summary>
+        /// A place where a one-way road runs into another road alongside it (a merge), or peels
+        /// off it (an exit), with no intersection: the road carries straight on through.
+        /// </summary>
+        private sealed class Join
+        {
+            /// <summary>The one-way road joining or leaving.</summary>
+            public EditSegment Ramp;
+            /// <summary>The road it joins, before and after the join in the direction of the traffic concerned.</summary>
+            public EditSegment Up, Down;
+            /// <summary>True where the ramp's traffic flows in; false where it flows out.</summary>
+            public bool Merge;
+            /// <summary>The way that traffic is heading on the road at the join.</summary>
+            public Vec Along;
+            /// <summary>How many lanes the road has in that direction, and how far their outside edge is from its centerline.</summary>
+            public int Lanes;
+            public double Edge;
+        }
+
+        /// <summary>Roads may join as a merge when they meet at less than this angle; steeper and they make an intersection.</summary>
+        public static double MergeAngle => MinAngle;
+        /// <summary>The slight angle a ramp keeps to the road where it meets it.</summary>
+        private const double RampTilt = 0.14;
+
+        /// <summary>The merge or exit at a point, if the roads there make one.</summary>
+        private Join JoinAt(int node)
+        {
+            var here = new List<EditSegment>();
+            foreach (EditSegment s in Segments) if (s.A == node || s.B == node) here.Add(s);
+            if (here.Count != 3) return null;
+            for (int i = 0; i < 3; i++)
+            {
+                EditSegment ramp = here[i], x = here[(i + 1) % 3], y = here[(i + 2) % 3];
+                if (!ramp.Type.OneWay || ramp.A == ramp.B || x.Type.Id != y.Type.Id) continue;
+                // The other two must be one road carrying straight on.
+                double hx = HeadingFrom(x, node), hy = HeadingFrom(y, node);
+                if (Math.Abs(Math.Atan2(Math.Sin(hx - hy), Math.Cos(hx - hy))) < Math.PI - 0.26) continue;
+                double hr = HeadingFrom(ramp, node);
+                bool merge = ramp.B == node;
+                // The way the ramp's traffic is moving at the join.
+                double ux = Math.Cos(hr) * (merge ? -1 : 1), uy = Math.Sin(hr) * (merge ? -1 : 1);
+                bool alongX = ux * Math.Cos(hx) + uy * Math.Sin(hx) > 0;
+                EditSegment down = alongX ? x : y, up = alongX ? y : x;
+                double h = alongX ? hx : hy;
+                var along = new Vec(Math.Cos(h), Math.Sin(h));
+                if (Math.Acos(Geo.Clamp(ux * along.X + uy * along.Y, -1, 1)) >= MergeAngle) continue;
+                // The ramp must lie to the right of the traffic it joins or leaves.
+                if (along.X * Math.Sin(hr) - along.Y * Math.Cos(hr) >= 0) continue;
+                // A one-way road only runs one way: it must be running the way the ramp needs.
+                if (down.Type.OneWay && (up.B != node || down.A != node)) continue;
+                int lanes = down.Type.OneWay || down.A == node ? down.Type.Forward : down.Type.Backward;
+                return new Join { Ramp = ramp, Up = up, Down = down, Merge = merge, Along = along, Lanes = lanes, Edge = lanes * NetworkBuilder.LaneW + down.Type.Inner };
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Reshape the end of a ramp so that it comes in beside the lanes of the road it joins,
+        /// not at the middle of it. The trace is given running toward the join. Returns the
+        /// trace to build (stopping just short of the join) and the sideways shift to build it with.
+        /// </summary>
+        private static Vec[] BesideTheRoad(Vec[] trace, Vec node, Join join, double rampWidth, out double shift)
+        {
+            double tilt = RampTilt, r = NetworkBuilder.FreeRadius;
+            double side = join.Edge + rampWidth / 2;
+            shift = (side - r * Math.Sin(tilt)) / Math.Cos(tilt);
+            // Along the road and to its right, as seen by the traffic the ramp joins.
+            Vec h = join.Along, right = new Vec(h.Y, -h.X);
+            // A merge arrives a little before the join, heading slightly in; an exit is the same thing seen backward.
+            double back = join.Merge ? 1 : -1;
+            double along = (-r * Math.Cos(tilt) + shift * Math.Sin(tilt)) * back;
+            var end = new Vec(node.X + h.X * along + right.X * side, node.Y + h.Y * along + right.Y * side);
+            double heading = Math.Atan2(h.Y, h.X) + tilt * back + (join.Merge ? 0 : Math.PI);
+
+            // Keep the ramp as drawn up to a point some way back, then sweep in to the new end.
+            double total = LengthOf(trace), from = total - Math.Min(70, total * 0.55), run = 0;
+            var path = new List<Vec>();
+            int cut = 0;
+            for (int i = 0; i + 1 < trace.Length && run + Dist(trace[i], trace[i + 1]) < from; i++)
+            {
+                run += Dist(trace[i], trace[i + 1]);
+                path.Add(trace[i]);
+                cut = i + 1;
+            }
+            Vec before = trace[Math.Max(cut - 1, 0)], at = trace[cut];
+            if (cut == 0) before = new Vec(at.X - (trace[1].X - at.X), at.Y - (trace[1].Y - at.Y));
+            var start = new PathPose { X = at.X, Y = at.Y, H = Math.Atan2(at.Y - before.Y, at.X - before.X) };
+            var finish = new PathPose { X = end.X, Y = end.Y, H = heading };
+            Vec[] sweep = Geo.Bezier(start, finish, Dist(at, end) * 0.4, 24);
+            // Stop a little short: the builder adds the last point itself, from the shift.
+            foreach (Vec p in sweep) if (Dist(p, end) > 2) path.Add(p);
+            return path.ToArray();
+        }
+
         // ---------------------------------------------------------------- removing
 
         /// <summary>Remove the road nearest a point. Returns false if none is within reach.</summary>
@@ -623,6 +721,7 @@ namespace Traffic.Sim
         public World ToWorld()
         {
             var b = new NetworkBuilder();
+            var joins = new Join[Nodes.Count];
             for (int i = 0; i < Nodes.Count; i++)
             {
                 int arms = 0, fastest = 0;
@@ -632,20 +731,30 @@ namespace Traffic.Sim
                     arms++;
                     fastest = Math.Max(fastest, s.Mph);
                 }
-                JunctionMode mode = arms <= 2 ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
+                joins[i] = JoinAt(i);
+                JunctionMode mode = arms <= 2 || joins[i] != null ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
                 b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
             }
             foreach (EditSegment s in Segments)
             {
-                var fwd = new TrackSpec[s.Type.Forward];
-                for (int i = 0; i < fwd.Length; i++) fwd[i] = new TrackSpec(i);
-                TrackSpec[] back = null;
-                if (!s.Type.OneWay)
-                {
-                    back = new TrackSpec[s.Type.Backward];
-                    for (int i = 0; i < back.Length; i++) back[i] = new TrackSpec(i);
-                }
+                TrackSpec[] fwd = Tracks(s, true, joins), back = s.Type.OneWay ? null : Tracks(s, false, joins);
                 double speed = s.Mph * 0.44704;
+                bool rampAtA = joins[s.A] != null && joins[s.A].Ramp == s, rampAtB = joins[s.B] != null && joins[s.B].Ramp == s;
+                if (rampAtA || rampAtB)
+                {
+                    // A ramp: bring each joining end in beside the lanes of the road it joins.
+                    Vec[] trace = Trace(Nodes[s.A], Nodes[s.B], s.Curved, s.Mid, Math.Max(8, (int)Math.Ceiling(LengthOf(Trace(s)) / 3)));
+                    double shiftA = 0, shiftB = 0;
+                    if (rampAtB) trace = BesideTheRoad(trace, Nodes[s.B], joins[s.B], s.Type.Width, out shiftB);
+                    if (rampAtA)
+                    {
+                        Array.Reverse(trace);
+                        trace = BesideTheRoad(trace, Nodes[s.A], joins[s.A], s.Type.Width, out shiftA);
+                        Array.Reverse(trace);
+                    }
+                    b.AddRamp(s.A, s.B, fwd, trace, speed, s.Type.Inner, rampAtA, shiftA, rampAtB, shiftB);
+                    continue;
+                }
                 if (!s.Curved)
                 {
                     b.AddRoad(s.A, s.B, fwd, back, null, speed, 0, 0, false, s.Type.Inner);
@@ -659,6 +768,32 @@ namespace Traffic.Sim
             // Keep the surroundings the same size however much has been drawn.
             world.Extent = Math.Max(world.Extent, 400);
             return world;
+        }
+
+        /// <summary>
+        /// The lanes of a stretch of road in one direction. Where it ends at a merge or an exit
+        /// its lanes are told which way they may go, and where it leaves a merge it gains a lane
+        /// for each lane of the ramp, which ends further on so that traffic has room to move over.
+        /// </summary>
+        private TrackSpec[] Tracks(EditSegment s, bool forward, Join[] joins)
+        {
+            int count = forward ? s.Type.Forward : s.Type.Backward;
+            Join ahead = joins[forward ? s.B : s.A], behind = joins[forward ? s.A : s.B];
+            var tracks = new List<TrackSpec>();
+            for (int i = 0; i < count; i++)
+            {
+                if (ahead == null) tracks.Add(new TrackSpec(i));
+                // Traffic arriving at an exit may take it from the outside lane; nobody else may turn there.
+                else if (!ahead.Merge && s == ahead.Up && i == count - 1) tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight, Turn.Right));
+                else tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight));
+            }
+            if (behind != null && behind.Merge && s == behind.Down)
+            {
+                double length = LengthOf(Trace(s));
+                double until = Math.Min(0.75, 150 / Math.Max(length, 1));
+                for (int i = 0; i < behind.Ramp.Type.Forward; i++) tracks.Add(new TrackSpec(count + i, 0, until));
+            }
+            return tracks.ToArray();
         }
 
         // ---------------------------------------------------------------- saving

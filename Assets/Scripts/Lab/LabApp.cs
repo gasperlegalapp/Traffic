@@ -369,7 +369,7 @@ namespace Traffic.Lab
             {
                 RoadType t = RoadType.All[i];
                 string body = t.Mph + " mph.  " + Money(t.CostPerMeter) + " a meter.  " + Mathf.RoundToInt((float)t.Width * Feet) + " ft wide.\n";
-                body += t.OneWay ? "Traffic runs the way you draw it, from the first click to the last."
+                body += t.OneWay ? "Traffic runs the way you draw it. Bring it in alongside another road, on the right of that road's traffic, and it merges in; start it on one the same way and it peels off."
                     : t.Median > 0 ? "A grass median divides the two directions."
                     : "A double yellow line divides the two directions.";
                 body += t.Group == RoadType.Street ? "\nWhere only streets meet, drivers get stop signs all round." : "\nWhere it meets another road it gets a traffic light.";

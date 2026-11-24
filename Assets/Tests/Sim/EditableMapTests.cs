@@ -349,6 +349,88 @@ namespace Traffic.Tests
             Assert.Greater(sim.Left - leftByHalfway, 40);
         }
 
+        // ---------------------------------------------------------------- merges and exits
+
+        /// <summary>A two-lane highway running east, with a ramp curving in from the south-west and another peeling off to the south-east.</summary>
+        public static EditableMap HighwayWithRamps(string road = "h2", string ramp = "h1")
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-420, 0), P(420, 0), T(road), true));
+            // The on-ramp arrives almost alongside; the off-ramp leaves the same way.
+            Assert.IsNull(map.TryAdd(P(-380, -150), P(-150, 0), T(ramp), true, P(-250, -45)), "on-ramp");
+            Assert.IsNull(map.TryAdd(P(150, 0), P(380, -150), T(ramp), true, P(250, -45)), "off-ramp");
+            return map;
+        }
+
+        [Test]
+        public void AOneWayRoadJoiningAlongsideMakesAMergeNotAnIntersection()
+        {
+            World world = HighwayWithRamps().ToWorld();
+            Assert.AreEqual(0, world.Nodes.Count(n => n.Controlled), "a merge has no lights or stop signs");
+            Assert.AreEqual(2, world.Nodes.Count(n => n.Arms.Count == 3));
+            // Past the merge the highway has a third lane for a while, which then ends.
+            Node merge = world.Nodes.First(n => n.Arms.Count == 3 && n.Pos.X < 0);
+            var leaving = world.Lanes.Where(l => l.Kind == LaneKind.Road && Math.Abs(l.Path.At(0).X - (merge.Pos.X + NetworkBuilder.FreeRadius)) < 1.5 && Math.Abs(l.Path.At(0).Y) < 12).ToList();
+            Assert.AreEqual(3, leaving.Count, "two through lanes and the lane the ramp brings");
+            Lane added = leaving.OrderBy(l => l.Path.At(0).Y).First();
+            Assert.IsNull(added.Connectors, "the added lane ends before the next junction");
+            Assert.AreEqual(1, added.Preds.Count, "only the ramp feeds the added lane");
+            // The ramp comes in beside the highway's lanes, not into the middle of them.
+            Lane ramp = world.Lanes[world.Lanes[added.Preds[0]].From];
+            PathPose end = ramp.Path.At(ramp.Length);
+            Assert.AreEqual(added.Path.At(0).Y, end.Y, 1.0, "the ramp should line up with the lane it feeds");
+            Assert.Less(Math.Abs(end.H), 0.3, "the ramp should arrive nearly alongside");
+        }
+
+        [Test]
+        public void TrafficMergesInAndExitsWithoutCrashing()
+        {
+            foreach (string road in new[] { "h2", "h3", "a4" })
+            {
+                var sim = new Simulation(HighwayWithRamps(road).ToWorld(), 5);
+                sim.ArrivalsPerMinute = 7;
+                var seenOnOffRamp = new System.Collections.Generic.HashSet<int>();
+                Action watch = () =>
+                {
+                    foreach (Car c in sim.Cars)
+                    {
+                        c.Drv.Compliance = 1;
+                        if (c.X > 260 && c.Y < -40) seenOnOffRamp.Add(c.Id);
+                    }
+                };
+                Grid.Run(sim, 300, watch);
+                int leftByHalfway = sim.Left;
+                Grid.Run(sim, 300, watch);
+                Assert.AreEqual(0, sim.Crashes, road);
+                Assert.Greater(leftByHalfway, 60, road);
+                Assert.Greater(sim.Left - leftByHalfway, 60, road);
+                Assert.Greater(seenOnOffRamp.Count, 8, road + ": some traffic should take the exit");
+            }
+        }
+
+        [Test]
+        public void ARampOnTheWrongSideOrAgainstTheFlowIsRefused()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-420, 0), P(420, 0), T("h2"), true));
+            // Joining an eastbound highway from the north would mean merging from the left.
+            Assert.IsNotNull(map.TryAdd(P(-380, 150), P(-150, 0), T("h1"), true, P(-250, 45)));
+            // Running in against the traffic.
+            Assert.IsNotNull(map.TryAdd(P(380, -150), P(150, 0), T("h1"), true, P(250, -45)));
+            // A two-way road cannot merge at all.
+            Assert.IsNotNull(map.TryAdd(P(-380, -150), P(-150, 0), T("s2"), true, P(-250, -45)));
+            Assert.AreEqual(1, map.Segments.Count);
+        }
+
+        [Test]
+        public void ASteepJoinIsStillAnIntersection()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(0, -250), P(0, 0), T("s1"), true));
+            Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Controlled));
+        }
+
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>
         private static EditableMap Town()
         {

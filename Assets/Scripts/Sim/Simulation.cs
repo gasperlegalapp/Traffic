@@ -1240,14 +1240,27 @@ namespace Traffic.Sim
                 if (e.Car == self || e.S <= s) continue;
                 return new Neighbor { Car = e.Car, Gap = e.S - e.Car.Len / 2 - (s + self.Len / 2) };
             }
+            // Nobody ahead in this lane: look on through the junction at its end, and into the road
+            // beyond it, so as not to pull out into a lane whose traffic is stopped just past it.
+            double toEnd = t.Length - s - self.Len / 2;
             int nextId = -1;
             if (t.Kind == LaneKind.Connector) nextId = t.Next;
             else if (t.Connectors != null) nextId = t.ConnectorFor(self.Turn);
-            if (nextId >= 0 && laneCars[nextId].Count > 0)
-            {
-                Entry first = laneCars[nextId][0];
-                if (first.Car != self) return new Neighbor { Car = first.Car, Gap = t.Length - s + first.S - first.Car.Len / 2 - self.Len / 2 };
-            }
+            if (nextId < 0) return null;
+            Entry? first = FirstIn(nextId, self);
+            if (first.HasValue) return new Neighbor { Car = first.Value.Car, Gap = toEnd + first.Value.S - first.Value.Car.Len / 2 };
+            Lane next = Lanes[nextId];
+            if (next.Kind != LaneKind.Connector || toEnd + next.Length > 160) return null;
+            first = FirstIn(next.Next, self);
+            if (!first.HasValue) return null;
+            double gap = toEnd + next.Length + first.Value.S - first.Value.Car.Len / 2;
+            return gap < 160 ? new Neighbor { Car = first.Value.Car, Gap = gap } : null;
+        }
+
+        /// <summary>The car furthest back in a lane, other than one given.</summary>
+        private Entry? FirstIn(int laneId, Car self)
+        {
+            foreach (Entry e in laneCars[laneId]) if (e.Car != self) return e;
             return null;
         }
 
@@ -1258,19 +1271,34 @@ namespace Traffic.Sim
             {
                 Entry e = list[i];
                 if (e.Car == self || e.S >= s) continue;
-                return new Neighbor { Car = e.Car, Gap = s - self.Len / 2 - (e.S + e.Car.Len / 2) };
+                double gap = s - self.Len / 2 - (e.S + e.Car.Len / 2);
+                // A car that is already moving out of this lane will not be the one behind for long:
+                // unless it is right on our tail, the one to worry about is whoever is behind it.
+                if (e.Ghost && gap > 2) continue;
+                return new Neighbor { Car = e.Car, Gap = gap };
             }
+            // Nobody behind in this lane: look back up the road, through the junction it comes out of,
+            // far enough to see a fast car that is still a few seconds away.
             Neighbor best = null;
-            foreach (int p in t.Preds)
-            {
-                var pl = laneCars[p];
-                if (pl.Count == 0) continue;
-                Entry e = pl[pl.Count - 1];
-                if (e.Car == self) continue;
-                double gap = s - self.Len / 2 + (Lanes[p].Length - e.S) - e.Car.Len / 2;
-                if (best == null || gap < best.Gap) best = new Neighbor { Car = e.Car, Gap = gap };
-            }
+            foreach (int p in t.Preds) LookBack(p, s - self.Len / 2, self, 2, ref best);
             return best;
+        }
+
+        /// <summary>The last car in a lane that leads to where we are, or failing that in the lanes that lead to it.</summary>
+        private void LookBack(int laneId, double ahead, Car self, int further, ref Neighbor best)
+        {
+            Lane lane = Lanes[laneId];
+            var list = laneCars[laneId];
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                Entry e = list[i];
+                if (e.Car == self) continue;
+                double gap = ahead + (lane.Length - e.S) - e.Car.Len / 2;
+                if (best == null || gap < best.Gap) best = new Neighbor { Car = e.Car, Gap = gap };
+                return;
+            }
+            if (further <= 0 || ahead + lane.Length > 160) return;
+            foreach (int p in lane.Preds) LookBack(p, ahead + lane.Length, self, further - 1, ref best);
         }
 
         private static readonly int[] Sides = { -1, 1 };

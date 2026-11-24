@@ -50,7 +50,7 @@ namespace Traffic.Sim
         /// <summary>How high a bridge stands over the road beneath it.</summary>
         private const double BridgeHeight = 6.5;
         /// <summary>How far the stop lines sit from the center where roads split or join without a light.</summary>
-        private const double FreeRadius = 8;
+        public const double FreeRadius = 8;
 
         private sealed class RoadSpec
         {
@@ -61,6 +61,8 @@ namespace Traffic.Sim
             public double ShiftA, ShiftB;
             public bool Bridge;
             public bool Traced;
+            /// <summary>For a traced road: this end keeps the direction of the trace's own last points, and is not trimmed.</summary>
+            public bool OwnA, OwnB;
             public double Inner;
         }
 
@@ -109,6 +111,21 @@ namespace Traffic.Sim
         public void AddCurvedRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] trace, double speed, double inner = 0)
         {
             roads.Add(new RoadSpec { A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = trace, Speed = speed, Traced = true, Inner = inner });
+        }
+
+        /// <summary>
+        /// A traced road one or both of whose ends are a ramp: it joins or leaves another road
+        /// alongside it. At such an end the trace stops just short of where the ramp should
+        /// attach and already points the way the ramp should run there; a shift moves the
+        /// attachment sideways to the outside of the other road's lanes (see AddRoad).
+        /// </summary>
+        public void AddRamp(int a, int b, TrackSpec[] fwd, Vec[] trace, double speed, double inner, bool rampAtA, double shiftA, bool rampAtB, double shiftB)
+        {
+            roads.Add(new RoadSpec
+            {
+                A = a, B = b, Fwd = fwd, Back = new TrackSpec[0], Via = trace, Speed = speed, Traced = true, Inner = inner,
+                OwnA = rampAtA, ShiftA = rampAtA ? shiftA : 0, OwnB = rampAtB, ShiftB = rampAtB ? shiftB : 0,
+            });
         }
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
@@ -214,16 +231,18 @@ namespace Traffic.Sim
                     var kept = new List<Vec>();
                     foreach (Vec v in via)
                     {
-                        if (Geo.Hypot(v.X - a.X, v.Y - a.Y) > radius[r.A] + 3 && Geo.Hypot(v.X - b.X, v.Y - b.Y) > radius[r.B] + 3) kept.Add(v);
+                        bool clearOfA = r.OwnA || Geo.Hypot(v.X - a.X, v.Y - a.Y) > radius[r.A] + 3;
+                        bool clearOfB = r.OwnB || Geo.Hypot(v.X - b.X, v.Y - b.Y) > radius[r.B] + 3;
+                        if (clearOfA && clearOfB) kept.Add(v);
                     }
                     via = kept.ToArray();
                 }
                 int m = via.Length;
                 // A traced road aims straight from each node at the nearest point kept; any other
                 // curved road sets its own direction with its first and last two points.
-                bool own = m >= 2 && !r.Traced;
-                Vec from0 = own ? via[0] : a, from1 = own ? via[1] : m >= 1 ? via[0] : b;
-                Vec to0 = own ? via[m - 2] : m >= 1 ? via[m - 1] : a, to1 = own ? via[m - 1] : b;
+                bool ownA = m >= 2 && (!r.Traced || r.OwnA), ownB = m >= 2 && (!r.Traced || r.OwnB);
+                Vec from0 = ownA ? via[0] : a, from1 = ownA ? via[1] : m >= 1 ? via[0] : b;
+                Vec to0 = ownB ? via[m - 2] : m >= 1 ? via[m - 1] : a, to1 = ownB ? via[m - 1] : b;
                 double la = Geo.Hypot(from1.X - from0.X, from1.Y - from0.Y);
                 double lb = Geo.Hypot(to1.X - to0.X, to1.Y - to0.Y);
                 double ax = (from1.X - from0.X) / la, ay = (from1.Y - from0.Y) / la;
@@ -555,7 +574,7 @@ namespace Traffic.Sim
                             if (k > 0) break;
                             to = outs[outs.Count - 1];
                         }
-                        else if (turn == Turn.Right || (turn == Turn.Straight && node.Arms.Count > 2 && bend[t] < -0.1)) to = outs[Math.Max(0, outs.Count - src.Count + k)]; // joining from the right: keep right
+                        else if (turn == Turn.Right || (turn == Turn.Straight && node.Arms.Count > 2 && (bend[t] < -0.1 || arm.Shift < -0.1))) to = outs[Math.Max(0, outs.Count - src.Count + k)]; // joining from the right: keep right
                         else to = outs[Math.Min(k, outs.Count - 1)];
                         conns.Add(Connect(node, src[k], to, turn));
                     }
@@ -627,11 +646,20 @@ namespace Traffic.Sim
                 {
                     if (o.Kind == LaneKind.Road && o.ApproachNode == to.ApproachNode && o.ApproachArm == to.ApproachArm && o.Preds.Count > 0 && o.Slot < to.Slot) leftmost = false;
                 }
+                // Where one lane splits two ways (an exit), no line is painted across the opening between them.
+                bool splitsLeft = false, splitsRight = false;
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.From != c.From || o.Turn == Turn.UTurn || c.Turn == Turn.UTurn) continue;
+                    if ((int)o.Turn < (int)c.Turn) splitsLeft = true;
+                    if ((int)o.Turn > (int)c.Turn) splitsRight = true;
+                }
                 Vec[] pts = c.Path.Pts;
-                if (leftNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2), Width = 0.14, DashOn = DashOn, DashOff = DashOff });
+                if (splitsLeft) { }
+                else if (leftNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2), Width = 0.14, DashOn = DashOn, DashOff = DashOff });
                 else if (leftmost) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.16), Width = 0.12, Yellow = true });
                 else world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.2), Width = 0.14 });
-                if (!rightNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, LaneW / 2 - 0.25), Width = 0.14 });
+                if (!rightNeighbor && !splitsRight) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, LaneW / 2 - 0.25), Width = 0.14 });
             }
         }
 
