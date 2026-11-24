@@ -3,8 +3,8 @@
 Turns the source models in Art/ into the one file the game loads: Assets/Resources/Art/models.bytes.
 
 The game builds its meshes from that file in code (ArtKit.cs), so nothing depends on how Unity
-imports a model. This script sizes each vehicle to the simulation's dimensions, points it along
-+x, and sorts its faces into "paint" (takes the car's own color) and everything else.
+imports a model. This script scales every vehicle by the same amount, keeping its proportions,
+points it along +x, and sorts its faces into "paint" (takes the car's own color) and everything else.
 
     python3 Tools/BakeArt/bake.py                 write the file
     python3 Tools/BakeArt/bake.py preview.png     also draw every model to a picture, to check them
@@ -26,19 +26,21 @@ OUT = os.path.join(ROOT, "Assets", "Resources", "Art", "models.bytes")
 
 PAINT, LEAF = 65535, 65534
 
-# name in the game, source file, length and width in meters (the simulation's sizes), and for a
-# truck where its cab ends, as a share of its length from the back: the cab keeps its shape and
-# the cargo box behind it is stretched to make up the length.
+# One scale for the whole car kit, so every vehicle keeps the proportions it was drawn with and
+# its size next to the others. It makes the longest car about as long as the simulation's car.
+KIT_SCALE = 1.5
+
+# name in the game, source file.
 VEHICLES = [
-    ("car/sedan", "sedan", 4.5, 1.9, None),
-    ("car/sports", "sedan-sports", 4.5, 1.9, None),
-    ("car/hatchback", "hatchback-sports", 4.5, 1.9, None),
-    ("car/suv", "suv", 4.5, 1.9, None),
-    ("car/wagon", "suv-luxury", 4.5, 1.9, None),
-    ("car/van", "van", 4.5, 1.9, None),
-    ("car/pickup", "truck", 4.5, 1.9, None),
-    ("truck/box", "delivery", 8.5, 2.5, 0.66),
-    ("truck/flatbed", "delivery-flat", 8.5, 2.5, 0.66),
+    ("car/sedan", "sedan"),
+    ("car/sports", "sedan-sports"),
+    ("car/hatchback", "hatchback-sports"),
+    ("car/suv", "suv"),
+    ("car/wagon", "suv-luxury"),
+    ("car/van", "van"),
+    ("car/pickup", "truck"),
+    ("truck/box", "delivery"),
+    ("truck/flatbed", "delivery-flat"),
 ]
 
 # name in the game, source file, height in meters.
@@ -176,29 +178,10 @@ def unit(v):
     return v / n if n > 0 else np.array([0.0, 1.0, 0.0])
 
 
-def bake_vehicle(name, source, length, width, cab):
+def bake_vehicle(name, source):
     pos, tex, nor, faces, mats = load_obj(os.path.join(CARS, source + ".obj"))
     lo, hi = pos.min(0), pos.max(0)
-    # In the source x is the car's left, y is up and z is forward. In the game a model faces +x
-    # with its left toward +z, so source (x, y, z) becomes game (z, y, x).
-    side = width / (hi[0] - lo[0])
-    up = side * 0.92
-    if cab is None:
-        split, back, front = lo[2], 0.0, length / (hi[2] - lo[2])
-    else:
-        # The cab keeps its proportions; the box behind it takes up the rest of the length.
-        split = lo[2] + (hi[2] - lo[2]) * cab
-        front = side
-        back = (length - (hi[2] - split) * front) / (split - lo[2])
-
-    def along(z):
-        x = (z - lo[2]) * back if z < split else (split - lo[2]) * back + (z - split) * front
-        return x - length / 2
-
-    def stretch(z):
-        return back if z < split else front
-
-    mid_x = (lo[0] + hi[0]) / 2
+    mid = (lo + hi) / 2
 
     # The paint is the strongest color on the body: every face close to that hue takes the car's color.
     colors = [face_color(f, tex, mats) for f in faces]
@@ -220,24 +203,13 @@ def bake_vehicle(name, source, length, width, cab):
 
     brightest = max(max(col) for col in colors if is_paint(col))
 
-    # Wheels stay round: each is scaled evenly about its own middle, then moved to where the body puts it.
-    centers = {}
-    for g in set(f[0] for f in faces if f[0].startswith("wheel")):
-        ids = sorted(set(f[k][0] for f in faces if f[0] == g for k in (2, 3, 4)))
-        centers[g] = (pos[ids].min(0) + pos[ids].max(0)) / 2
-
     model = Model(name)
     for f, col in zip(faces, colors):
-        pts, normals = [], []
-        for k in (2, 3, 4):
-            p, n = pos[f[k][0]], nor[f[k][2]]
-            if f[0] in centers:
-                c = centers[f[0]]
-                pts.append(np.array([along(c[2]) + (p[2] - c[2]) * up, p[1] * up, (c[0] - mid_x) * side + (p[0] - c[0]) * side]))
-                normals.append(unit(np.array([n[2] / up, n[1] / up, n[0] / side])))
-            else:
-                pts.append(np.array([along(p[2]), p[1] * up, (p[0] - mid_x) * side]))
-                normals.append(unit(np.array([n[2] / stretch(p[2]), n[1] / up, n[0] / side])))
+        # In the source x is the car's left, y is up and z is forward. In the game a model faces +x
+        # with its left toward +z, so source (x, y, z) becomes game (z, y, x). It is centered on the
+        # ground and scaled evenly, nothing else.
+        pts = [np.array([pos[f[k][0]][2] - mid[2], pos[f[k][0]][1] - lo[1], pos[f[k][0]][0] - mid[0]]) * KIT_SCALE for k in (2, 3, 4)]
+        normals = [unit(np.array([nor[f[k][2]][2], nor[f[k][2]][1], nor[f[k][2]][0]])) for k in (2, 3, 4)]
         if is_paint(col) and not f[0].startswith("wheel"):
             model.triangle(pts, normals, PAINT, int(round(255 * max(col) / brightest)))
         else:
@@ -310,7 +282,12 @@ def draw(model, number, px, view):
         right, upv = np.array([1.0, 0, 0]), np.array([0, np.sin(tilt), np.cos(tilt)])
         depth = np.array([0, np.cos(tilt), -np.sin(tilt)])
     else:
-        right, upv, depth = np.array([1.0, 0, 0]), np.array([0, 1.0, 0]), np.array([0, 0, -1.0])
+        # From a front corner and above, the way the kit's own pictures show them.
+        turn, tilt = np.radians(215), np.radians(32)
+        right = np.array([np.cos(turn), 0, np.sin(turn)])
+        ahead = np.array([-np.sin(turn), 0, np.cos(turn)])
+        upv = np.array([0, np.cos(tilt), 0]) + ahead * np.sin(tilt)
+        depth = np.array([0, np.sin(tilt), 0]) - ahead * np.cos(tilt)
     sx, sy, sz = v @ right, v @ upv, v @ depth
     span = max(sx.max() - sx.min(), sy.max() - sy.min()) * 1.12
     cx, cy = (sx.max() + sx.min()) / 2, (sy.max() + sy.min()) / 2
@@ -351,7 +328,7 @@ def preview(models, path):
     for i, m in enumerate(models):
         cells.append(draw(m, i, px, "top"))
         if m.name.startswith(("car", "truck")):
-            cells.append(draw(m, i, px, "side"))
+            cells.append(draw(m, i, px, "corner"))
     rows = (len(cells) + per_row - 1) // per_row
     sheet = np.zeros((rows * px, per_row * px, 3), np.uint8)
     for i, cell in enumerate(cells):

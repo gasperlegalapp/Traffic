@@ -31,14 +31,17 @@ namespace Traffic.Tests
         }
 
         [Test]
-        public void VehiclesAreTheSizeTheSimulationDrives()
+        public void VehiclesFitTheSpaceTheSimulationGivesThem()
         {
             foreach (ArtModel m in Load().Models)
             {
                 VehicleSpec spec = m.Name.StartsWith("car/") ? VehicleSpec.Of(VehicleKind.Car) : m.Name.StartsWith("truck/") ? VehicleSpec.Of(VehicleKind.Truck) : null;
                 if (spec == null) continue;
-                Assert.That(m.SizeX, Is.EqualTo(spec.Len).Within(0.15), m.Name + " length");
-                Assert.That(m.SizeZ, Is.EqualTo(spec.Wid).Within(0.05), m.Name + " width");
+                // Models keep their own proportions, so they are not exactly the simulation's size.
+                // None may be longer, or it would poke into the car ahead; none should be much shorter or wider.
+                Assert.That(m.SizeX, Is.LessThanOrEqualTo(spec.Len + 0.01), m.Name + " is longer than the simulation allows");
+                Assert.That(m.SizeX, Is.GreaterThan(spec.Len - 0.75), m.Name + " is much shorter than the simulation's vehicle");
+                Assert.That(m.SizeZ, Is.EqualTo(spec.Wid).Within(0.4), m.Name + " width");
                 // Centered, standing on the ground, with paint to take the car's color.
                 double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue;
                 for (int i = 0; i < m.Count; i++)
@@ -47,7 +50,7 @@ namespace Traffic.Tests
                     maxX = Math.Max(maxX, m.Positions[i * 3]);
                     minY = Math.Min(minY, m.Positions[i * 3 + 1]);
                 }
-                Assert.That(maxX, Is.EqualTo(spec.Len / 2).Within(0.15), m.Name + " is not centered");
+                Assert.That(maxX, Is.EqualTo(-minX).Within(0.01), m.Name + " is not centered");
                 Assert.That(minY, Is.EqualTo(0).Within(0.01), m.Name + " is not on the ground");
                 Assert.That(m.Paint.Length, Is.GreaterThan(100), m.Name + " has no paint");
             }

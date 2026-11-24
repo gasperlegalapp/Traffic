@@ -35,8 +35,8 @@ namespace Traffic.Sim
             },
             new VehicleSpec
             {
-                // A box truck: slow off the line, gentle on the brakes, wide and slow through turns.
-                Kind = VehicleKind.Truck, Name = "Truck", Len = 8.5, Wid = 2.5,
+                // A delivery truck: slow off the line, gentle on the brakes, wide and slow through turns.
+                Kind = VehicleKind.Truck, Name = "Truck", Len = 5.0, Wid = 2.3,
                 Accel = 0.5, Brake = 0.8, Speed = 0.92, Corner = 0.6, LaneChange = 1.5, CanUTurn = false,
                 Colors = new[] { 0xd9534f, 0x3a7ca5, 0xf2a541, 0x4f9d69, 0x8d99ae, 0xe6e6e6 },
             },

@@ -82,10 +82,13 @@ namespace Traffic.Lab
             Mesh lampMesh = lamp;
             if (art != null)
             {
-                // The model is already the simulation's size and faces +x. Its first part takes the paint.
+                // The model faces +x and is centered. Its first part takes the paint.
                 GameObject body = MeshKit.Spawn("Body", ArtKit.MeshOf(art), v.Paint, go.transform);
                 body.GetComponent<MeshRenderer>().sharedMaterials = new[] { v.Paint, ArtKit.Shared };
-                lampY = car.Vehicle.Kind == VehicleKind.Truck ? 1.0f : 0.78f;
+                // The lamps go on the model's own ends, which are a little inside the simulation's.
+                halfLen = art.SizeX / 2;
+                halfWid = art.SizeZ / 2;
+                lampY = art.SizeY * 0.42f;
             }
             else if (car.Vehicle.Kind == VehicleKind.Truck)
             {
