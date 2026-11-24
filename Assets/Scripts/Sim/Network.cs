@@ -219,7 +219,7 @@ namespace Traffic.Sim
     {
         /// <summary>Paths closer than this (centerline to centerline) cannot be used by two cars at once.</summary>
         private const double ConflictDist = 2.6;
-        private const double DivergeDist = 2.2;
+        private const double DivergeDist = 3.0;
 
         /// <summary>Fill in conflicts and siblings for the connectors of one intersection.</summary>
         public static void Link(List<Lane> conns)
@@ -239,7 +239,8 @@ namespace Traffic.Sim
                         a.Siblings.Add(new Sibling { Id = b.Id, SDiverge = DivergeAt(a.Path, b.Path) });
                         continue;
                     }
-                    if (a.FromArm == b.FromArm) continue;
+                    // Lanes arriving side by side do not conflict, unless both feed the same lane on the far side.
+                    if (a.FromArm == b.FromArm && a.Next != b.Next) continue;
                     double mineIn, mineOut, theirIn, theirOut;
                     if (CloseRange(a.Path, b.Path, out mineIn, out mineOut) && CloseRange(b.Path, a.Path, out theirIn, out theirOut))
                     {

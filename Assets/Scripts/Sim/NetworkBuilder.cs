@@ -395,6 +395,19 @@ namespace Traffic.Sim
                 return;
             }
 
+            // Which arms share a green: those lying along the most north-south road through the node
+            // are one street, and those across it are the other. This holds for roads at any angle.
+            double axis = 0, best = -1;
+            foreach (Approach arm in node.Arms)
+            {
+                if (Math.Abs(Math.Sin(arm.Angle)) > best)
+                {
+                    best = Math.Abs(Math.Sin(arm.Angle));
+                    axis = arm.Angle;
+                }
+            }
+            foreach (Approach arm in node.Arms) arm.Street = Math.Abs(Math.Cos(arm.Angle - axis)) >= Math.Cos(Math.PI / 4) - 1e-9 ? 0 : 1;
+
             var conns = new List<Lane>();
             foreach (Approach arm in node.Arms)
             {
@@ -427,6 +440,19 @@ namespace Traffic.Sim
                 }
                 if (arm.AllowUTurn && node.Controlled) target[(int)Turn.UTurn] = arm.Arm;
 
+                bool anyWayOut = false;
+                for (int t = 0; t < Lane.Turns; t++) if (target[t] >= 0) anyWayOut = true;
+                if (!anyWayOut)
+                {
+                    // A road that leads here with nowhere to go on: treat it as leaving the map.
+                    foreach (int id in arm.Inbound)
+                    {
+                        world.Lanes[id].Connectors = null;
+                        world.Lanes[id].IsExit = true;
+                    }
+                    continue;
+                }
+
                 List<Turn>[] sets = AssignTurns(arm, target);
 
                 for (int t = 0; t < Lane.Turns; t++)
@@ -436,20 +462,18 @@ namespace Traffic.Sim
                     var src = new List<int>();
                     for (int i = 0; i < arm.Inbound.Count; i++) if (sets[i].Contains(turn)) src.Add(arm.Inbound[i]);
                     List<int> outs = node.Arms[target[t]].Outbound;
-                    if (src.Count > outs.Count && turn != Turn.UTurn)
-                    {
-                        throw new InvalidOperationException("Node " + node.Id + " arm " + arm.Arm + ": " + src.Count + " lanes turn " + turn + " into " + outs.Count);
-                    }
                     for (int k = 0; k < src.Count; k++)
                     {
+                        // Where more lanes arrive than leave, the extra ones share a lane on the far side
+                        // and take turns going into it.
                         int to;
                         if (turn == Turn.UTurn)
                         {
                             if (k > 0) break;
                             to = outs[outs.Count - 1];
                         }
-                        else if (turn == Turn.Right || (turn == Turn.Straight && node.Arms.Count > 2 && bend[t] < -0.1)) to = outs[outs.Count - src.Count + k]; // joining from the right: keep right
-                        else to = outs[k];
+                        else if (turn == Turn.Right || (turn == Turn.Straight && node.Arms.Count > 2 && bend[t] < -0.1)) to = outs[Math.Max(0, outs.Count - src.Count + k)]; // joining from the right: keep right
+                        else to = outs[Math.Min(k, outs.Count - 1)];
                         conns.Add(Connect(node, src[k], to, turn));
                     }
                 }

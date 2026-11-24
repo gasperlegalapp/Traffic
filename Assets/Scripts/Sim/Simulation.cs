@@ -1020,7 +1020,9 @@ namespace Traffic.Sim
                         // Already in the intersection. Don't wait for someone standing behind their
                         // stop line, and don't sit here for ever: after a while only give way to a
                         // car physically in the way, and in the end just go.
-                        if (!inZone && fFront <= Committed && foe.V < 1) return;
+                        // (Only one that is being held there. One that is free to go is about to move.)
+                        bool held = foe.StopKind == Binding.Line || foe.StopKind == Binding.Yield;
+                        if (!inZone && fFront <= Committed && foe.V < 1 && held) return;
                         if (!inZone && car.BoxWait > 10) return;
                         if (car.BoxWait > 25) return;
                     }
@@ -1052,7 +1054,10 @@ namespace Traffic.Sim
                 });
                 if (wait)
                 {
-                    double dist = blocked && outside ? -myFront - 0.6 : dIn - 1.0;
+                    // Wait at the stop line if the way is blocked, or if the place to wait inside is so
+                    // close to the line that going in would mean stopping again at once.
+                    bool atLine = outside && (blocked || cz.SIn < 4);
+                    double dist = atLine ? -myFront - 0.6 : dIn - 1.0;
                     if (!found || dist < stopDist)
                     {
                         stopDist = dist;
