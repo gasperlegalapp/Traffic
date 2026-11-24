@@ -3,7 +3,7 @@ namespace Traffic.Ui
     /// <summary>The icons on the toolbar, each drawn in code as a white shape that can be tinted.</summary>
     public static class Icons
     {
-        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow" };
+        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star" };
 
         /// <summary>Draw an icon into a square of the given size. Returns coverage per pixel, rows from the top.</summary>
         public static float[] Draw(string name, int size)
@@ -84,6 +84,27 @@ namespace Traffic.Ui
                     p.Arc(50, 50, 30, 20, 320, 10);
                     p.Solid(90, 30, 62, 36, 84, 58);
                     p.Dot(50, 50, 12);
+                    break;
+                case "star":
+                    {
+                        // Five points round a five-sided middle.
+                        var tip = new double[10];
+                        var dent = new double[10];
+                        for (int k = 0; k < 5; k++)
+                        {
+                            double a = (-90 + 72 * k) * System.Math.PI / 180, b = (-54 + 72 * k) * System.Math.PI / 180;
+                            tip[k * 2] = 50 + 46 * System.Math.Cos(a);
+                            tip[k * 2 + 1] = 53 + 46 * System.Math.Sin(a);
+                            dent[k * 2] = 50 + 19 * System.Math.Cos(b);
+                            dent[k * 2 + 1] = 53 + 19 * System.Math.Sin(b);
+                        }
+                        p.Solid(dent);
+                        for (int k = 0; k < 5; k++)
+                        {
+                            int before = (k + 4) % 5;
+                            p.Solid(tip[k * 2], tip[k * 2 + 1], dent[k * 2], dent[k * 2 + 1], dent[before * 2], dent[before * 2 + 1]);
+                        }
+                    }
                     break;
                 case "arrow": // pointing right
                     p.Line(12, 50, 64, 50, 16);

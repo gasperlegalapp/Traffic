@@ -10,6 +10,15 @@ A traffic game in the making, built in Unity 6. The first piece is the **Driver 
 
 - **Draw your own:** lay out roads by clicking, straight or curved, at any angle. A curve is a round arc: click its two ends, then pull the bend out with the pointer. Roads that cross or touch make intersections, which get stop signs or a traffic light automatically. A toolbar at the bottom holds the tools (road, bulldoze, undo, redo, clear) and a tray of road choices: straight or curve, and ten kinds of road under Street (25 mph), Avenue (40 mph, with a grass median when two-way) and Highway (65 mph, one-way, one to four lanes). Pointing at any of them explains it. Each road has a price per meter: a label beside the pointer shows the length and price of the road being drawn, and the total is at the top. A one-way road brought in alongside another road, on the right of that road's traffic, merges into it with a lane of its own that then ends; started on a road the same way, it peels off as an exit. The roundabout shape lays a ring: click its middle, pull out its size, click again. Roads crossing the ring join it and nobody stops for a light; traffic going round has the right of way. Roads can be built as bridges or tunnels, three levels each: they cross other roads without meeting them, need room at each end to climb or go down, and cost two to seven times as much. Road ends left open are where traffic enters and leaves. A few cars drive around while you build; press Drive to let the full traffic in.
 
+## Puzzles
+
+Four so far. Each starts with roads coming in at the edges of an empty square, traffic that wants to get from some of them to others, and a budget. Build roads to join every route, press Drive, and the level is solved once enough journeys have been finished. Stars go by how little the traffic was held up.
+
+- **First Link:** join two streets.
+- **Four Corners:** four roads, everyone going everywhere. A crossroads works; a roundabout works better.
+- **On and Off:** get traffic between a highway and a side road with an exit and a merge.
+- **Over or Through:** join two roads across a busy avenue without stopping it.
+
 ## Driver Lab
 
 A three-by-three grid of streets where each road and intersection tests something different:

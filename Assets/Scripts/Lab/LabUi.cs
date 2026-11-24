@@ -93,7 +93,7 @@ namespace Traffic.Lab
             if (showLabels && !building && e.type == EventType.Repaint) DrawTags(scale);
 
             var top = new Rect(12, 12, 430, 54);
-            var lab = new Rect(12, 76, 300, building ? 236 : Mathf.Min(900, h - 100));
+            var lab = new Rect(12, 76, 300, Mathf.Min(building ? (level != null ? 560 : 400) : 900, h - 100));
             float inspectorHeight = Mathf.Min(612, h - 24);
             var inspector = new Rect(w - 300, h - 12 - inspectorHeight, 288, inspectorHeight);
             Car car = Sim.CarById(selected);
@@ -103,7 +103,7 @@ namespace Traffic.Lab
             if (car != null) DrawInspector(inspector, car);
 
             // The toolbar along the bottom.
-            dock.OwnMap = mapIndex == OwnMap;
+            dock.OwnMap = Buildable;
             dock.Building = building;
             dock.Paused = paused;
             dock.CanUndo = undo.Count > 0;
@@ -126,6 +126,9 @@ namespace Traffic.Lab
                 if (hit.Kind != DockKind.None) DockClick(hit);
                 e.Use();
             }
+
+            if (e.type == EventType.Repaint) DrawPlaceNames(scale);
+            if (level != null && stars > 0 && !resultShown) DrawResult(w, h);
 
             // Beside the pointer while a road is being drawn: how long it is and what it costs.
             if (building && !overDock && previewNote.Length > 0)
@@ -201,6 +204,48 @@ namespace Traffic.Lab
                     paused = false;
                     break;
             }
+        }
+
+        /// <summary>A label at each named place on the edge of the map, in its own color.</summary>
+        private void DrawPlaceNames(float scale)
+        {
+            if (drawing == null || !Buildable) return;
+            foreach (MapEnd end in drawing.Ends)
+            {
+                Vector3 p = cam.WorldToScreenPoint(MeshKit.ToWorld(end.At.X, end.At.Y, 1));
+                if (p.z <= 0) continue;
+                Vector2 size = label.CalcSize(new GUIContent(end.Name));
+                var r = new Rect(p.x / scale - size.x / 2 - 10, (Screen.height - p.y) / scale - 13, size.x + 20, 26);
+                surface.Fill(r.x, r.y, r.width, r.height, 8, 0xFF000000u | (uint)end.Color);
+                surface.Stroke(r.x, r.y, r.width, r.height, 8, 1.5, 0xCCFFFFFFu);
+                GUI.Label(new Rect(r.x + 10, r.y + 3, size.x + 4, 20), end.Name, label);
+            }
+        }
+
+        /// <summary>The card that says a level is complete, and how well.</summary>
+        private void DrawResult(float w, float h)
+        {
+            var r = new Rect(w / 2 - 190, h / 2 - 150, 380, 262);
+            Card(r, 20);
+            if (Event.current.type == EventType.Repaint)
+            {
+                for (int i = 0; i < 3; i++) surface.Icon("star", r.x + 190 - 78 + i * 54, r.y + 62, 46, i < stars ? 0xFFFFC93Cu : 0x33FFFFFFu);
+            }
+            GUILayout.BeginArea(new Rect(r.x + 24, r.y + 18, r.width - 48, r.height - 30));
+            GUILayout.Label(level.Name + " solved", big);
+            GUILayout.Space(64);
+            double slowdown = Sim.TripIdeal > 0 ? Sim.TripSeconds / Sim.TripIdeal : 1;
+            GUILayout.Label("Built for " + Money(drawing.Cost()) + " of " + Money(level.Budget) + ".", label);
+            GUILayout.Label("Journeys took " + slowdown.ToString("0.00") + " times as long as on empty roads.", label);
+            GUILayout.Label(stars >= 3 ? "Traffic hardly noticed. Three stars." : "Three stars for " + level.ThreeStars.ToString("0.0") + " times or less" + (stars < 2 ? ", two for " + level.TwoStars.ToString("0.0") + "." : "."), hint);
+            GUILayout.FlexibleSpace();
+            GUILayout.BeginHorizontal();
+            int next = System.Array.IndexOf(Levels.All, level) + 1;
+            if (next < Levels.All.Length && GUILayout.Button("Next puzzle", buttonOn)) later = () => LoadLevel(next);
+            if (GUILayout.Button("Keep watching", button)) later = () => resultShown = true;
+            if (GUILayout.Button("Improve it", button)) later = () => SetBuilding(true);
+            GUILayout.EndHorizontal();
+            GUILayout.EndArea();
         }
 
         /// <summary>The rounded dark back of a panel.</summary>
@@ -302,7 +347,15 @@ namespace Traffic.Lab
             Stat("AVG SPEED", (moving > 0 ? Mathf.RoundToInt((float)(v / moving) * Mph) : 0) + " mph");
             if (world.Entries.Count > 0) Stat("LEFT MAP", Sim.Left.ToString());
             else Stat("THROUGH", Sim.Passes.ToString());
-            if (mapIndex == OwnMap) Stat("COST", Money(drawing.Cost()));
+            if (level != null)
+            {
+                big.normal.textColor = drawing.Cost() > level.Budget + 0.5 ? Bad : MeshKit.Hex(0xe7edf0);
+                Stat("COST", Money(drawing.Cost()) + " / " + Money(level.Budget));
+                big.normal.textColor = routesJoined < level.RouteCount ? Warn : Accent;
+                Stat("ROUTES", routesJoined + " of " + level.RouteCount);
+                big.normal.textColor = MeshKit.Hex(0xe7edf0);
+            }
+            else if (mapIndex == OwnMap) Stat("COST", Money(drawing.Cost()));
             else if (Sim.CrashesEnabled) Stat("CRASHES", Sim.Crashes.ToString());
             else Stat("BUMPS", Sim.Bumps.ToString());
             Stat("CLOCK", t / 60 + ":" + (t % 60).ToString("00"));
@@ -343,11 +396,33 @@ namespace Traffic.Lab
                 }
             }
             if (GUILayout.Button("Draw your own", mapIndex == OwnMap ? buttonOn : button) && mapIndex != OwnMap) later = LoadOwnMap;
+            GUILayout.Space(8);
+            GUILayout.Label("PUZZLES", heading);
+            for (int i = 0; i < Levels.All.Length; i++)
+            {
+                bool current = level == Levels.All[i];
+                if (GUILayout.Button((i + 1) + ". " + Levels.All[i].Name, current ? buttonOn : button) && !current)
+                {
+                    int pick = i;
+                    later = () => LoadLevel(pick);
+                }
+            }
+            if (level != null)
+            {
+                // What the puzzle asks for, and how far along it is.
+                GUILayout.Space(8);
+                GUILayout.Label(level.Blurb, hint);
+                GUILayout.Space(4);
+                GUILayout.Label(routesJoined < level.RouteCount
+                    ? routesJoined + " of " + level.RouteCount + " routes joined. Nothing can get from " + routeMissing + " yet."
+                    : "Every route is joined." + (building ? " Press Drive to see how it copes." : ""), label);
+                if (!building) GUILayout.Label(Sim.Arrived + " of " + level.TripsToFinish + " journeys finished.", label);
+            }
             if (building)
             {
                 // While building, the tools are on the toolbar at the bottom and the rest of this panel waits.
                 GUILayout.Space(8);
-                GUILayout.Label("Draw the roads with the toolbar at the bottom of the screen, then press Drive to let the traffic in.", hint);
+                if (level == null) GUILayout.Label("Draw the roads with the toolbar at the bottom of the screen, then press Drive to let the traffic in.", hint);
                 GUILayout.EndVertical();
                 GUILayout.EndScrollView();
                 GUILayout.EndArea();

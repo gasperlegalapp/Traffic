@@ -69,6 +69,7 @@ namespace Traffic.Lab
         private void LoadMap(int index)
         {
             mapIndex = index;
+            level = null;
             building = false;
             StartWorld(Maps.All[index].Build());
             Fit();
@@ -102,6 +103,16 @@ namespace Traffic.Lab
         // ------------------------------------------------------------ drawing roads
 
         private const string SaveKey = "traffic.drawing";
+        /// <summary>The puzzle being played, or null in the lab or on the player's own map.</summary>
+        private Level level;
+        /// <summary>How many of the level's journeys the roads so far make possible, and one that is still missing.</summary>
+        private int routesJoined;
+        private string routeMissing = "";
+        /// <summary>Stars earned once the level is complete; 0 until then. The card that says so can be put away.</summary>
+        private int stars;
+        private bool resultShown;
+        /// <summary>True on any map the player can build on: their own, or a level.</summary>
+        private bool Buildable => mapIndex >= OwnMap;
         /// <summary>The map index that means "the one the player is drawing".</summary>
         private static int OwnMap => Maps.All.Length;
 
@@ -135,9 +146,34 @@ namespace Traffic.Lab
         private int DrawLevel => Dock.HeightLevels[levelChoice];
 
         /// <summary>Open the player's own map, as it was last left.</summary>
+        /// <summary>Open a puzzle level, as it was last left.</summary>
+        private void LoadLevel(int index)
+        {
+            mapIndex = OwnMap + 1 + index;
+            level = Levels.All[index];
+            EditableMap fresh = level.Start();
+            drawing = EditableMap.Parse(PlayerPrefs.GetString(SaveKey + ".level." + level.Name, ""));
+            // What was saved must still hold the level's own roads; if the level has changed since, start it again.
+            int own = 0;
+            foreach (EditSegment s in drawing.Segments) if (s.Locked) own++;
+            if (own < fresh.Segments.Count) drawing = fresh;
+            drawing.Ends = fresh.Ends;
+            drawing.Bound = fresh.Bound;
+            undo.Clear();
+            redo.Clear();
+            building = true;
+            StopDrawing();
+            RebuildDrawing(false);
+            Fit();
+            dist *= 0.8f;
+        }
+
         private void LoadOwnMap()
         {
             mapIndex = OwnMap;
+            level = null;
+            undo.Clear();
+            redo.Clear();
             drawing = EditableMap.Parse(PlayerPrefs.GetString(SaveKey, ""));
             building = true;
             StopDrawing();
@@ -158,10 +194,21 @@ namespace Traffic.Lab
             List<Car> before = keepCars && building && Sim != null ? new List<Car>(Sim.Cars) : null;
             StartWorld(drawing.ToWorld());
             editVersion++;
+            stars = 0;
+            resultShown = false;
+            if (level != null)
+            {
+                var missing = new List<string>();
+                routesJoined = level.Connected(world, missing);
+                routeMissing = missing.Count > 0 ? missing[0] : "";
+            }
             if (!building)
             {
+                // Once the roads are open, everyone who arrives is going somewhere: where the level says, or any other road off the map.
+                Sim.UseRoutes = true;
+                if (level != null) Sim.Demand = level.DemandFor(world);
                 // A few cars to start with, wherever there is room; the rest arrive at the open road ends.
-                int starters = Mathf.Min(10, drawing.Segments.Count * 2);
+                int starters = level != null ? 0 : Mathf.Min(10, drawing.Segments.Count * 2);
                 for (int i = 0; i < starters; i++) Sim.Spawn(newDriver, variation, PickVehicle());
                 return;
             }
@@ -234,7 +281,7 @@ namespace Traffic.Lab
 
         private void SaveDrawing()
         {
-            PlayerPrefs.SetString(SaveKey, drawing.Serialize());
+            PlayerPrefs.SetString(level != null ? SaveKey + ".level." + level.Name : SaveKey, drawing.Serialize());
             PlayerPrefs.Save();
         }
 
@@ -244,7 +291,10 @@ namespace Traffic.Lab
             paused = false;
             StopDrawing();
             RebuildDrawing(false);
-            if (!on && world.Entries.Count == 0 && drawing.Segments.Count > 0) Toast("No road runs off the map, so no traffic will arrive. Leave a road end open.");
+            if (on) return;
+            if (level != null && routesJoined < level.RouteCount) Toast("Not every route is joined up yet: nothing can get from " + routeMissing + ".");
+            else if (level != null && drawing.Cost() > level.Budget + 0.5) Toast("These roads cost more than the budget, so the level will not count as solved.");
+            else if (world.Entries.Count == 0 && drawing.Segments.Count > 0) Toast("No road runs off the map, so no traffic will arrive. Leave a road end open.");
         }
 
         /// <summary>The spot on the ground under a screen point (pixels, y down).</summary>
@@ -606,7 +656,9 @@ namespace Traffic.Lab
 
             // New arrivals at the edge of the map follow the same settings as cars added by hand.
             // While building, only a handful of cars drive around.
-            Sim.ArrivalsPerMinute = building ? 3 : arrivals;
+            Sim.ArrivalsPerMinute = building ? 3 : level != null ? level.Arrivals : arrivals;
+            // A level is complete once enough journeys have been made on roads that join every route within the budget.
+            if (level != null && !building && stars == 0 && Sim.Arrived >= level.TripsToFinish && routesJoined == level.RouteCount) stars = level.Stars(Sim, drawing.Cost(), world);
             Sim.MaxCars = building ? AmbientCars : 320;
             Sim.ArrivalDriver = newDriver;
             Sim.ArrivalVariation = variation;
@@ -712,15 +764,35 @@ namespace Traffic.Lab
                 lineObject = MeshKit.Spawn("Sensor lines", lineMesh, lineMaterial, transform, false);
                 lineObject.GetComponent<MeshRenderer>().receiveShadows = false;
             }
-            lineObject.SetActive(showSensors || building);
-            if (!showSensors && !building) return;
+            bool bounded = Buildable && drawing != null && drawing.Bound > 0;
+            lineObject.SetActive(showSensors || building || bounded);
+            if (!showSensors && !building && !bounded) return;
 
             linePoints.Clear();
             lineColors.Clear();
             lineIndices.Clear();
+            if (bounded)
+            {
+                // The edge of the ground a level lets you build on, as a broken line.
+                double h = drawing.Bound;
+                var edge = new Color(1, 1, 1, 0.75f);
+                for (double t = -h; t < h; t += 16)
+                {
+                    double to = System.Math.Min(t + 9, h);
+                    Segment(t, -h, to, -h, edge, 0);
+                    Segment(t, h, to, h, edge, 0);
+                    Segment(-h, t, -h, to, edge, 0);
+                    Segment(h, t, h, to, edge, 0);
+                }
+            }
             if (building)
             {
                 GuideLines();
+                UploadLines();
+                return;
+            }
+            if (!showSensors)
+            {
                 UploadLines();
                 return;
             }

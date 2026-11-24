@@ -643,6 +643,87 @@ namespace Traffic.Tests
             Assert.AreEqual(0, sim.Strays);
         }
 
+        // ---------------------------------------------------------------- levels
+
+        /// <summary>One way of solving each level, in order.</summary>
+        private static void Solve(int level, EditableMap map)
+        {
+            Action<Vec, Vec, string, Vec?, int> add = (p, q, id, via, height) => Assert.IsNull(map.TryAdd(p, q, T(id), true, via, height), "level " + level + ": " + id + " from " + p.X + "," + p.Y + " to " + q.X + "," + q.Y);
+            switch (level)
+            {
+                case 0:
+                    add(P(-260, 0), P(260, 60), "s2", null, 0);
+                    break;
+                case 1:
+                    add(P(-260, 0), P(260, 0), "s2", null, 0);
+                    add(P(0, -260), P(0, 260), "s2", null, 0);
+                    Assert.IsNull(map.TryAddRoundabout(P(0, 0), 30, T("s2"), true));
+                    break;
+                case 2:
+                    // Mill Road carries on north. A ramp leaves the highway alongside it and curves down to
+                    // Mill Road; another leaves the end of Mill Road and curves up to run in alongside the highway.
+                    add(P(0, -260), P(0, 20), "s2", null, 0);
+                    add(P(-220, 130), P(0, -60), "s1", P(-75, 76), 0);
+                    add(P(0, 20), P(220, 130), "s1", P(97, 101), 0);
+                    break;
+                case 3:
+                    add(P(-60, -260), P(60, 260), "s2", null, 1);
+                    break;
+            }
+        }
+
+        [Test]
+        public void EveryLevelStartsUnsolvedAndCanBeSolvedWithinItsBudget()
+        {
+            for (int i = 0; i < Levels.All.Length; i++)
+            {
+                Level level = Levels.All[i];
+                EditableMap map = level.Start();
+                Assert.AreEqual(0, map.Cost(), 0.01, level.Name + ": its own roads are free");
+                Assert.IsTrue(map.Segments.All(s => s.Locked));
+                var missing = new System.Collections.Generic.List<string>();
+                Assert.Less(level.Connected(map.ToWorld(), missing), level.RouteCount, level.Name + " should not start solved");
+                Assert.Greater(missing.Count, 0);
+                // The level's own roads cannot be bulldozed, or built outside the area.
+                Assert.IsFalse(map.RemoveNear(map.Nodes[map.Segments[0].A]));
+                Assert.IsNotNull(map.TryAdd(P(level.Half + 40, 100), P(level.Half + 40, 200), T("s2"), false));
+
+                Solve(i, map);
+                World world = map.ToWorld();
+                Assert.AreEqual(level.RouteCount, level.Connected(world), level.Name + ": every route should be joined up");
+                Assert.LessOrEqual(map.Cost(), level.Budget, level.Name + ": the worked solution should be affordable");
+                Assert.AreEqual(level.RouteCount, level.DemandFor(world).Count);
+                // What the player built can be cleared; the level's own roads stay.
+                EditableMap again = EditableMap.Parse(map.Serialize());
+                again.Clear();
+                Assert.IsTrue(again.Segments.Count > 0 && again.Segments.All(s => s.Locked), level.Name);
+            }
+        }
+
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        public void ASolvedLevelCarriesItsTrafficToTheEnd(int index)
+        {
+            Level level = Levels.All[index];
+            EditableMap map = level.Start();
+            Solve(index, map);
+            World world = map.ToWorld();
+            var sim = new Simulation(world, 11) { UseRoutes = true, ArrivalsPerMinute = level.Arrivals };
+            sim.Demand = level.DemandFor(world);
+            Action obey = () =>
+            {
+                foreach (Car c in sim.Cars) c.Drv.Compliance = 1;
+            };
+            Assert.AreEqual(0, level.Stars(sim, map.Cost(), world), "no stars before any traffic has run");
+            for (int minutes = 0; minutes < 12 && sim.Arrived < level.TripsToFinish; minutes++) Grid.Run(sim, 60, obey);
+            Assert.AreEqual(0, sim.Crashes, level.Name);
+            Assert.GreaterOrEqual(sim.Arrived, level.TripsToFinish, level.Name + ": not enough journeys finished in twelve minutes");
+            Assert.GreaterOrEqual(level.Stars(sim, map.Cost(), world), 1, level.Name);
+            TestContext.WriteLine(level.Name + ": cost " + map.Cost().ToString("F0") + " of " + level.Budget + ", slowdown " + (sim.TripSeconds / sim.TripIdeal).ToString("F2") + ", stars " + level.Stars(sim, map.Cost(), world) + ", time " + sim.Time.ToString("F0") + ", strays " + sim.Strays);
+        }
+
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>
         private static EditableMap Town()
         {

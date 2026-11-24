@@ -78,6 +78,16 @@ namespace Traffic.Sim
         }
     }
 
+    /// <summary>A named place at the edge of a level's map, where one of its roads comes in.</summary>
+    public sealed class MapEnd
+    {
+        public string Name;
+        /// <summary>Where the road runs off the map.</summary>
+        public Vec At;
+        /// <summary>A color for its label, as 0xRRGGBB.</summary>
+        public int Color;
+    }
+
     /// <summary>One drawn stretch of road between two points, straight or curved.</summary>
     public sealed class EditSegment
     {
@@ -92,6 +102,8 @@ namespace Traffic.Sim
         public Vec Mid;
         /// <summary>0 on the ground; 1 to 3 for a bridge of that many levels; -1 to -3 for a tunnel that deep.</summary>
         public int Level;
+        /// <summary>A road that came with the level: it cannot be removed and costs nothing.</summary>
+        public bool Locked;
         /// <summary>Part of a roundabout. Where a road meets one there are no lights or signs: traffic going round has the right of way.</summary>
         public bool Ring;
     }
@@ -135,12 +147,18 @@ namespace Traffic.Sim
 
         public List<Vec> Nodes = new List<Vec>();
         public List<EditSegment> Segments = new List<EditSegment>();
+        /// <summary>Named places at the edge of the map, in a level: where its roads come in.</summary>
+        public List<MapEnd> Ends = new List<MapEnd>();
+        /// <summary>In a level: roads may only be built within this distance of the middle, east-west and north-south. 0 for anywhere.</summary>
+        public double Bound;
 
         public EditableMap Clone()
         {
             var copy = new EditableMap();
             copy.Nodes.AddRange(Nodes);
-            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level });
+            copy.Ends = Ends;
+            copy.Bound = Bound;
+            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked });
             return copy;
         }
 
@@ -416,7 +434,7 @@ namespace Traffic.Sim
         public double Cost()
         {
             double total = 0;
-            foreach (EditSegment s in Segments) total += LengthOf(Trace(s)) * s.Type.CostPerMeter * CostTimes(s.Level);
+            foreach (EditSegment s in Segments) if (!s.Locked) total += LengthOf(Trace(s)) * s.Type.CostPerMeter * CostTimes(s.Level);
             return total;
         }
 
@@ -455,6 +473,7 @@ namespace Traffic.Sim
                 if (curved && CurveTurn(pa, c, pb) > MaxTurn) return "That curve goes too far round. Draw it in two parts.";
             }
             Vec[] path = Trace(pa, pb, curved, c);
+            if (Bound > 0) foreach (Vec v in path) if (Math.Abs(v.X) > Bound + 0.5 || Math.Abs(v.Y) > Bound + 0.5) return "That is outside the area you can build in.";
             double pathLength = LengthOf(path);
             if (level != 0 && pathLength < 2 * RampFor(level) + 20)
             {
@@ -590,7 +609,7 @@ namespace Traffic.Sim
             Vec at = PointAt(s, t);
             Nodes.Add(at);
             int mid = Nodes.Count - 1;
-            var rest = new EditSegment { A = mid, B = s.B, Type = s.Type, Ring = s.Ring };
+            var rest = new EditSegment { A = mid, B = s.B, Type = s.Type, Ring = s.Ring, Locked = s.Locked };
             if (s.Curved)
             {
                 // Each part of a curve is a piece of the same circle.
@@ -656,6 +675,7 @@ namespace Traffic.Sim
         public string TryAddRoundabout(Vec center, double radius, RoadType chosen, bool commit)
         {
             if (radius < MinRing) return "Too small for a roundabout.";
+            if (Bound > 0 && (Math.Abs(center.X) + radius > Bound || Math.Abs(center.Y) + radius > Bound)) return "That is outside the area you can build in.";
             if (radius > MaxRing) return "Too big for a roundabout.";
             EditableMap work = Clone();
             string error = work.AddRing(center, radius, RingType(chosen));
@@ -687,6 +707,7 @@ namespace Traffic.Sim
             {
                 List<Crossing> crossings = CircleCrossings(Trace(Segments[i]), c, r);
                 if (crossings.Count > 0 && Segments[i].Level != 0) return "A bridge or tunnel is in the way.";
+                if (crossings.Count > 0 && Segments[i].Locked) return "A road that came with the level is in the way.";
                 crossings.Sort((m, n) => n.T.CompareTo(m.T));
                 double upTo = 1;
                 foreach (Crossing x in crossings)
@@ -705,6 +726,7 @@ namespace Traffic.Sim
                 }
             }
             // Take away what is inside, and check that what is left outside is long enough to be a road.
+            foreach (EditSegment s in Segments) if (s.Locked && Dist(PointAt(s, 0.5), c) < r) return "A road that came with the level is in the way.";
             Segments.RemoveAll(s => Dist(PointAt(s, 0.5), c) < r);
             foreach (EditSegment s in Segments)
             {
@@ -886,10 +908,22 @@ namespace Traffic.Sim
         {
             Vec on;
             int seg = NearestSegment(p, SnapRoad * 1.5, out on);
-            if (seg < 0) return false;
+            if (seg < 0 || Segments[seg].Locked) return false;
             Segments.RemoveAt(seg);
             DropUnusedNodes();
             return true;
+        }
+
+        /// <summary>Lay a road that comes with a level. It cannot be removed, costs nothing, and may run outside the building area.</summary>
+        public void AddLocked(Vec p, Vec q, RoadType type, Vec? through = null)
+        {
+            double bound = Bound;
+            Bound = 0;
+            int before = Segments.Count;
+            string error = Add(p, q, type, through, 0);
+            Bound = bound;
+            if (error != null) throw new InvalidOperationException("A level's own road could not be laid: " + error);
+            for (int i = before; i < Segments.Count; i++) Segments[i].Locked = true;
         }
 
         private void DropUnusedNodes()
@@ -911,10 +945,11 @@ namespace Traffic.Sim
             }
         }
 
+        /// <summary>Remove everything the player has built. Roads that came with a level stay.</summary>
         public void Clear()
         {
-            Nodes.Clear();
-            Segments.Clear();
+            Segments.RemoveAll(s => !s.Locked);
+            DropUnusedNodes();
         }
 
         // ---------------------------------------------------------------- building
@@ -976,6 +1011,11 @@ namespace Traffic.Sim
             World world = b.Build();
             // Keep the surroundings the same size however much has been drawn.
             world.Extent = Math.Max(world.Extent, 400);
+            // Name the places at the edge of the map.
+            foreach (MapEnd end in Ends)
+            {
+                foreach (Node node in world.Nodes) if (node.Terminal && Dist(node.Pos, end.At) < 2) node.Name = end.Name;
+            }
             return world;
         }
 
@@ -1026,6 +1066,7 @@ namespace Traffic.Sim
                 else sb.Append(s.Lanes).Append(',').Append(s.Mph);
                 if (s.Curved) sb.Append(',').Append(Num(s.Mid.X)).Append(',').Append(Num(s.Mid.Y)).Append(s.Ring ? ",ring" : ",arc");
                 if (s.Level != 0) sb.Append(",L").Append(s.Level);
+                if (s.Locked) sb.Append(",K");
                 sb.Append(';');
             }
             return sb.ToString();
@@ -1048,7 +1089,12 @@ namespace Traffic.Sim
                 {
                     string[] f = item.Split(',');
                     var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]) };
-                    // A level, where there is one, is the last thing on the line.
+                    // Whether it came with a level, and after that its height, are the last things on the line.
+                    if (f[f.Length - 1] == "K")
+                    {
+                        s.Locked = true;
+                        Array.Resize(ref f, f.Length - 1);
+                    }
                     if (f[f.Length - 1].StartsWith("L"))
                     {
                         s.Level = int.Parse(f[f.Length - 1].Substring(1));
