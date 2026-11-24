@@ -22,7 +22,7 @@ namespace Traffic.Lab
         private static readonly Color Bad = MeshKit.Hex(0xff5d5d);
 
         private Texture2D white;
-        private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle;
+        private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint;
         private Vector2 labScroll;
         private bool dragging;
         private float dragMoved;
@@ -59,6 +59,8 @@ namespace Traffic.Lab
             buttonOn = new GUIStyle(button);
             buttonOn.normal.textColor = Accent;
             buttonOn.hover.textColor = Accent;
+            hint = new GUIStyle(label) { wordWrap = true, fontSize = 12 };
+            hint.normal.textColor = Dim;
         }
 
         private void OnGUI()
@@ -153,7 +155,9 @@ namespace Traffic.Lab
                     Toast(Maps.All[i].Name + ": " + Maps.All[i].Blurb + ".");
                 }
             }
-            if (world.Entries.Count > 0)
+            if (GUILayout.Button("Draw your own", mapIndex == OwnMap ? buttonOn : button) && mapIndex != OwnMap) LoadOwnMap();
+            if (mapIndex == OwnMap) DrawBuildControls();
+            if (world.Entries.Count > 0 && !building)
             {
                 arrivals = Slider("New arrivals per entry lane", arrivals.ToString("0") + " a minute", arrivals, 0, 20);
             }
@@ -250,6 +254,56 @@ namespace Traffic.Lab
             GUILayout.EndVertical();
             GUILayout.EndScrollView();
             GUILayout.EndArea();
+        }
+
+        /// <summary>Controls for drawing roads: build or drive, the tool, and the kind of road.</summary>
+        private void DrawBuildControls()
+        {
+            GUILayout.Space(10);
+            GUILayout.Label("ROADS", heading);
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Build", building ? buttonOn : button) && !building) SetBuilding(true);
+            if (GUILayout.Button("Drive", building ? button : buttonOn) && building) SetBuilding(false);
+            GUILayout.EndHorizontal();
+            if (!building)
+            {
+                GUILayout.Label("Traffic is running. Press Build to change the roads.", hint);
+                return;
+            }
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Draw", bulldozing ? button : buttonOn)) bulldozing = false;
+            if (GUILayout.Button("Bulldoze", bulldozing ? buttonOn : button))
+            {
+                bulldozing = true;
+                hasStart = false;
+            }
+            if (GUILayout.Button("Clear", button))
+            {
+                drawing.Clear();
+                hasStart = false;
+                SaveDrawing();
+                RebuildDrawing();
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("Lanes", label);
+            GUILayout.BeginHorizontal();
+            string[] laneNames = { "One-way", "2 lanes", "4 lanes" };
+            for (int i = 0; i < laneNames.Length; i++) if (GUILayout.Button(laneNames[i], i == laneChoice ? buttonOn : button)) laneChoice = i;
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("Speed limit", label);
+            GUILayout.BeginHorizontal();
+            for (int i = 0; i < EditableMap.SpeedChoices.Length; i++)
+            {
+                if (GUILayout.Button(EditableMap.SpeedChoices[i] + " mph", i == speedChoice ? buttonOn : button)) speedChoice = i;
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label(bulldozing
+                ? "Click a road to remove it."
+                : "Click to start a road and click again to end it. Keep clicking to carry on; right-click or Esc to stop. Cross or touch another road to make an intersection. A road end left open is where traffic comes in and leaves.", hint);
         }
 
         private void DriverSliders(DriverParams drv, int count)
@@ -431,9 +485,11 @@ namespace Traffic.Lab
         private void HandleSceneInput(Event e, bool overUi, float scale)
         {
             Vector2 pixel = e.mousePosition * scale;
+            hoverPixel = pixel;
             switch (e.type)
             {
                 case EventType.MouseDown:
+                    if (!overUi && e.button == 1 && building) hasStart = false; // right-click ends the road being drawn
                     if (!overUi && e.button == 0)
                     {
                         dragging = true;
@@ -451,7 +507,11 @@ namespace Traffic.Lab
                     }
                     break;
                 case EventType.MouseUp:
-                    if (dragging && dragMoved < 6) ClickAt(pixel);
+                    if (dragging && dragMoved < 6)
+                    {
+                        if (building) EditClick(pixel);
+                        else ClickAt(pixel);
+                    }
                     dragging = false;
                     break;
                 case EventType.ScrollWheel:
@@ -466,6 +526,7 @@ namespace Traffic.Lab
                     }
                     else if (e.keyCode == KeyCode.Escape)
                     {
+                        hasStart = false;
                         Select(-1);
                         SelectNode(-1);
                     }

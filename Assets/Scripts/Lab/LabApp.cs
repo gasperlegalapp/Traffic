@@ -67,15 +67,24 @@ namespace Traffic.Lab
         /// <summary>Throw away the current map and traffic and start another.</summary>
         private void LoadMap(int index)
         {
+            mapIndex = index;
+            building = false;
+            StartWorld(Maps.All[index].Build());
+            Fit();
+            SpawnCars(Maps.All[index].StartingCars);
+        }
+
+        /// <summary>Replace the roads and traffic with a new world.</summary>
+        private void StartWorld(World next)
+        {
             bool crashes = Sim == null || Sim.CrashesEnabled;
             bool rightOnRed = Sim == null || Sim.RightOnRed;
             if (roads != null) roads.Destroy();
             if (carViews != null) carViews.Destroy();
-            mapIndex = index;
             selected = -1;
             selectedNode = -1;
             follow = false;
-            world = Maps.All[index].Build();
+            world = next;
             Sim = new Simulation(world, (uint)(System.DateTime.Now.Ticks & 0xffff));
             Sim.CrashesEnabled = crashes;
             Sim.RightOnRed = rightOnRed;
@@ -87,8 +96,150 @@ namespace Traffic.Lab
             };
             roads = new RoadView(world, transform);
             carViews = new CarViews(transform);
+        }
+
+        // ------------------------------------------------------------ drawing roads
+
+        private const string SaveKey = "traffic.drawing";
+        /// <summary>The map index that means "the one the player is drawing".</summary>
+        private static int OwnMap => Maps.All.Length;
+
+        private EditableMap drawing;
+        /// <summary>True while laying out roads; traffic only runs once this is off.</summary>
+        private bool building;
+        private bool bulldozing;
+        private int laneChoice = 1;
+        private int speedChoice = 1;
+        private bool hasStart;
+        private Vec chainStart;
+        private Vector2 hoverPixel;
+
+        private int DrawLanes => EditableMap.LaneChoices[laneChoice];
+        private int DrawMph => EditableMap.SpeedChoices[speedChoice];
+
+        /// <summary>Open the player's own map, as it was last left.</summary>
+        private void LoadOwnMap()
+        {
+            mapIndex = OwnMap;
+            drawing = EditableMap.Parse(PlayerPrefs.GetString(SaveKey, ""));
+            building = true;
+            hasStart = false;
+            RebuildDrawing();
             Fit();
-            SpawnCars(Maps.All[index].StartingCars);
+            dist *= 0.55f;
+        }
+
+        /// <summary>Rebuild the roads from the drawing. In drive mode this also starts traffic afresh.</summary>
+        private void RebuildDrawing()
+        {
+            StartWorld(drawing.ToWorld());
+            if (building) return;
+            // A few cars to start with, wherever there is room; the rest arrive at the open road ends.
+            int starters = Mathf.Min(10, drawing.Segments.Count * 2);
+            for (int i = 0; i < starters; i++) Sim.Spawn(newDriver, variation, PickVehicle());
+        }
+
+        private void SaveDrawing()
+        {
+            PlayerPrefs.SetString(SaveKey, drawing.Serialize());
+            PlayerPrefs.Save();
+        }
+
+        private void SetBuilding(bool on)
+        {
+            building = on;
+            hasStart = false;
+            RebuildDrawing();
+            if (!on && world.Entries.Count == 0 && drawing.Segments.Count > 0) Toast("No road runs off the map, so no traffic will arrive. Leave a road end open.");
+        }
+
+        /// <summary>The spot on the ground under a screen point (pixels, y down).</summary>
+        private bool GroundAt(Vector2 pixel, out Vec point)
+        {
+            point = default(Vec);
+            Ray ray = cam.ScreenPointToRay(new Vector3(pixel.x, Screen.height - pixel.y, 0));
+            if (Mathf.Abs(ray.direction.y) < 1e-4f) return false;
+            Vector3 hit = ray.origin - ray.direction * (ray.origin.y / ray.direction.y);
+            point = new Vec(hit.x, hit.z);
+            return true;
+        }
+
+        /// <summary>A click on the ground while building: place the next point of a road, or bulldoze one.</summary>
+        private void EditClick(Vector2 pixel)
+        {
+            Vec p;
+            if (!GroundAt(pixel, out p)) return;
+            if (bulldozing)
+            {
+                if (!drawing.RemoveNear(p)) return;
+                SaveDrawing();
+                RebuildDrawing();
+                return;
+            }
+            if (!hasStart)
+            {
+                chainStart = drawing.SnapTo(p).Point;
+                hasStart = true;
+                return;
+            }
+            string problem = drawing.TryAdd(chainStart, p, DrawLanes, DrawMph, true);
+            if (problem != null)
+            {
+                Toast(problem);
+                return;
+            }
+            // Carry on from where this stretch ended, so a road can be drawn as a chain of clicks.
+            chainStart = drawing.SnapTo(p).Point;
+            SaveDrawing();
+            RebuildDrawing();
+        }
+
+        /// <summary>Guide lines while building: a mark on every point, and the road about to be placed.</summary>
+        private void GuideLines()
+        {
+            var faint = new Color(1, 1, 1, 0.55f);
+            foreach (Vec n in drawing.Nodes) Mark(n, 2.5, faint);
+
+            Vec hover;
+            if (!GroundAt(hoverPixel, out hover)) return;
+            if (bulldozing)
+            {
+                Vec on;
+                int seg = drawing.NearestSegment(hover, EditableMap.SnapRoad * 1.5, out on);
+                if (seg < 0) return;
+                Vec a = drawing.Nodes[drawing.Segments[seg].A], b = drawing.Nodes[drawing.Segments[seg].B];
+                Segment(a.X, a.Y, b.X, b.Y, new Color(1, 0.3f, 0.3f, 1), 0);
+                Mark(on, 4, new Color(1, 0.3f, 0.3f, 1));
+                return;
+            }
+            Vec end = drawing.SnapTo(hover).Point;
+            if (!hasStart)
+            {
+                Mark(end, 4, Accent);
+                return;
+            }
+            bool ok = drawing.TryAdd(chainStart, hover, DrawLanes, DrawMph, false) == null;
+            Color c = ok ? new Color(0.37f, 0.88f, 0.75f, 1) : new Color(1, 0.3f, 0.3f, 1);
+            Segment(chainStart.X, chainStart.Y, end.X, end.Y, c, 0);
+            // Show how wide it will be. A one-way lane lies to the right of the line drawn.
+            double dx = end.X - chainStart.X, dy = end.Y - chainStart.Y;
+            double len = Geo.Hypot(dx, dy);
+            if (len > 1)
+            {
+                double rx = dy / len, ry = -dx / len;
+                double right = (DrawLanes == 4 ? 2 : 1) * NetworkBuilder.LaneW;
+                double left = DrawLanes == 1 ? 0 : right;
+                Segment(chainStart.X + rx * right, chainStart.Y + ry * right, end.X + rx * right, end.Y + ry * right, c, 0);
+                if (left > 0) Segment(chainStart.X - rx * left, chainStart.Y - ry * left, end.X - rx * left, end.Y - ry * left, c, 0);
+            }
+            Mark(chainStart, 4, c);
+            Mark(end, 4, c);
+        }
+
+        private void Mark(Vec p, double size, Color c)
+        {
+            Segment(p.X - size, p.Y, p.X + size, p.Y, c, 0);
+            Segment(p.X, p.Y - size, p.X, p.Y + size, c, 0);
         }
 
         private void SetUpScene()
@@ -222,7 +373,7 @@ namespace Traffic.Lab
             Sim.ArrivalTrucks = truckShare;
             Sim.ArrivalMotorcycles = bikeShare;
 
-            if (!paused)
+            if (!paused && !building)
             {
                 owed += Mathf.Min(Time.unscaledDeltaTime, 0.1f) * speed;
                 int steps = 0;
@@ -320,12 +471,18 @@ namespace Traffic.Lab
                 lineObject = MeshKit.Spawn("Sensor lines", lineMesh, lineMaterial, transform, false);
                 lineObject.GetComponent<MeshRenderer>().receiveShadows = false;
             }
-            lineObject.SetActive(showSensors);
-            if (!showSensors) return;
+            lineObject.SetActive(showSensors || building);
+            if (!showSensors && !building) return;
 
             linePoints.Clear();
             lineColors.Clear();
             lineIndices.Clear();
+            if (building)
+            {
+                GuideLines();
+                UploadLines();
+                return;
+            }
             var byId = new Dictionary<int, Car>();
             foreach (Car c in Sim.Cars) byId[c.Id] = c;
             foreach (Car car in Sim.Cars)
@@ -351,6 +508,11 @@ namespace Traffic.Lab
                     Segment(p.X - nx, p.Y - ny, p.X + nx, p.Y + ny, c, car.Height);
                 }
             }
+            UploadLines();
+        }
+
+        private void UploadLines()
+        {
             lineMesh.Clear();
             lineMesh.SetVertices(linePoints);
             lineMesh.SetColors(lineColors);

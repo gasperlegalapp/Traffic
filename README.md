@@ -8,6 +8,8 @@ A traffic game in the making, built in Unity 6. The first piece is the **Driver 
 - **Figure eight:** one intersection joined to itself by two loops, with a pinch where two lanes become one.
 - **City and highway:** six intersections joined to a divided highway by a diamond interchange: a crossroad from town goes over the highway on a bridge, with an off-ramp and an on-ramp on each side meeting it at a traffic light. Vehicles arrive at both ends of the highway and on two roads south of town, in waves, and leave the map the same ways.
 
+- **Draw your own:** lay out roads by clicking, at any angle. Roads that cross or touch make intersections, which get stop signs or a traffic light automatically. Pick one-way, two or four lanes and a 25, 40, 55 or 65 mph limit. Road ends left open are where traffic enters and leaves. Press Drive to run traffic on it.
+
 ## Driver Lab
 
 A three-by-three grid of streets where each road and intersection tests something different:

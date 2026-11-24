@@ -333,6 +333,7 @@ namespace Traffic.Sim
         {
             if (baseDriver == null) baseDriver = DriverParams.Normal;
             var roads = Lanes.FindAll(l => l.Kind == LaneKind.Road && l.Length > 50);
+            if (roads.Count == 0) return null;
             for (int attempt = 0; attempt < 60; attempt++)
             {
                 Lane lane = Rng.Pick(roads);
