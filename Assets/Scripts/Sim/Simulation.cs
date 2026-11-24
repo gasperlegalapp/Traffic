@@ -1031,7 +1031,9 @@ namespace Traffic.Sim
                     if (!inZone && !IsActive(foe, foeConn, uf)) return;
                     Derived fd = DeriveFor(foe);
                     double fvc = Math.Min(foeConn.SpeedLimit * foe.Drv.Speed, ConnSpeed(foeConn, fd));
-                    double fOut = DriverModel.TravelTime(cz.FoeOut - fRear, foe.V, fd.A, fvc);
+                    // When will the other car be clear? Allow for it not speeding up at all: it may
+                    // be held back by something this driver cannot see.
+                    double fOut = Math.Max(DriverModel.TravelTime(cz.FoeOut - fRear, foe.V, fd.A, fvc), (cz.FoeOut - fRear) / Math.Max(foe.V, 2));
                     if (inZone)
                     {
                         if (tIn - margin * 0.5 < fOut)
@@ -1054,10 +1056,7 @@ namespace Traffic.Sim
                 });
                 if (wait)
                 {
-                    // Wait at the stop line if the way is blocked, or if the place to wait inside is so
-                    // close to the line that going in would mean stopping again at once.
-                    bool atLine = outside && (blocked || cz.SIn < 4);
-                    double dist = atLine ? -myFront - 0.6 : dIn - 1.0;
+                    double dist = blocked && outside ? -myFront - 0.6 : dIn - 1.0;
                     if (!found || dist < stopDist)
                     {
                         stopDist = dist;
