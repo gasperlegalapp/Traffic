@@ -60,6 +60,8 @@ namespace Traffic.Sim
             public double Speed;
             public double ShiftA, ShiftB;
             public bool Bridge;
+            /// <summary>Height in the middle (negative for a tunnel) and how long each end takes to get there.</summary>
+            public double Height, RampLen;
             public bool Traced;
             /// <summary>For a traced road: this end keeps the direction of the trace's own last points, and is not trimmed.</summary>
             public bool OwnA, OwnB;
@@ -126,6 +128,18 @@ namespace Traffic.Sim
                 A = a, B = b, Fwd = fwd, Back = new TrackSpec[0], Via = trace, Speed = speed, Traced = true, Inner = inner,
                 OwnA = rampAtA, ShiftA = rampAtA ? shiftA : 0, OwnB = rampAtB, ShiftB = rampAtB ? shiftB : 0,
             });
+        }
+
+        /// <summary>
+        /// Lift the road just added on to a bridge, or sink it into a tunnel (a negative height).
+        /// It leaves the ground at each end over a ramp of the given length and is level between.
+        /// Traffic on it does not meet the traffic it passes over or under.
+        /// </summary>
+        public void Raise(double height, double ramp)
+        {
+            RoadSpec r = roads[roads.Count - 1];
+            r.Height = height;
+            r.RampLen = ramp;
         }
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
@@ -278,13 +292,13 @@ namespace Traffic.Sim
                 armA.Shift = r.ShiftA;
                 armB.Shift = -r.ShiftB;
                 armA.Inner = armB.Inner = r.Inner;
-                double peak = r.Bridge ? BridgeHeight : 0;
-                BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak, r.Inner);
-                BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak, r.Inner);
+                double peak = r.Bridge ? BridgeHeight : r.Height;
+                BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak, r.Inner, r.RampLen);
+                BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak, r.Inner, r.RampLen);
                 // A divided road has a strip of ground down the middle, a little narrower than the gap between its yellow lines.
                 if (r.Inner > 0.5 && r.Fwd.Length > 0 && r.Back.Length > 0)
                 {
-                    world.Medians.Add(new Strip { Left = Geo.Offset(center, -(r.Inner - 0.3)), Right = Geo.Offset(center, r.Inner - 0.3), Peak = peak });
+                    world.Medians.Add(new Strip { Left = Geo.Offset(center, -(r.Inner - 0.3)), Right = Geo.Offset(center, r.Inner - 0.3), Peak = peak, Heights = Lift(center, peak, r.RampLen) });
                 }
             }
             world.Extent = extent + 30;
@@ -310,7 +324,18 @@ namespace Traffic.Sim
 
         // ------------------------------------------------------------ roads
 
-        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed, double peak, double inner)
+        /// <summary>The height of a bridge or tunnel at each point along its centerline. Null on the ground.</summary>
+        private static double[] Lift(List<Vec> center, double peak, double ramp)
+        {
+            if (peak == 0) return null;
+            var along = new double[center.Count];
+            for (int i = 1; i < center.Count; i++) along[i] = along[i - 1] + Geo.Hypot(center[i].X - center[i - 1].X, center[i].Y - center[i - 1].Y);
+            var lift = new double[center.Count];
+            for (int i = 0; i < lift.Length; i++) lift[i] = peak * Geo.Rise(along[i], along[along.Length - 1], ramp);
+            return lift;
+        }
+
+        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed, double peak, double inner, double ramp)
         {
             if (specs.Length == 0) return;
             int n = center.Count - 1;
@@ -345,6 +370,7 @@ namespace Traffic.Sim
                     Length = path.Length,
                     SpeedLimit = speed,
                     Peak = peak,
+                    Ramp = ramp,
                     Slot = spec.Slot,
                     ApproachNode = to.Node,
                     ApproachArm = to.Arm,
@@ -422,9 +448,10 @@ namespace Traffic.Sim
             from.OutLeft = left[0];
             from.OutRight = right[0];
             // Pavement runs from the centerline out, or, on a road centered on its line, from the left edge of its lanes.
-            world.Surfaces.Add(new Strip { Left = inner < 0 ? Geo.Offset(center, i => left[i]) : center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak });
-            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14, Peak = peak });
-            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true, Peak = peak });
+            double[] lift = Lift(center, peak, ramp);
+            world.Surfaces.Add(new Strip { Left = inner < 0 ? Geo.Offset(center, i => left[i]) : center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak, Heights = lift });
+            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14, Peak = peak, Heights = lift });
+            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true, Peak = peak, Heights = lift });
 
             bool controlled = EndsAt(to.Node) > 2 && nodeMode[to.Node] != JunctionMode.Free;
             for (int slot = 0; slot < maxSlot; slot++)
@@ -444,8 +471,8 @@ namespace Traffic.Sim
                             solidFrom = runStart;
                             while (solidFrom < runEnd && st[solidFrom] < len - SolidLine) solidFrom++;
                         }
-                        AddLine(divider, runStart, Math.Min(solidFrom, runEnd), true);
-                        AddLine(divider, solidFrom, runEnd, false);
+                        AddLine(divider, runStart, Math.Min(solidFrom, runEnd), true, lift, peak);
+                        AddLine(divider, solidFrom, runEnd, false, lift, peak);
                         runStart = -1;
                     }
                 }
@@ -473,12 +500,18 @@ namespace Traffic.Sim
             return false;
         }
 
-        private void AddLine(Vec[] pts, int from, int to, bool dashed)
+        private void AddLine(Vec[] pts, int from, int to, bool dashed, double[] lift, double peak)
         {
             if (to - from < 1) return;
             var part = new Vec[to - from + 1];
             Array.Copy(pts, from, part, 0, part.Length);
-            world.Markings.Add(new Marking { Pts = part, Width = 0.14, DashOn = dashed ? DashOn : 0, DashOff = dashed ? DashOff : 0 });
+            double[] heights = null;
+            if (lift != null)
+            {
+                heights = new double[part.Length];
+                Array.Copy(lift, from, heights, 0, heights.Length);
+            }
+            world.Markings.Add(new Marking { Pts = part, Width = 0.14, DashOn = dashed ? DashOn : 0, DashOff = dashed ? DashOff : 0, Peak = peak, Heights = heights });
         }
 
         // ------------------------------------------------------------ intersections

@@ -147,15 +147,15 @@ namespace Traffic.Lab
             tris.Add(a); tris.Add(c); tris.Add(b);
         }
 
-        /// <summary>A strip on a bridge: it rises to peak in the middle of its length.</summary>
-        public void Strip(IList<Vec> left, IList<Vec> right, float y, double peak)
+        /// <summary>A strip on a bridge: each pair of points has its own height.</summary>
+        public void Strip(IList<Vec> left, IList<Vec> right, IList<double> heights, float y)
         {
             int n = left.Count - 1;
-            int l0 = Vertex(left[0], y);
-            int r0 = Vertex(right[0], y);
+            int l0 = Vertex(left[0], y + (float)heights[0]);
+            int r0 = Vertex(right[0], y + (float)heights[0]);
             for (int i = 1; i <= n; i++)
             {
-                float h = y + (float)(peak * Geo.BridgeProfile((double)i / n));
+                float h = y + (float)heights[i];
                 int l1 = Vertex(left[i], h);
                 int r1 = Vertex(right[i], h);
                 Tri(l0, r0, l1);
@@ -166,14 +166,14 @@ namespace Traffic.Lab
         }
 
         /// <summary>A wall from the ground up to the edge of a bridge.</summary>
-        public void Skirt(IList<Vec> edge, float y, double peak)
+        public void Skirt(IList<Vec> edge, IList<double> heights, float y)
         {
             int n = edge.Count - 1;
-            int top0 = Vertex(edge[0], y);
+            int top0 = Vertex(edge[0], y + (float)heights[0]);
             int bottom0 = Vertex(edge[0], 0);
             for (int i = 1; i <= n; i++)
             {
-                int top1 = Vertex(edge[i], y + (float)(peak * Geo.BridgeProfile((double)i / n)));
+                int top1 = Vertex(edge[i], y + (float)heights[i]);
                 int bottom1 = Vertex(edge[i], 0);
                 Tri(bottom0, top0, bottom1);
                 Tri(top0, top1, bottom1);
@@ -182,11 +182,39 @@ namespace Traffic.Lab
             }
         }
 
-        public void Line(IList<Vec> pts, double width, float y, double peak)
+        /// <summary>A painted line on a bridge.</summary>
+        public void Line(IList<Vec> pts, IList<double> heights, double width, float y)
         {
             if (pts.Count < 2) return;
             var list = new List<Vec>(pts);
-            Strip(Geo.Offset(list, -width / 2), Geo.Offset(list, width / 2), y, peak);
+            Strip(Geo.Offset(list, -width / 2), Geo.Offset(list, width / 2), heights, y);
+        }
+
+        /// <summary>A broken painted line on a bridge.</summary>
+        public void Dashed(IList<Vec> pts, IList<double> heights, double width, double on, double off, float y)
+        {
+            if (pts.Count < 2) return;
+            var along = new double[pts.Count];
+            for (int i = 1; i < pts.Count; i++) along[i] = along[i - 1] + Geo.Hypot(pts[i].X - pts[i - 1].X, pts[i].Y - pts[i - 1].Y);
+            double total = along[pts.Count - 1];
+            int at = 0;
+            for (double s = 0; s < total; s += on + off)
+            {
+                double end = System.Math.Min(s + on, total);
+                var seg = new List<Vec>();
+                var high = new List<double>();
+                for (double t = s; ; t = System.Math.Min(t + 1, end))
+                {
+                    // The point and height this far along, between the two given points either side of it.
+                    while (at < pts.Count - 2 && along[at + 1] < t) at++;
+                    double span = along[at + 1] - along[at];
+                    double f = span > 0 ? Geo.Clamp((t - along[at]) / span, 0, 1) : 0;
+                    seg.Add(new Vec(pts[at].X + (pts[at + 1].X - pts[at].X) * f, pts[at].Y + (pts[at + 1].Y - pts[at].Y) * f));
+                    high.Add(heights[at] + (heights[at + 1] - heights[at]) * f);
+                    if (t >= end) break;
+                }
+                Line(seg, high, width, y);
+            }
         }
 
         public void Strip(IList<Vec> left, IList<Vec> right, float y)

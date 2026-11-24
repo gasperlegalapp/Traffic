@@ -164,7 +164,10 @@ namespace Traffic.Lab
                     v = Make(car);
                     views[car.Id] = v;
                 }
-                v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.X, car.Y, (float)car.Height), MeshKit.Heading(car.H));
+                // In a tunnel a car stays in view on the way down, then is out of sight until it comes back up.
+                bool hidden = car.Height < -RoadView.Covered;
+                if (v.Root.activeSelf == hidden) v.Root.SetActive(!hidden);
+                v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.X, car.Y, Mathf.Max(0, (float)car.Height)), MeshKit.Heading(car.H));
                 bool braking = car.A < -0.6 || (car.V < 0.2 && !car.Crashed);
                 SetLamps(v, v.Brakes, braking, brakeOn, brakeOff);
                 bool hazard = car.Crashed && blink;
@@ -176,7 +179,7 @@ namespace Traffic.Lab
                 if (car.Id == selectedId)
                 {
                     ring.gameObject.SetActive(true);
-                    ring.position = MeshKit.ToWorld(car.X, car.Y, 0.12f + (float)car.Height);
+                    ring.position = MeshKit.ToWorld(car.X, car.Y, 0.12f + Mathf.Max(0, (float)car.Height));
                     float size = Mathf.Max(1, (float)car.Len / 4.5f);
                     ring.localScale = new Vector3(size, 1, size);
                 }

@@ -17,7 +17,7 @@ namespace Traffic.Ui
         void Text(string text, double x, double y, double w, double h, int size, bool bold, int align, uint color);
     }
 
-    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Pause, Step, Rate }
+    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Pause, Step, Rate }
 
     /// <summary>A kind of road on offer in the tray: enough to draw its picture and explain it.</summary>
     public sealed class DockRoad
@@ -69,6 +69,12 @@ namespace Traffic.Ui
         /// <summary>0 draws roads, 1 bulldozes.</summary>
         public int Tool;
         public int Shape, Road, Rate;
+        /// <summary>Which of HeightLevels is chosen.</summary>
+        public int Height;
+        /// <summary>The heights a road can be built at, in the order the tray shows them: the ground, three bridges, three tunnels.</summary>
+        public static readonly int[] HeightLevels = { 0, 1, 2, 3, -1, -2, -3 };
+        /// <summary>What to say about each of them.</summary>
+        public string[] HeightNotes = new string[HeightLevels.Length];
         /// <summary>A line of help about what the next click does.</summary>
         public string Hint = "";
 
@@ -154,6 +160,7 @@ namespace Traffic.Ui
                     int columns = (g.Value.Count + 1) / 2;
                     trayW += between + columns * tile + (columns - 1) * Gap;
                 }
+                trayW += between + 4 * high + 3 * Gap;
                 trayH = 12 + 14 + 6 + high * 2 + Gap + 10 + 16 + 10;
                 trayX = Math.Round((w - trayW) / 2);
                 trayY = barY - 10 - trayH;
@@ -171,6 +178,14 @@ namespace Traffic.Ui
                         Items.Add(new DockItem { Kind = DockKind.Road, Index = g.Value[k], X = tx + (k % columns) * (tile + Gap), Y = ty + (k / columns) * (high + Gap), W = tile, H = high });
                     }
                     tx += columns * tile + (columns - 1) * Gap;
+                }
+                // Heights: the ground first, bridges along the top, tunnels underneath them.
+                tx += between;
+                headings.Add(new KeyValuePair<string, double>("HEIGHT", tx));
+                for (int i = 0; i < HeightLevels.Length; i++)
+                {
+                    int column = i == 0 ? 0 : (i - 1) % 3 + 1, row = i > 3 ? 1 : 0;
+                    Items.Add(new DockItem { Kind = DockKind.Height, Index = i, X = tx + column * (high + Gap), Y = ty + row * (high + Gap), W = high, H = high });
                 }
                 Top = trayY;
             }
@@ -268,6 +283,9 @@ namespace Traffic.Ui
                     case DockKind.Road:
                         RoadTile(s, item, Roads[item.Index], Road == item.Index, hot);
                         break;
+                    case DockKind.Height:
+                        HeightTile(s, item, HeightLevels[item.Index], Height == item.Index, hot);
+                        break;
                 }
             }
 
@@ -328,6 +346,33 @@ namespace Traffic.Ui
                 for (int k = 0; k < road.Forward; k++) s.Icon("arrow", left + wide / 2 - size / 2, y + k * lane + (lane - size) / 2, size, Paint);
             }
             Ring(s, item, 10, chosen, hot);
+        }
+
+        /// <summary>A side view: a road on the ground, a deck on legs above it, or a tube below it.</summary>
+        private static void HeightTile(ISurface s, DockItem item, int level, bool chosen, bool hot)
+        {
+            if (chosen) s.Fill(item.X, item.Y, item.W, item.H, 12, Accent);
+            else s.Fill(item.X, item.Y, item.W, item.H, 12, hot ? Hover : Lift);
+            uint ink = chosen ? Ink : Light, faint = chosen ? 0x660C1A16u : 0x66E7EDF0u;
+            double x = item.X + 8, wide = item.W - 16;
+            if (level == 0)
+            {
+                s.Fill(x, item.Y + item.H / 2 - 1.5, wide, 3, 1.5, ink);
+            }
+            else if (level > 0)
+            {
+                double ground = item.Y + item.H - 9, deck = ground - 5 - level * 6;
+                s.Fill(x, ground, wide, 1.5, 0, faint);
+                s.Fill(x + 5, deck, 2.5, ground - deck, 0, ink);
+                s.Fill(x + wide - 7.5, deck, 2.5, ground - deck, 0, ink);
+                s.Fill(x, deck - 1.5, wide, 3, 1.5, ink);
+            }
+            else
+            {
+                double ground = item.Y + 9, top = ground + 2 + (-level - 1) * 6;
+                s.Fill(x, ground, wide, 1.5, 0, faint);
+                s.Stroke(x + 4, top, wide - 8, 11, 5.5, 2.5, ink);
+            }
         }
 
         private static void Dashes(ISurface s, double left, double y, double wide)
@@ -409,6 +454,13 @@ namespace Traffic.Ui
                 case DockKind.Road:
                     title = Roads[item.Index].Title;
                     body = Roads[item.Index].Body;
+                    break;
+                case DockKind.Height:
+                    {
+                        int level = HeightLevels[item.Index];
+                        title = level == 0 ? "On the ground" : level > 0 ? "Bridge, level " + level : "Tunnel, level " + -level;
+                        body = HeightNotes[item.Index] ?? "";
+                    }
                     break;
             }
         }

@@ -90,6 +90,8 @@ namespace Traffic.Sim
         /// <summary>A curved stretch is part of a circle, from A to B, passing through Mid halfway along.</summary>
         public bool Curved;
         public Vec Mid;
+        /// <summary>0 on the ground; 1 to 3 for a bridge of that many levels; -1 to -3 for a tunnel that deep.</summary>
+        public int Level;
         /// <summary>Part of a roundabout. Where a road meets one there are no lights or signs: traffic going round has the right of way.</summary>
         public bool Ring;
     }
@@ -138,7 +140,7 @@ namespace Traffic.Sim
         {
             var copy = new EditableMap();
             copy.Nodes.AddRange(Nodes);
-            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring });
+            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level });
             return copy;
         }
 
@@ -348,10 +350,10 @@ namespace Traffic.Sim
         /// through it. Returns null if it was added, or a short reason why it cannot be. With
         /// commit false nothing is changed: use that to preview.
         /// </summary>
-        public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through = null)
+        public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through = null, int level = 0)
         {
             EditableMap work = Clone();
-            string error = work.Add(p, q, type, through);
+            string error = work.Add(p, q, type, through, level);
             if (error != null) return error;
             // Make sure the result can actually be built before accepting it.
             try
@@ -371,23 +373,50 @@ namespace Traffic.Sim
         }
 
         /// <summary>The same, for a road given by its lane count (1 one-way, 2, or 4) and speed limit.</summary>
-        public string TryAdd(Vec p, Vec q, int lanes, int mph, bool commit, Vec? through = null)
+        public string TryAdd(Vec p, Vec q, int lanes, int mph, bool commit, Vec? through = null, int level = 0)
         {
-            return TryAdd(p, q, RoadType.Plain(lanes, mph), commit, through);
+            return TryAdd(p, q, RoadType.Plain(lanes, mph), commit, through, level);
         }
 
         /// <summary>What a road from p to q would cost, and how long it would be, before any snapping.</summary>
-        public static double CostOf(Vec p, Vec q, RoadType type, Vec? through, out double length)
+        public static double CostOf(Vec p, Vec q, RoadType type, Vec? through, out double length, int level = 0)
         {
             length = LengthOf(Trace(p, q, through.HasValue, through ?? default(Vec)));
-            return length * type.CostPerMeter;
+            return length * type.CostPerMeter * CostTimes(level);
+        }
+
+        // ---------------------------------------------------------------- bridges and tunnels
+
+        /// <summary>How far up or down each level is, meters.</summary>
+        public const double LevelHeight = 5;
+        /// <summary>How much height two roads need between them to pass one over the other.</summary>
+        public const double Clearance = 4.5;
+        public const int HighestLevel = 3;
+
+        /// <summary>How long a ramp a road needs at each end to reach a level, meters.</summary>
+        public static double RampFor(int level)
+        {
+            int n = Math.Abs(level);
+            return n == 0 ? 0 : n == 1 ? 40 : n == 2 ? 70 : 110;
+        }
+
+        /// <summary>How many times the ordinary price a road at a level costs. Tunnels cost more than bridges.</summary>
+        public static double CostTimes(int level)
+        {
+            return level == 0 ? 1 : level > 0 ? 1 + level : 1 + 2 * -level;
+        }
+
+        /// <summary>Height above the ground of a road at a level, a distance along its length.</summary>
+        public static double HeightAlong(int level, double s, double length)
+        {
+            return level == 0 ? 0 : level * LevelHeight * Geo.Rise(s, length, RampFor(level));
         }
 
         /// <summary>What everything drawn so far costs.</summary>
         public double Cost()
         {
             double total = 0;
-            foreach (EditSegment s in Segments) total += LengthOf(Trace(s)) * s.Type.CostPerMeter;
+            foreach (EditSegment s in Segments) total += LengthOf(Trace(s)) * s.Type.CostPerMeter * CostTimes(s.Level);
             return total;
         }
 
@@ -404,7 +433,7 @@ namespace Traffic.Sim
             public Vec At;
         }
 
-        private string Add(Vec p, Vec q, RoadType type, Vec? through)
+        private string Add(Vec p, Vec q, RoadType type, Vec? through, int level)
         {
             string error;
             int a = Resolve(p, out error);
@@ -426,6 +455,11 @@ namespace Traffic.Sim
                 if (curved && CurveTurn(pa, c, pb) > MaxTurn) return "That curve goes too far round. Draw it in two parts.";
             }
             Vec[] path = Trace(pa, pb, curved, c);
+            double pathLength = LengthOf(path);
+            if (level != 0 && pathLength < 2 * RampFor(level) + 20)
+            {
+                return "Too short to " + (level > 0 ? "climb that high" : "go down that deep") + ": it needs at least " + Math.Round((2 * RampFor(level) + 20) * 3.28084 / 10) * 10 + " ft.";
+            }
 
             // Everything the new road meets on the way becomes a point along it.
             var stops = new List<Stop>();
@@ -434,7 +468,10 @@ namespace Traffic.Sim
                 if (i == a || i == b) continue;
                 double t;
                 Vec on;
-                if (Project(path, Nodes[i], out t, out on) < SnapRoad && t > 0 && t < 1) stops.Add(new Stop { T = t, Node = i });
+                if (!(Project(path, Nodes[i], out t, out on) < SnapRoad && t > 0 && t < 1)) continue;
+                if (level == 0) stops.Add(new Stop { T = t, Node = i });
+                // A bridge or tunnel passes clean over or under a point, unless it is still too near the ground there.
+                else if (Math.Abs(HeightAlong(level, t * pathLength, pathLength)) < Clearance) return "A bridge or tunnel can only meet other roads at its ends.";
             }
             int existing = Segments.Count;
             for (int i = 0; i < existing; i++)
@@ -450,6 +487,14 @@ namespace Traffic.Sim
                 foreach (Crossing x in crossings)
                 {
                     double u = x.U / upTo;
+                    if (level != 0 || s.Level != 0)
+                    {
+                        // Roads at different heights pass one over the other without meeting, given room between them.
+                        double other = LengthOf(Trace(s));
+                        double room = Math.Abs(HeightAlong(level, x.T * pathLength, pathLength) - HeightAlong(s.Level, u * other, other));
+                        if (room < Clearance) return "Not enough room between the roads there. Cross nearer the middle of the bridge or tunnel.";
+                        continue;
+                    }
                     if (Dist(x.At, Nodes[s.A]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.A });
                     else if (Dist(x.At, Nodes[s.B]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.B });
                     else if (LengthBetween(s, 0, u) < Shortest(s) || LengthBetween(s, u, 1) < Shortest(s)) return "That crosses another road too close to an intersection.";
@@ -476,7 +521,7 @@ namespace Traffic.Sim
                 int from = chain[i].Node, to = chain[i + 1].Node;
                 touched.Add(from);
                 touched.Add(to);
-                var piece = new EditSegment { A = from, B = to, Type = type };
+                var piece = new EditSegment { A = from, B = to, Type = type, Level = level };
                 if (curved)
                 {
                     // The part of the curve between two positions is a piece of the same circle.
@@ -525,6 +570,11 @@ namespace Traffic.Sim
                 return Nodes.Count - 1;
             }
             EditSegment s = Segments[snap.Segment];
+            if (s.Level != 0)
+            {
+                error = "A road can only join a bridge or tunnel at its ends.";
+                return -1;
+            }
             if (LengthBetween(s, 0, snap.T) < Shortest(s) || LengthBetween(s, snap.T, 1) < Shortest(s))
             {
                 error = "Too close to the end of that road. Join at the end, or further along.";
@@ -636,6 +686,7 @@ namespace Traffic.Sim
             for (int i = 0; i < existing; i++)
             {
                 List<Crossing> crossings = CircleCrossings(Trace(Segments[i]), c, r);
+                if (crossings.Count > 0 && Segments[i].Level != 0) return "A bridge or tunnel is in the way.";
                 crossings.Sort((m, n) => n.T.CompareTo(m.T));
                 double upTo = 1;
                 foreach (Crossing x in crossings)
@@ -912,16 +963,15 @@ namespace Traffic.Sim
                         Array.Reverse(trace);
                     }
                     b.AddRamp(s.A, s.B, fwd, trace, speed, s.Type.Inner, rampAtA, shiftA, rampAtB, shiftB);
-                    continue;
                 }
-                if (!s.Curved)
+                else if (!s.Curved) b.AddRoad(s.A, s.B, fwd, back, null, speed, 0, 0, false, s.Type.Inner);
+                else
                 {
-                    b.AddRoad(s.A, s.B, fwd, back, null, speed, 0, 0, false, s.Type.Inner);
-                    continue;
+                    // Trace the curve with a point every few meters.
+                    int steps = Math.Max(8, (int)Math.Ceiling(LengthOf(Trace(s)) / 3));
+                    b.AddCurvedRoad(s.A, s.B, fwd, back, Trace(Nodes[s.A], Nodes[s.B], true, s.Mid, steps), speed, s.Type.Inner);
                 }
-                // Trace the curve with a point every few meters.
-                int steps = Math.Max(8, (int)Math.Ceiling(LengthOf(Trace(s)) / 3));
-                b.AddCurvedRoad(s.A, s.B, fwd, back, Trace(Nodes[s.A], Nodes[s.B], true, s.Mid, steps), speed, s.Type.Inner);
+                if (s.Level != 0) b.Raise(s.Level * LevelHeight, RampFor(s.Level));
             }
             World world = b.Build();
             // Keep the surroundings the same size however much has been drawn.
@@ -975,6 +1025,7 @@ namespace Traffic.Sim
                 if (RoadType.ById(s.Type.Id) != null) sb.Append(s.Type.Id);
                 else sb.Append(s.Lanes).Append(',').Append(s.Mph);
                 if (s.Curved) sb.Append(',').Append(Num(s.Mid.X)).Append(',').Append(Num(s.Mid.Y)).Append(s.Ring ? ",ring" : ",arc");
+                if (s.Level != 0) sb.Append(",L").Append(s.Level);
                 sb.Append(';');
             }
             return sb.ToString();
@@ -997,6 +1048,13 @@ namespace Traffic.Sim
                 {
                     string[] f = item.Split(',');
                     var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]) };
+                    // A level, where there is one, is the last thing on the line.
+                    if (f[f.Length - 1].StartsWith("L"))
+                    {
+                        s.Level = int.Parse(f[f.Length - 1].Substring(1));
+                        if (Math.Abs(s.Level) > HighestLevel) return new EditableMap();
+                        Array.Resize(ref f, f.Length - 1);
+                    }
                     if (s.A < 0 || s.B < 0 || s.A >= map.Nodes.Count || s.B >= map.Nodes.Count) return new EditableMap();
                     // The kind of road is either a type's code, or (in older drawings) a lane count and a speed limit.
                     int lanes, rest;

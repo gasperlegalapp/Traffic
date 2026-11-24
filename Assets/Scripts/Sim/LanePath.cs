@@ -150,6 +150,19 @@ namespace Traffic.Sim
             return u * u * (3 - 2 * u);
         }
 
+        /// <summary>
+        /// How much of its full height (or depth) a bridge or tunnel has reached at a distance
+        /// along it. It climbs over a ramp of the given length at each end and is level
+        /// between. With no ramp length given, it climbs over the first third.
+        /// </summary>
+        public static double Rise(double s, double length, double ramp)
+        {
+            if (length <= 0) return 0;
+            if (ramp <= 0) return BridgeProfile(s / length);
+            double u = Clamp(Math.Min(s, length - s) / ramp, 0, 1);
+            return u * u * (3 - 2 * u);
+        }
+
         public static double Clamp(double x, double lo, double hi)
         {
             return x < lo ? lo : x > hi ? hi : x;

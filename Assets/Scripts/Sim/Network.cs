@@ -62,13 +62,15 @@ namespace Traffic.Sim
         /// <summary>For a lane that ends before the intersection: the side to merge to (-1 left, 1 right).</summary>
         public int MergeSide;
 
-        /// <summary>Height of the middle of the lane above the ground, for a lane on a bridge; 0 on the ground.</summary>
+        /// <summary>Height of the middle of the lane above the ground: more than 0 on a bridge, less in a tunnel, 0 on the ground.</summary>
         public double Peak;
+        /// <summary>How far from each end the lane takes to reach that height. 0 means the first third of its length.</summary>
+        public double Ramp;
 
-        /// <summary>Height above the ground at a distance along the lane.</summary>
+        /// <summary>Height above the ground at a distance along the lane. Negative in a tunnel.</summary>
         public double HeightAt(double s)
         {
-            return Peak <= 0 ? 0 : Peak * Geo.BridgeProfile(s / Length);
+            return Peak == 0 ? 0 : Peak * Geo.Rise(s, Length, Ramp);
         }
 
         /// <summary>The lane runs off the edge of the map: vehicles that reach its end leave.</summary>
@@ -168,8 +170,10 @@ namespace Traffic.Sim
     {
         public Vec[] Left;
         public Vec[] Right;
-        /// <summary>For a bridge: its height in the middle. The points run its whole length.</summary>
+        /// <summary>For a bridge or tunnel: its height in the middle (negative in a tunnel).</summary>
         public double Peak;
+        /// <summary>For a bridge or tunnel: the height at each point. Null on the ground.</summary>
+        public double[] Heights;
     }
 
     public sealed class Marking
@@ -177,8 +181,10 @@ namespace Traffic.Sim
         public Vec[] Pts;
         public double Width;
         public bool Yellow;
-        /// <summary>For paint on a bridge: the bridge's height in the middle. The points run its whole length.</summary>
+        /// <summary>For paint on a bridge or in a tunnel: its height in the middle.</summary>
         public double Peak;
+        /// <summary>For paint on a bridge or in a tunnel: the height at each point. Null on the ground.</summary>
+        public double[] Heights;
         /// <summary>Meters painted and meters skipped; both 0 for a solid line.</summary>
         public double DashOn, DashOff;
     }

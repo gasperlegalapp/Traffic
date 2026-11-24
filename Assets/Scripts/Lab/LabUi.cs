@@ -112,6 +112,8 @@ namespace Traffic.Lab
             dock.Shape = shape;
             if (dock.Roads.Length == 0) dock.Roads = RoadTiles();
             dock.Road = roadChoice;
+            dock.Height = levelChoice;
+            if (dock.HeightNotes[1] == null) dock.HeightNotes = HeightNotes();
             dock.Rate = System.Array.IndexOf(Speeds, speed);
             dock.Hint = building ? BuildHint() : "";
             dock.Layout(w, h);
@@ -181,6 +183,10 @@ namespace Traffic.Lab
                     break;
                 case DockKind.Road:
                     roadChoice = item.Index;
+                    editVersion++;
+                    break;
+                case DockKind.Height:
+                    levelChoice = item.Index;
                     editVersion++;
                     break;
                 case DockKind.Pause:
@@ -583,6 +589,7 @@ namespace Traffic.Lab
             bool zoomedOut = dist > 260;
             foreach (Car car in Sim.Cars)
             {
+                if (car.Height < -RoadView.Covered) continue; // out of sight in a tunnel
                 // From far away only the interesting states get a tag.
                 bool dull = car.State == CarState.Cruise || car.State == CarState.Follow;
                 if (zoomedOut && car.Id != selected && car.Special == null && dull) continue;

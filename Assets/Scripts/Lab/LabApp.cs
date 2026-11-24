@@ -130,6 +130,9 @@ namespace Traffic.Lab
         private bool previewOk;
 
         private RoadType DrawType => RoadType.All[roadChoice];
+        /// <summary>Which of Dock.HeightLevels is being drawn at: the ground, a bridge or a tunnel.</summary>
+        private int levelChoice;
+        private int DrawLevel => Dock.HeightLevels[levelChoice];
 
         /// <summary>Open the player's own map, as it was last left.</summary>
         private void LoadOwnMap()
@@ -302,7 +305,7 @@ namespace Traffic.Lab
                 return;
             }
             Vec end = shape == 1 ? endPoint : p;
-            string problem = drawing.TryAdd(chainStart, end, DrawType, true, shape == 1 ? p : (Vec?)null);
+            string problem = drawing.TryAdd(chainStart, end, DrawType, true, shape == 1 ? p : (Vec?)null, DrawLevel);
             if (problem != null)
             {
                 Toast(problem);
@@ -359,7 +362,7 @@ namespace Traffic.Lab
             Vec to = curved ? endPoint : hover;
             if (previewVersion != editVersion || Geo.Hypot(hover.X - previewAt.X, hover.Y - previewAt.Y) > 0.4)
             {
-                previewOk = drawing.TryAdd(chainStart, to, DrawType, false, curved ? hover : (Vec?)null) == null;
+                previewOk = drawing.TryAdd(chainStart, to, DrawType, false, curved ? hover : (Vec?)null, DrawLevel) == null;
                 previewVersion = editVersion;
                 previewAt = hover;
             }
@@ -373,8 +376,8 @@ namespace Traffic.Lab
                 Polyline(Geo.Offset(line, side), c);
                 Polyline(Geo.Offset(line, -side), c);
                 double length;
-                double cost = EditableMap.CostOf(chainStart, end, DrawType, curved ? hover : (Vec?)null, out length);
-                previewNote = Mathf.RoundToInt((float)length * Feet) + " ft   " + Money(cost);
+                double cost = EditableMap.CostOf(chainStart, end, DrawType, curved ? hover : (Vec?)null, out length, DrawLevel);
+                previewNote = (DrawLevel > 0 ? "Bridge   " : DrawLevel < 0 ? "Tunnel   " : "") + Mathf.RoundToInt((float)length * Feet) + " ft   " + Money(cost);
             }
             if (curved) Mark(hover, 3, faint);
             Mark(chainStart, 4, c);
@@ -412,6 +415,29 @@ namespace Traffic.Lab
         private static string Money(double dollars)
         {
             return "$" + System.Math.Round(dollars).ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>What the toolbar says about each height a road can be built at.</summary>
+        private static string[] HeightNotes()
+        {
+            var notes = new string[Dock.HeightLevels.Length];
+            for (int i = 0; i < notes.Length; i++)
+            {
+                int level = Dock.HeightLevels[i];
+                if (level == 0)
+                {
+                    notes[i] = "Roads on the ground meet wherever they cross.";
+                    continue;
+                }
+                int tall = Mathf.RoundToInt((float)(System.Math.Abs(level) * EditableMap.LevelHeight) * Feet);
+                int ramp = Mathf.RoundToInt((float)EditableMap.RampFor(level) * Feet / 10) * 10;
+                int least = Mathf.RoundToInt((float)(2 * EditableMap.RampFor(level) + 20) * Feet / 10) * 10;
+                notes[i] = tall + " ft " + (level > 0 ? "up" : "down") + ".  Costs " + EditableMap.CostTimes(level).ToString("0") + " times as much.\n"
+                    + "It needs " + ramp + " ft at each end to " + (level > 0 ? "climb" : "go down") + ", so at least " + least + " ft in all.\n"
+                    + "It crosses other roads without meeting them, given a level's height between them. Roads can only join it at its ends."
+                    + (level < 0 ? "\nTraffic is out of sight while it is under ground." : "");
+            }
+            return notes;
         }
 
         /// <summary>What the toolbar needs to know about each kind of road: its picture and its explanation.</summary>
@@ -639,6 +665,7 @@ namespace Traffic.Lab
             double bestD = double.PositiveInfinity;
             foreach (Car c in Sim.Cars)
             {
+                if (c.Height < -RoadView.Covered) continue; // out of sight in a tunnel
                 double dx = hit.x - c.X;
                 double dy = hit.z - c.Y;
                 double along = dx * System.Math.Cos(c.H) + dy * System.Math.Sin(c.H);
@@ -701,7 +728,7 @@ namespace Traffic.Lab
             foreach (Car c in Sim.Cars) byId[c.Id] = c;
             foreach (Car car in Sim.Cars)
             {
-                if (car.Crashed) continue;
+                if (car.Crashed || car.Height < 0) continue;
                 double fx = car.X + System.Math.Cos(car.H) * car.Len * 0.5;
                 double fy = car.Y + System.Math.Sin(car.H) * car.Len * 0.5;
                 Car lead;

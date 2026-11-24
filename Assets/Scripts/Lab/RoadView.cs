@@ -60,24 +60,55 @@ namespace Traffic.Lab
             var asphalt = new FlatBuilder();
             var deck = new FlatBuilder();
             var skirt = new FlatBuilder();
-            bool anyBridge = false;
+            var buried = new FlatBuilder();
+            var mouths = new FlatBuilder();
+            bool anyBridge = false, anyTunnel = false;
             foreach (Strip s in world.Surfaces)
             {
-                if (s.Peak <= 0)
+                if (s.Heights == null)
                 {
                     asphalt.Strip(s.Left, s.Right, 0.03f);
                     edging.Strip(Geo.Offset(s.Left, -verge), Geo.Offset(s.Right, verge), 0.012f);
                     continue;
                 }
-                // A bridge: a raised deck that hides and shades the road beneath, with walls down its sides.
-                anyBridge = true;
-                deck.Strip(s.Left, s.Right, 0.03f, s.Peak);
-                skirt.Skirt(s.Right, 0.03f, s.Peak);
+                if (s.Peak > 0)
+                {
+                    // A bridge: a raised deck that hides and shades the road beneath, with walls down its sides.
+                    anyBridge = true;
+                    deck.Strip(s.Left, s.Right, s.Heights, 0.03f);
+                    skirt.Skirt(s.Right, s.Heights, 0.03f);
+                    skirt.Skirt(s.Left, s.Heights, 0.03f);
+                    continue;
+                }
+                // A tunnel. The road is drawn where it is still open to the sky, on its way down;
+                // where it is covered over, broken lines on the ground show where it runs, with a
+                // dark mouth where it goes under and where it comes back out.
+                anyTunnel = true;
+                foreach (int[] run in Runs(s.Heights, false))
+                {
+                    Vec[] l = Part(s.Left, run), r = Part(s.Right, run);
+                    asphalt.Strip(l, r, 0.03f);
+                    edging.Strip(Geo.Offset(l, -verge), Geo.Offset(r, verge), 0.012f);
+                }
+                foreach (int[] run in Runs(s.Heights, true))
+                {
+                    Vec[] l = Part(s.Left, run), r = Part(s.Right, run);
+                    buried.Dashed(l, 0.4, 3.5, 3.5, 0.05f);
+                    buried.Dashed(r, 0.4, 3.5, 3.5, 0.05f);
+                    int deep = System.Math.Min(4, l.Length - 1);
+                    mouths.Strip(Part(l, new[] { 0, deep }), Part(r, new[] { 0, deep }), 0.06f);
+                    mouths.Strip(Part(l, new[] { l.Length - 1 - deep, l.Length - 1 }), Part(r, new[] { r.Length - 1 - deep, r.Length - 1 }), 0.06f);
+                }
             }
             if (anyBridge)
             {
                 MeshKit.Spawn("Bridge deck", deck.Build(), MeshKit.Lit(MeshKit.Hex(0x3d424b), 0.05f), root, true);
                 MeshKit.Spawn("Bridge sides", skirt.Build(), MeshKit.Lit(MeshKit.Hex(0x7d8088), 0.05f), root, true);
+            }
+            if (anyTunnel)
+            {
+                MeshKit.Spawn("Tunnel lines", buried.Build(), MeshKit.Lit(MeshKit.Hex(0xd9dfc8), 0), root, false);
+                MeshKit.Spawn("Tunnel mouths", mouths.Build(), MeshKit.Lit(MeshKit.Hex(0x15181c), 0), root, false);
             }
             foreach (Node node in world.Nodes)
             {
@@ -101,9 +132,10 @@ namespace Traffic.Lab
                 int planted = 0;
                 foreach (Strip m in world.Medians)
                 {
-                    if (m.Peak > 0) grass.Strip(m.Left, m.Right, 0.08f, m.Peak);
-                    else grass.Strip(m.Left, m.Right, 0.08f);
-                    if (bushes.Count == 0 || m.Peak > 0) continue;
+                    if (m.Heights == null) grass.Strip(m.Left, m.Right, 0.08f);
+                    else if (m.Peak > 0) grass.Strip(m.Left, m.Right, m.Heights, 0.08f);
+                    else foreach (int[] run in Runs(m.Heights, false)) grass.Strip(Part(m.Left, run), Part(m.Right, run), 0.08f);
+                    if (bushes.Count == 0 || m.Heights != null) continue;
                     for (int i = 9; i < m.Left.Length - 9; i += 13)
                     {
                         var at = MeshKit.ToWorld((m.Left[i].X + m.Right[i].X) / 2, (m.Left[i].Y + m.Right[i].Y) / 2, 0.08f);
@@ -122,9 +154,22 @@ namespace Traffic.Lab
             foreach (Marking m in world.Markings)
             {
                 FlatBuilder b = m.Yellow ? yellow : white;
-                if (m.DashOn > 0) b.Dashed(m.Pts, m.Width, m.DashOn, m.DashOff, 0.07f);
-                else if (m.Peak > 0) b.Line(m.Pts, m.Width, 0.07f, m.Peak);
-                else b.Line(m.Pts, m.Width, 0.07f);
+                if (m.Heights != null && m.Peak > 0)
+                {
+                    // On a bridge the paint follows the deck up and over.
+                    if (m.DashOn > 0) b.Dashed(m.Pts, m.Heights, m.Width, m.DashOn, m.DashOff, 0.07f);
+                    else b.Line(m.Pts, m.Heights, m.Width, 0.07f);
+                    continue;
+                }
+                // In a tunnel only the open ends are painted.
+                List<int[]> runs = m.Heights != null ? Runs(m.Heights, false) : null;
+                if (runs == null) runs = new List<int[]> { new[] { 0, m.Pts.Length - 1 } };
+                foreach (int[] run in runs)
+                {
+                    Vec[] pts = Part(m.Pts, run);
+                    if (m.DashOn > 0) b.Dashed(pts, m.Width, m.DashOn, m.DashOff, 0.07f);
+                    else b.Line(pts, m.Width, 0.07f);
+                }
             }
             foreach (ArrowMark arrow in world.Arrows) PaintArrows(arrow, white, red);
             MeshKit.Spawn("White paint", white.Build(), MeshKit.Lit(MeshKit.Hex(0xe8ecf1), 0), root, false);
@@ -163,6 +208,38 @@ namespace Traffic.Lab
             nodeRing.gameObject.SetActive(false);
 
             AddScenery(world, root);
+        }
+
+        /// <summary>How far below the ground a tunnel is before it is covered over and out of sight.</summary>
+        public const double Covered = 2.4;
+
+        /// <summary>
+        /// The stretches of a tunnel that are covered over, or the stretches still open to the
+        /// sky, as first and last positions along its points. Neighboring stretches share an end.
+        /// </summary>
+        private static List<int[]> Runs(double[] heights, bool covered)
+        {
+            var runs = new List<int[]>();
+            int start = -1;
+            for (int i = 0; i + 1 < heights.Length; i++)
+            {
+                bool under = (heights[i] + heights[i + 1]) / 2 < -Covered;
+                if (under == covered && start < 0) start = i;
+                if (under != covered && start >= 0)
+                {
+                    runs.Add(new[] { start, i });
+                    start = -1;
+                }
+            }
+            if (start >= 0) runs.Add(new[] { start, heights.Length - 1 });
+            return runs;
+        }
+
+        private static Vec[] Part(Vec[] pts, int[] run)
+        {
+            var part = new Vec[run[1] - run[0] + 1];
+            System.Array.Copy(pts, run[0], part, 0, part.Length);
+            return part;
         }
 
         // ------------------------------------------------------------ ground

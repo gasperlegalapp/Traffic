@@ -150,7 +150,7 @@ internal static class Program
         var states = new (string Name, Action<Dock> Set, DockKind Point, int Index)[]
         {
             ("Building, pointing at the wide avenue", d => { d.Building = true; d.Road = 0; d.CanUndo = true; d.Hint = "Click where the road starts."; }, DockKind.Road, 3),
-            ("Building a curve, pointing at the three-lane highway", d => { d.Building = true; d.Shape = 1; d.Road = 5; d.CanUndo = true; d.CanRedo = true; d.Hint = "Move the pointer to pull the road into a curve, then click."; }, DockKind.Road, 8),
+            ("Building a curve on a bridge, pointing at bridge level 2", d => { d.Building = true; d.Shape = 1; d.Road = 5; d.Height = 1; d.CanUndo = true; d.CanRedo = true; d.Hint = "Move the pointer to pull the road into a curve, then click."; }, DockKind.Height, 2),
             ("Bulldozing", d => { d.Building = true; d.Tool = 1; d.Hint = "Click a road to remove it."; }, DockKind.Tool, 1),
             ("Driving on your own map", d => { d.Rate = 1; }, DockKind.Build, 0),
             ("Driving, paused, on a built-in map", d => { d.OwnMap = false; d.Paused = true; d.Rate = 2; }, DockKind.Pause, 0),
@@ -158,6 +158,7 @@ internal static class Program
         for (int i = 0; i < states.Length; i++)
         {
             var dock = new Dock { OwnMap = true, Roads = roads.ToArray() };
+            dock.HeightNotes[2] = "33 ft up.  Costs 3 times as much.\nIt needs 230 ft at each end to climb, so at least 520 ft in all.\nIt crosses other roads without meeting them, given a level's height between them. Roads can only join it at its ends.";
             states[i].Set(dock);
             dock.Layout(w, h);
             s.OffsetY = i * h;

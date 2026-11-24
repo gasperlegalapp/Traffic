@@ -509,6 +509,82 @@ namespace Traffic.Tests
             Assert.Less(longestStop, 120, "a vehicle sat still for two minutes");
         }
 
+        // ---------------------------------------------------------------- bridges and tunnels
+
+        /// <summary>An avenue running east-west, with a street carried over it on a bridge and another taken under it in a tunnel.</summary>
+        public static EditableMap OverAndUnder()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-350, 0), P(350, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(-150, -200), P(-150, 200), T("s2"), true, null, 1), "bridge");
+            Assert.IsNull(map.TryAdd(P(150, -200), P(150, 200), T("s2"), true, null, -1), "tunnel");
+            return map;
+        }
+
+        [Test]
+        public void ABridgeOrTunnelCrossesARoadWithoutMeetingIt()
+        {
+            EditableMap map = OverAndUnder();
+            Assert.AreEqual(3, map.Segments.Count, "nothing was cut");
+            World world = map.ToWorld();
+            Assert.AreEqual(0, world.Nodes.Count(n => n.Arms.Count > 2), "no intersections");
+            Lane up = world.Lanes.First(l => l.Kind == LaneKind.Road && l.Peak > 0), down = world.Lanes.First(l => l.Kind == LaneKind.Road && l.Peak < 0);
+            Assert.AreEqual(5, up.HeightAt(up.Length / 2), 0.01);
+            Assert.AreEqual(-5, down.HeightAt(down.Length / 2), 0.01);
+            Assert.AreEqual(0, up.HeightAt(0), 0.01);
+            Assert.AreEqual(5, up.HeightAt(45), 0.01, "level after a 40 m ramp");
+            Assert.IsTrue(world.Surfaces.Any(s => s.Heights != null && s.Heights.Max() > 4.9));
+            Assert.IsTrue(world.Surfaces.Any(s => s.Heights != null && s.Heights.Min() < -4.9));
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.AreEqual(1, loaded.Segments.Count(s => s.Level == 1));
+            Assert.AreEqual(1, loaded.Segments.Count(s => s.Level == -1));
+        }
+
+        [Test]
+        public void HeightHasRules()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-350, 0), P(350, 0), T("a4"), true));
+            // Too short to get up and down again.
+            StringAssert.StartsWith("Too short to climb", map.TryAdd(P(0, -40), P(0, 40), T("s2"), true, null, 1));
+            // Crossing while still on the ramp, too near the ground.
+            StringAssert.StartsWith("Not enough room", map.TryAdd(P(0, -10), P(0, 200), T("s2"), true, null, 1));
+            // A higher bridge needs a longer run.
+            Assert.IsNotNull(map.TryAdd(P(0, -100), P(0, 100), T("s2"), true, null, 3));
+            Assert.IsNull(map.TryAdd(P(0, -130), P(0, 130), T("s2"), true, null, 3));
+            // Nothing may join a bridge part-way along.
+            StringAssert.Contains("only join a bridge or tunnel at its ends", map.TryAdd(P(200, 60), P(0, 60), T("s2"), true));
+            // A second bridge over the same spot must be a level higher or lower than the first.
+            Assert.IsNotNull(map.TryAdd(P(-130, 10), P(130, 10), T("s2"), true, null, 3));
+            Assert.IsNull(map.TryAdd(P(-130, 10), P(130, 10), T("s2"), false, null, 2));
+            // A bridge costs more than the same road on the ground, and a tunnel more again.
+            double length;
+            Assert.AreEqual(2 * 200 * 2, EditableMap.CostOf(P(0, 0), P(0, 200), T("s2"), null, out length, 1), 0.5);
+            Assert.AreEqual(3 * 200 * 2, EditableMap.CostOf(P(0, 0), P(0, 200), T("s2"), null, out length, -1), 0.5);
+        }
+
+        [Test]
+        public void TrafficPassesOverAndUnderWithoutCrashing()
+        {
+            var sim = new Simulation(OverAndUnder().ToWorld(), 4);
+            sim.ArrivalsPerMinute = 6;
+            bool sawOver = false, sawUnder = false;
+            Action watch = () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    c.Drv.Compliance = 1;
+                    if (c.Height > 4) sawOver = true;
+                    if (c.Height < -4) sawUnder = true;
+                }
+            };
+            Grid.Run(sim, 300, watch);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 80);
+            Assert.IsTrue(sawOver && sawUnder);
+        }
+
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>
         private static EditableMap Town()
         {
