@@ -116,13 +116,14 @@ namespace Traffic.Lab
             sun.transform.SetParent(transform, false);
             sun.type = LightType.Directional;
             sun.color = MeshKit.Hex(0xfff1d6);
-            sun.intensity = 0.8f;
+            // The same numbers come out darker under URP than under the built-in pipeline, so each gets its own.
+            sun.intensity = MeshKit.Scriptable ? 1.25f : 0.8f;
             sun.shadows = LightShadows.Soft;
             sun.shadowStrength = 0.6f;
             sun.transform.rotation = Quaternion.LookRotation(new Vector3(140, -260, 120));
 
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = MeshKit.Hex(0x4a5258);
+            RenderSettings.ambientLight = MeshKit.Scriptable ? MeshKit.Hex(0x8e99a3) : MeshKit.Hex(0x4a5258);
             RenderSettings.fog = false;
             // Shadows should reach across the whole map. The setting lives in a different place under each pipeline.
             QualitySettings.shadowDistance = 3000;
