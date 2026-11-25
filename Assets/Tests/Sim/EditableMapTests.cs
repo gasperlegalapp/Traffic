@@ -973,6 +973,135 @@ namespace Traffic.Tests
             Assert.Greater(round.Left, 6, "traffic goes round the loop and back out the way it came");
         }
 
+        // ---------------------------------------------------------------- extra lanes
+
+        private static int RoadLanes(World world)
+        {
+            return world.Lanes.Count(l => l.Kind == LaneKind.Road);
+        }
+
+        [Test]
+        public void ALaneCanBeAddedAlongPartOfARoad()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("s2"), true));
+            double before = map.Cost();
+            // On the south side, which is the right of the traffic heading east, from 100 m in to 220 m in.
+            Assert.IsNull(map.TryAddLane(P(-100, -5), P(20, -5), false), "trying it changes nothing");
+            Assert.AreEqual(0, map.Segments[0].Extras.Count);
+            Assert.IsNull(map.TryAddLane(P(-100, -5), P(20, -5), true));
+            Assert.AreEqual(1, map.Segments[0].Extras.Count);
+            Assert.IsTrue(map.Segments[0].Extras[0].Forward);
+            Assert.AreEqual(before + 120 * 1, map.Cost(), 1, "a lane of a street is half the price of the street");
+
+            World world = map.ToWorld();
+            Assert.AreEqual(3, RoadLanes(world));
+            Lane extra = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Slot == 1);
+            Assert.AreEqual(120, extra.Length, 3);
+            Assert.Greater(Math.Cos(extra.Path.At(10).H), 0.9, "it runs east, with the traffic on that side");
+            Assert.Less(extra.Path.At(10).Y, -4, "outside the lane that was there");
+            Assert.IsNull(extra.Connectors, "it starts and ends by itself, joined to nothing");
+            Assert.AreEqual(1, extra.Lefts.Count, "traffic moves over into it and back from the lane beside it");
+
+            // The line shown before it is built runs where the lane then does.
+            Vec[] shown = map.LaneLine(P(-100, -5), P(20, -5));
+            Assert.AreEqual(extra.Path.At(60).Y, shown[shown.Length / 2].Y, 0.3);
+
+            // The other side of the same road, the other way.
+            Assert.IsNull(map.TryAddLane(P(150, 6), P(60, 6), true));
+            Assert.AreEqual(4, RoadLanes(map.ToWorld()));
+            Assert.AreEqual(2, map.Segments[0].Extras.Count);
+
+            Assert.IsNotNull(map.TryAddLane(P(-100, -5), P(-90, -5), true), "too short");
+            Assert.IsNotNull(map.TryAddLane(P(-100, -5), P(-100, 300), true), "not on a road at the far end");
+            Assert.IsNotNull(map.TryAddLane(P(0, 300), P(50, 300), true), "not on a road at all");
+        }
+
+        [Test]
+        public void ALaneRunningToAJunctionBecomesALaneOfIt()
+        {
+            EditableMap map = Cross(2, 40);
+            World plain = map.ToWorld();
+            // Along the last 80 m of the western arm, eastbound: a lane to turn from at the light.
+            Assert.IsNull(map.TryAddLane(P(-80, -5), P(-6, -5), true));
+            World world = map.ToWorld();
+            Assert.AreEqual(RoadLanes(plain) + 1, RoadLanes(world));
+            Node crossing = world.Nodes.Single(n => n.Arms.Count == 4);
+            Assert.AreEqual(5, crossing.Arms.Sum(a => a.Inbound.Count), "five lanes now arrive at the light");
+
+            var sim = new Simulation(world, 5);
+            sim.ArrivalsPerMinute = 14;
+            Grid.Run(sim, 300);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 30);
+        }
+
+        [Test]
+        public void TrafficUsesAnAddedLaneAndGetsBackOutOfIt()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-400, 0), P(400, 0), T("s1"), true));
+            Assert.IsNull(map.TryAddLane(P(-150, -3), P(150, -3), true));
+            World world = map.ToWorld();
+            Lane extra = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Slot == 1);
+            var sim = new Simulation(world, 9);
+            sim.ArrivalsPerMinute = 22;
+            int inIt = 0;
+            Grid.Run(sim, 400, () =>
+            {
+                foreach (Car c in sim.Cars) if (c.Lane == extra.Id) inIt++;
+            });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 60, "nobody is left stuck at the end of the lane");
+            Assert.Greater(inIt, 0, "and some did use it");
+        }
+
+        [Test]
+        public void ALaneCarriesOnAcrossThePiecesOfARoadAndComesOffInOne()
+        {
+            // A road in three pieces, the middle one drawn the other way round.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(-60, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(60, 10), P(-60, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(60, 10), P(200, 10), T("s2"), true));
+            Assert.IsNull(map.TryAddLane(P(-150, -5), P(150, 5), true));
+            Assert.AreEqual(3, map.Segments.Count(s => s.Extras.Count == 1));
+            World world = map.ToWorld();
+            Assert.AreEqual(3, RoadLanes(world), "one lane, not three end to end");
+            Assert.AreEqual(300, world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Slot == 1).Length, 8);
+
+            Assert.IsNotNull(map.ExtraLaneAt(P(0, -2.5)), "the pointer over the added lane finds it");
+            Assert.IsNull(map.ExtraLaneAt(P(0, 6)), "but not from the other side of the road");
+            Assert.IsNotNull(map.TryRemoveLane(P(0, 9), true));
+            Assert.IsNull(map.TryRemoveLane(P(0, -2.5), true));
+            Assert.AreEqual(0, map.Segments.Sum(s => s.Extras.Count), "all three parts go together");
+        }
+
+        [Test]
+        public void ExtraLanesSurviveSavingSplittingAndReplacing()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("s2"), true));
+            Assert.IsNull(map.TryAddLane(P(-100, -5), P(100, -5), true));
+            Assert.IsNull(map.TryAddLane(P(120, 5), P(40, 5), true));
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.AreEqual(2, loaded.Segments[0].Extras.Count);
+
+            // A road drawn to the middle cuts the lane in two parts that are still one lane on the ground... until the junction divides them.
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 200), T("s2"), true));
+            Assert.AreEqual(3, map.Segments.Sum(s => s.Extras.Count), "the south lane is on both halves, the north lane on one");
+            World world = map.ToWorld();
+            Assert.AreEqual(6 + 3, RoadLanes(world));
+            double south = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Slot == 1 && l.Path.At(1).Y < 0).Sum(l => l.Length);
+            Assert.AreEqual(200 - 2 * world.Nodes.Single(n => n.Arms.Count == 3).Radius, south, 6);
+
+            // Made one-way, a road keeps only the lane on the side its traffic is on.
+            Assert.IsNull(map.TryReplace(P(100, 0), T("s1"), true));
+            EditSegment east = map.Segments.Single(s => s.Type.Id == "s1");
+            Assert.IsTrue(east.Extras.All(x => x.Forward));
+        }
+
         // ---------------------------------------------------------------- levels
 
         /// <summary>One way of solving each level, in order.</summary>

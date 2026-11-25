@@ -799,6 +799,7 @@ namespace Traffic.Lab
                             pen.Shape = e.keyCode - KeyCode.Alpha1;
                         }
                         else if (e.keyCode == KeyCode.M) pen.Tool = RoadPen.Move;
+                        else if (e.keyCode == KeyCode.L) pen.Tool = RoadPen.Lane;
                         else if (e.keyCode == KeyCode.R) pen.Tool = RoadPen.Replace;
                         else if (e.keyCode == KeyCode.B) pen.Tool = RoadPen.Bulldoze;
                     }

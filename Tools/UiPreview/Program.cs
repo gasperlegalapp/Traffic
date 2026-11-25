@@ -349,6 +349,16 @@ internal static class PenScenes
         Click(pen, -60, -110, px);
         add("Crossing two roads: a ring where each intersection will be", pen, 20, 100, 0, 0, z);
 
+        pen = New("s2", -150, 20, 150, 20);
+        pen.Tool = RoadPen.Lane;
+        Click(pen, -90, 15, px);
+        add("Lane tool: a lane being added along the south side", pen, 70, 14, 0, 0, z);
+
+        pen = New("s2", -150, 20, 150, 20);
+        pen.Map.TryAddLane(P(-90, 15), P(70, 15), true);
+        pen.Tool = RoadPen.Lane;
+        add("Lane tool: over an added lane, a click removes it", pen, 0, 14.5, 0, 0, z);
+
         // The same curve from far out, where a meter is a fraction of a pixel: the outlines and pins keep their size on screen.
         pen = New("s2", -500, -200, 500, -200);
         pen.Shape = RoadPen.Curve;

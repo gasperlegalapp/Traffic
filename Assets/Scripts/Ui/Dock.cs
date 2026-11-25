@@ -66,9 +66,9 @@ namespace Traffic.Ui
         /// <summary>True on the map the player draws, which is the only one that can be built on.</summary>
         public bool OwnMap;
         public bool Building, Paused, CanUndo, CanRedo;
-        /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen, 3 moves and bends what is there.</summary>
+        /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen, 3 moves and bends what is there, 4 adds and removes lanes.</summary>
         public int Tool;
-        private static readonly string[] ToolIcons = { "road", "bulldoze", "replace", "move" };
+        private static readonly string[] ToolIcons = { "road", "bulldoze", "replace", "move", "lane" };
         public int Shape, Road, Rate;
         /// <summary>Snapping: pull new roads into line with the roads they start from, and keep points to a grid.</summary>
         public bool SnapAngles, SnapGrid;
@@ -110,6 +110,7 @@ namespace Traffic.Ui
             if (Building)
             {
                 Add(DockKind.Tool, 0, Button);
+                Add(DockKind.Tool, 4, Button);
                 Add(DockKind.Tool, 3, Button);
                 Add(DockKind.Tool, 2, Button);
                 Add(DockKind.Tool, 1, Button);
@@ -426,11 +427,12 @@ namespace Traffic.Ui
             switch (item.Kind)
             {
                 case DockKind.Tool:
-                    title = item.Index == 0 ? "Road" : item.Index == 1 ? "Bulldoze" : item.Index == 2 ? "Replace" : "Move";
+                    title = item.Index == 0 ? "Road" : item.Index == 1 ? "Bulldoze" : item.Index == 2 ? "Replace" : item.Index == 3 ? "Move" : "Lane";
                     body = item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground.\nKeys 1, 2 and 3 pick the shape."
                         : item.Index == 1 ? "Click a road to remove it.\nKey B."
                         : item.Index == 2 ? "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.\nKey R."
-                        : "Drag a point to move it, and the roads that meet there follow.\nDrag the middle of a road to bend it into a curve, or pull a curve back straight.\nKey M.";
+                        : item.Index == 3 ? "Drag a point to move it, and the roads that meet there follow.\nDrag the middle of a road to bend it into a curve, or pull a curve back straight.\nKey M."
+                        : "Add a lane along part of a road: room to pull over, to pass, or to wait to turn. Click the side of the road where it should start, then where it should end.\nRun it right to the end of the road and it becomes a lane of the junction there. Click an added lane to remove it.\nKey L.";
                     break;
                 case DockKind.Undo:
                     title = "Undo";

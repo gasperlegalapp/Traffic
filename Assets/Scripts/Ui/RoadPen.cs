@@ -19,7 +19,7 @@ namespace Traffic.Ui
     public sealed class RoadPen
     {
         /// <summary>The tools, numbered as the toolbar numbers them.</summary>
-        public const int Road = 0, Bulldoze = 1, Replace = 2, Move = 3;
+        public const int Road = 0, Bulldoze = 1, Replace = 2, Move = 3, Lane = 4;
         /// <summary>The shapes a road can be drawn in.</summary>
         public const int Straight = 0, Curve = 1, Roundabout = 2;
 
@@ -222,6 +222,7 @@ namespace Traffic.Ui
                 if (tool == Bulldoze) return "Click a road to remove it.";
                 if (tool == Replace) return "Click a road to change it to the kind chosen.";
                 if (tool == Move) return "Drag a point to move it. Drag the middle of a road to bend it, or pull it back straight.";
+                if (tool == Lane) return hasStart ? "Click where the lane should end, on the same road. Right-click to stop." : "Click the side of a road where a lane should start. Click an added lane to remove it.";
                 if (shape == Roundabout) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
                 if (!hasStart)
                 {
@@ -261,6 +262,31 @@ namespace Traffic.Ui
                 return refused == null;
             }
             if (tool == Move) return false;
+            if (tool == Lane)
+            {
+                if (hasStart)
+                {
+                    refused = map.TryAddLane(start, p, true);
+                    if (refused != null) return false;
+                    hasStart = false;
+                    return true;
+                }
+                // On an added lane, a click takes it away; anywhere else on a road, it starts a new one.
+                if (map.ExtraLaneAt(p) != null)
+                {
+                    refused = map.TryRemoveLane(p, true);
+                    return refused == null;
+                }
+                Vec on;
+                if (map.NearestSegment(p, LaneReach, out on) < 0)
+                {
+                    refused = "Click the side of a road where the lane should start.";
+                    return false;
+                }
+                start = p;
+                hasStart = true;
+                return false;
+            }
 
             if (shape == Roundabout)
             {
@@ -493,11 +519,12 @@ namespace Traffic.Ui
             if (!hasPointer)
             {
                 // Over the toolbar or a panel: only where the half-drawn road starts.
-                if (hasStart && tool == Road) Ghost.Pin(start, true, false);
+                if (hasStart && (tool == Road || tool == Lane)) Ghost.Pin(start, true, false);
                 return;
             }
             if (tool == Bulldoze || tool == Replace) OverRoad();
             else if (tool == Move) Handles();
+            else if (tool == Lane) LanePicture();
             else if (shape == Roundabout) RingPicture();
             else RoadPicture();
             // With nothing else to say, say what is wrong with a ringed place the pointer is on.
@@ -569,6 +596,45 @@ namespace Traffic.Ui
             Ghost.Road(line, type.Width, type.OneWay, problem == null);
             double change = (type.CostPerMeter - s.Type.CostPerMeter) * Ghost.Length(line) * EditableMap.CostTimes(s.Level);
             Note = problem ?? (change >= 0 ? "+" : "−") + Money(Math.Abs(change));
+            NoteBad = problem != null;
+        }
+
+        /// <summary>How near a road the pointer has to be to work on its lanes.</summary>
+        private const double LaneReach = EditableMap.SnapRoad * 2.2;
+
+        /// <summary>A lane that is not there yet, or one about to go: a band one lane wide with a firm line down each side.</summary>
+        private void LaneBand(Vec[] line, bool good)
+        {
+            double half = NetworkBuilder.LaneW / 2, rim = Ghost.AtLeast(0.4, 2.2);
+            Ghost.Band(line, -half, half, good ? Ghost.GoodFill : Ghost.BadFill);
+            Ghost.Band(line, -half - rim / 2, -half + rim / 2, good ? Ghost.GoodEdge : Ghost.BadEdge);
+            Ghost.Band(line, half - rim / 2, half + rim / 2, good ? Ghost.GoodEdge : Ghost.BadEdge);
+        }
+
+        /// <summary>The lane tool: the lane about to be added along the side of a road, or the added lane about to be removed.</summary>
+        private void LanePicture()
+        {
+            Vec on;
+            if (!hasStart)
+            {
+                Vec[] there = map.ExtraLaneAt(pointer);
+                if (there != null)
+                {
+                    LaneBand(there, false);
+                    Note = "Click to remove this lane.";
+                }
+                else if (map.NearestSegment(pointer, LaneReach, out on) >= 0) Ghost.Pin(on, true, true);
+                return;
+            }
+            string problem = Checked(pointer, () => map.TryAddLane(start, pointer, false));
+            Vec[] line = map.LaneLine(start, pointer);
+            double length = line == null ? 0 : Ghost.Length(line);
+            if (length > 1) LaneBand(line, problem == null);
+            int road = map.NearestSegment(start, LaneReach, out on);
+            if (road >= 0) Ghost.Pin(on, problem == null || length <= 1, false);
+            // Off the road altogether there is no lane to show, only the reason.
+            if (length <= 1 && (problem == null || Dist(pointer, start) < 5)) return;
+            Note = problem ?? Ft(length) + "   " + Money(length * EditableMap.LanePrice(map.Segments[road].Type));
             NoteBad = problem != null;
         }
 

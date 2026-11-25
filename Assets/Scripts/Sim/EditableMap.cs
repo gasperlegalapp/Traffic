@@ -107,6 +107,20 @@ namespace Traffic.Sim
         public bool Locked;
         /// <summary>Part of a roundabout. Where a road meets one there are no lights or signs: traffic going round has the right of way.</summary>
         public bool Ring;
+        /// <summary>Lanes added along parts of it.</summary>
+        public List<ExtraLane> Extras = new List<ExtraLane>();
+    }
+
+    /// <summary>
+    /// An extra lane along part of a stretch of road, outside its ordinary lanes: room to pull
+    /// over, a lane to pass in, or, where it runs to the end of the road, a lane to turn from.
+    /// </summary>
+    public sealed class ExtraLane
+    {
+        /// <summary>True on the side of the traffic that runs from the stretch's A end to its B end; false on the other side.</summary>
+        public bool Forward;
+        /// <summary>Where it starts and ends, as shares of the way from A to B (0 to 1).</summary>
+        public double From, To;
     }
 
     /// <summary>A place where the roads as drawn cannot work, and why.</summary>
@@ -164,7 +178,12 @@ namespace Traffic.Sim
             copy.Nodes.AddRange(Nodes);
             copy.Ends = Ends;
             copy.Bound = Bound;
-            foreach (EditSegment s in Segments) copy.Segments.Add(new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked });
+            foreach (EditSegment s in Segments)
+            {
+                var piece = new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked };
+                foreach (ExtraLane x in s.Extras) piece.Extras.Add(new ExtraLane { Forward = x.Forward, From = x.From, To = x.To });
+                copy.Segments.Add(piece);
+            }
             return copy;
         }
 
@@ -513,6 +532,205 @@ namespace Traffic.Sim
             return places;
         }
 
+        // ---------------------------------------------------------------- extra lanes
+
+        /// <summary>
+        /// Where a point lies on the roads, for work on their lanes: the piece, how far along it
+        /// (0 to 1), and whether it is on the side of the traffic running from A to B.
+        /// </summary>
+        private bool OnRoad(Vec p, out int segment, out double t, out bool forward, out double across)
+        {
+            Vec on;
+            forward = true;
+            across = 0;
+            segment = NearestSegment(p, SnapRoad * 2.2, out on, out t);
+            if (segment < 0) return false;
+            EditSegment s = Segments[segment];
+            Vec a = PointAt(s, Math.Max(t - 0.01, 0)), b = PointAt(s, Math.Min(t + 0.01, 1));
+            // To the right of the way from A to B is the side of the traffic going that way.
+            forward = s.Type.OneWay || (b.X - a.X) * (p.Y - on.Y) - (b.Y - a.Y) * (p.X - on.X) <= 0;
+            across = Dist(p, on);
+            return true;
+        }
+
+        /// <summary>How far from the line a road is drawn along the outside edge of its ordinary lanes is, on one side.</summary>
+        private static double LaneEdge(RoadType type, bool forward)
+        {
+            if (type.OneWay) return type.Forward * NetworkBuilder.LaneW + type.Inner;
+            return (forward ? type.Forward : type.Backward) * NetworkBuilder.LaneW + type.Inner;
+        }
+
+        private static void AddExtra(EditSegment s, bool forward, double from, double to)
+        {
+            // Lanes on the same side that touch or overlap become one.
+            for (int i = s.Extras.Count - 1; i >= 0; i--)
+            {
+                ExtraLane x = s.Extras[i];
+                if (x.Forward != forward || x.From > to + 1e-4 || x.To < from - 1e-4) continue;
+                from = Math.Min(from, x.From);
+                to = Math.Max(to, x.To);
+                s.Extras.RemoveAt(i);
+            }
+            s.Extras.Add(new ExtraLane { Forward = forward, From = from, To = to });
+        }
+
+        /// <summary>
+        /// The stretch of one road between two points on it, as parts of its pieces: for each,
+        /// the piece, the side, and where the stretch starts and ends on it (from A to B). The
+        /// side is the one the first point is on. Null if the points are not on one road.
+        /// </summary>
+        private List<KeyValuePair<EditSegment, ExtraLane>> Between(Vec p, Vec q)
+        {
+            int sp, sq;
+            double tp, tq, across;
+            bool side, other;
+            if (!OnRoad(p, out sp, out tp, out side, out across) || !OnRoad(q, out sq, out tq, out other, out across)) return null;
+            foreach (Run run in Runs())
+            {
+                int ip = run.Pieces.IndexOf(Segments[sp]), iq = run.Pieces.IndexOf(Segments[sq]);
+                if (ip < 0 || iq < 0) continue;
+                // Measured along the run: which piece, and how far through it.
+                double from = ip + (run.Turned[ip] ? 1 - tp : tp), to = iq + (run.Turned[iq] ? 1 - tq : tq);
+                bool withRun = side != run.Turned[ip];
+                if (from > to)
+                {
+                    double swap = from;
+                    from = to;
+                    to = swap;
+                }
+                var parts = new List<KeyValuePair<EditSegment, ExtraLane>>();
+                for (int i = (int)Math.Floor(from); i <= Math.Min((int)Math.Floor(to), run.Pieces.Count - 1); i++)
+                {
+                    double f0 = Math.Max(from - i, 0), f1 = Math.Min(to - i, 1);
+                    if (f1 - f0 < 1e-4) continue;
+                    bool turned = run.Turned[i];
+                    parts.Add(new KeyValuePair<EditSegment, ExtraLane>(run.Pieces[i], new ExtraLane { Forward = withRun != turned, From = turned ? 1 - f1 : f0, To = turned ? 1 - f0 : f1 }));
+                }
+                return parts;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Add a lane along a road from one point on it to another, on the side the first point
+        /// is on: outside the lanes of the traffic on that side. Both points must be on one road,
+        /// with no junction between them. Returns null if it was added, or a short reason why not.
+        /// </summary>
+        public string TryAddLane(Vec p, Vec q, bool commit)
+        {
+            EditableMap work = Clone();
+            List<KeyValuePair<EditSegment, ExtraLane>> parts = work.Between(p, q);
+            if (parts == null) return "A lane runs along one road: start and end it on the same road, with no junction between.";
+            double length = 0;
+            foreach (KeyValuePair<EditSegment, ExtraLane> part in parts)
+            {
+                if (part.Key.Locked) return "That road came with the level.";
+                if (part.Key.Ring) return "A roundabout's ring has one lane.";
+                if (part.Key.Level != 0) return "A bridge or tunnel cannot be widened.";
+                length += (part.Value.To - part.Value.From) * LengthOf(work.Trace(part.Key));
+            }
+            if (length < ShortestLane) return "Too short for a lane: it needs at least " + Math.Round(ShortestLane * 3.28084 / 10) * 10 + " ft.";
+            foreach (KeyValuePair<EditSegment, ExtraLane> part in parts) AddExtra(part.Key, part.Value.Forward, part.Value.From, part.Value.To);
+            string problem = work.Unbuildable(this, "There is not room for a lane there.");
+            if (problem != null) return problem;
+            if (commit) Segments = work.Segments;
+            return null;
+        }
+
+        /// <summary>
+        /// The line down the middle of the lane that TryAddLane would add between two points,
+        /// for showing it before it is built. Null if the points are not on one road.
+        /// </summary>
+        public Vec[] LaneLine(Vec p, Vec q)
+        {
+            List<KeyValuePair<EditSegment, ExtraLane>> parts = Between(p, q);
+            return parts == null || parts.Count == 0 ? null : LaneLine(parts);
+        }
+
+        private Vec[] LaneLine(List<KeyValuePair<EditSegment, ExtraLane>> parts)
+        {
+            // Each part, run the way its own traffic goes; then the parts in whatever order joins them up.
+            var lines = new List<Vec[]>();
+            foreach (KeyValuePair<EditSegment, ExtraLane> part in parts)
+            {
+                EditSegment s = part.Key;
+                ExtraLane x = part.Value;
+                int steps = Math.Max(2, (int)Math.Ceiling((x.To - x.From) * LengthOf(Trace(s)) / 3));
+                var middle = new Vec[steps + 1];
+                for (int k = 0; k <= steps; k++) middle[k] = PointAt(s, x.From + (x.To - x.From) * k / steps);
+                if (!x.Forward) Array.Reverse(middle);
+                lines.Add(Geo.Offset(middle, LaneEdge(s.Type, x.Forward) + NetworkBuilder.LaneW / 2));
+            }
+            var line = new List<Vec>(lines[0]);
+            for (int i = 1; i < lines.Count; i++)
+            {
+                Vec[] next = lines[i];
+                if (Dist(line[line.Count - 1], next[0]) <= Dist(line[0], next[next.Length - 1])) line.AddRange(next);
+                else line.InsertRange(0, next);
+            }
+            return line.ToArray();
+        }
+
+        /// <summary>The extra lane under a point, as the line down its middle, or null. The point has to be out over the lane itself, not the ordinary lanes inside it.</summary>
+        public Vec[] ExtraLaneAt(Vec p)
+        {
+            List<KeyValuePair<EditSegment, ExtraLane>> found = ExtraParts(p);
+            return found == null ? null : LaneLine(found);
+        }
+
+        /// <summary>The extra lane under a point, as the part of it on each piece it runs along: where neighboring pieces carry it on, all of it.</summary>
+        private List<KeyValuePair<EditSegment, ExtraLane>> ExtraParts(Vec p)
+        {
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return null;
+            EditSegment s = Segments[seg];
+            if (across < LaneEdge(s.Type, forward) - 1) return null;
+            ExtraLane under = s.Extras.Find(x => x.Forward == forward && t >= x.From - 1e-6 && t <= x.To + 1e-6);
+            if (under == null) return null;
+            var parts = new List<KeyValuePair<EditSegment, ExtraLane>> { new KeyValuePair<EditSegment, ExtraLane>(s, under) };
+            // Follow it on to the next piece at each end it runs right up to, for as long as that piece carries it on.
+            foreach (bool towardB in new[] { true, false })
+            {
+                EditSegment piece = s;
+                ExtraLane lane = under;
+                bool goingToB = towardB;
+                while (goingToB ? lane.To > 1 - 1e-4 : lane.From < 1e-4)
+                {
+                    int node = goingToB ? piece.B : piece.A;
+                    List<EditSegment> here = RoadsAt(node);
+                    if (!CarriesOn(here, node)) break;
+                    EditSegment next = here[0] == piece ? here[1] : here[0];
+                    // The same side of the road, seen from the next piece: the other way round if the two were drawn toward each other.
+                    bool sameWay = (piece.B == node) != (next.B == node);
+                    bool side = sameWay ? lane.Forward : !lane.Forward, fromA = next.A == node;
+                    ExtraLane more = next.Extras.Find(x => x.Forward == side && (fromA ? x.From < 1e-4 : x.To > 1 - 1e-4));
+                    if (more == null || parts.Exists(k => k.Value == more)) break;
+                    parts.Add(new KeyValuePair<EditSegment, ExtraLane>(next, more));
+                    piece = next;
+                    lane = more;
+                    goingToB = fromA;
+                }
+            }
+            return parts;
+        }
+
+        /// <summary>Take away the extra lane under a point. Returns null if it was removed, or a short reason why not.</summary>
+        public string TryRemoveLane(Vec p, bool commit)
+        {
+            EditableMap work = Clone();
+            List<KeyValuePair<EditSegment, ExtraLane>> parts = work.ExtraParts(p);
+            if (parts == null) return "There is no added lane there.";
+            foreach (KeyValuePair<EditSegment, ExtraLane> part in parts)
+            {
+                if (part.Key.Locked) return "That road came with the level.";
+                part.Key.Extras.Remove(part.Value);
+            }
+            if (commit) Segments = work.Segments;
+            return null;
+        }
+
         // ---------------------------------------------------------------- what cannot work
 
         /// <summary>
@@ -757,7 +975,13 @@ namespace Traffic.Sim
         public double Cost()
         {
             double total = 0;
-            foreach (EditSegment s in Segments) if (!s.Locked) total += LengthOf(Trace(s)) * s.Type.CostPerMeter * CostTimes(s.Level);
+            foreach (EditSegment s in Segments)
+            {
+                if (s.Locked) continue;
+                double length = LengthOf(Trace(s));
+                total += length * s.Type.CostPerMeter * CostTimes(s.Level);
+                foreach (ExtraLane x in s.Extras) total += (x.To - x.From) * length * LanePrice(s.Type);
+            }
             return total;
         }
 
@@ -920,6 +1144,7 @@ namespace Traffic.Sim
             EditableMap work = Clone();
             EditSegment s = work.Segments[seg];
             s.Type = type;
+            if (type.OneWay) s.Extras.RemoveAll(x => !x.Forward);
             if (s.Curved && TightestRadius(work.Trace(s)) < type.MinRadius) return "Its curve is too tight for that kind of road.";
             string problem = work.NodeProblem(s.A) ?? work.NodeProblem(s.B) ?? work.Unbuildable(this, "There is not room for that kind of road there.");
             if (problem != null) return problem;
@@ -971,6 +1196,14 @@ namespace Traffic.Sim
                 rest.Mid = PointAt(s, (1 + t) / 2);
                 s.Mid = PointAt(s, t / 2);
             }
+            // An extra lane stays where it is on the ground: on one part, the other, or both.
+            var kept = new List<ExtraLane>();
+            foreach (ExtraLane x in s.Extras)
+            {
+                if (x.From < t - 1e-6) kept.Add(new ExtraLane { Forward = x.Forward, From = x.From / t, To = Math.Min(x.To, t) / t });
+                if (x.To > t + 1e-6) rest.Extras.Add(new ExtraLane { Forward = x.Forward, From = (Math.Max(x.From, t) - t) / (1 - t), To = (x.To - t) / (1 - t) });
+            }
+            s.Extras = kept;
             Segments.Add(rest);
             s.B = mid;
             return mid;
@@ -1328,6 +1561,8 @@ namespace Traffic.Sim
             public readonly List<int> Joints = new List<int>();
             /// <summary>For each joint, whether its corner is too sharp for the road: there was not room to round it.</summary>
             public bool[] Sharp;
+            /// <summary>Whether each end meets other roads, and so loses its last few meters to the junction there.</summary>
+            public bool JunctionAtFrom, JunctionAtTo;
             public Vec[] Trace;
         }
 
@@ -1406,7 +1641,12 @@ namespace Traffic.Sim
                 joint[s.A] = false;
                 walk(s.A, s);
             }
-            foreach (Run run in runs) Lay(run, at[run.From].Count > 1, at[run.To].Count > 1);
+            foreach (Run run in runs)
+            {
+                run.JunctionAtFrom = at[run.From].Count > 1;
+                run.JunctionAtTo = at[run.To].Count > 1;
+                Lay(run, run.JunctionAtFrom, run.JunctionAtTo);
+            }
             // In the order their first pieces were drawn, so that the network comes out the same however the walk went.
             var drawn = new Dictionary<EditSegment, int>();
             for (int i = 0; i < Segments.Count; i++) drawn[Segments[i]] = i;
@@ -1604,6 +1844,8 @@ namespace Traffic.Sim
                 bool withFirst = !run.Turned[0];
                 TrackSpec[] fwd = Tracks(withFirst ? type.Forward : type.Backward, joins[run.To], last, joins[run.From], first, length);
                 TrackSpec[] back = type.OneWay ? null : Tracks(withFirst ? type.Backward : type.Forward, joins[run.From], first, joins[run.To], last, length);
+                fwd = WithExtras(fwd, run, true);
+                if (back != null) back = WithExtras(back, run, false);
                 double speed = type.Mph * 0.44704;
                 bool rampAtFrom = joins[run.From] != null && joins[run.From].Ramp == first, rampAtTo = joins[run.To] != null && joins[run.To].Ramp == last;
                 if (rampAtFrom || rampAtTo)
@@ -1633,6 +1875,86 @@ namespace Traffic.Sim
                 foreach (Node node in world.Nodes) if (node.Terminal && Dist(node.Pos, end.At) < 2) node.Name = end.Name;
             }
             return world;
+        }
+
+        /// <summary>How long an extra lane has to be, meters, and how near the end of its road it is taken to run right to the end.</summary>
+        public const double ShortestLane = 24, LaneEndSnap = 10;
+        /// <summary>About how far a junction's stop lines are from its middle: the network works out the real figure.</summary>
+        private const double JunctionSize = 12;
+
+        /// <summary>What an extra lane costs a meter: the price of one lane of the road it is on.</summary>
+        public static double LanePrice(RoadType type)
+        {
+            return type.CostPerMeter / type.Lanes;
+        }
+
+        /// <summary>
+        /// The extra lanes on one side of a run, as stretches of the run from its start to its
+        /// end (shares of its length, 0 to 1). Extra lanes on neighboring pieces that meet end
+        /// to end are one lane. withRun is the side whose traffic goes the way the run does.
+        /// </summary>
+        private List<double[]> ExtrasAlong(Run run, bool withRun)
+        {
+            var lengths = new double[run.Pieces.Count];
+            double total = 0;
+            for (int i = 0; i < lengths.Length; i++) total += lengths[i] = LengthOf(Trace(run.Pieces[i]));
+            var spans = new List<double[]>();
+            double before = 0;
+            for (int i = 0; i < lengths.Length; i++)
+            {
+                foreach (ExtraLane x in run.Pieces[i].Extras)
+                {
+                    // A piece the run goes along backward has its sides, and its ends, the other way round.
+                    bool sideWithRun = x.Forward != run.Turned[i];
+                    if (sideWithRun != withRun) continue;
+                    double from = run.Turned[i] ? 1 - x.To : x.From, to = run.Turned[i] ? 1 - x.From : x.To;
+                    spans.Add(new[] { (before + from * lengths[i]) / total, (before + to * lengths[i]) / total });
+                }
+                before += lengths[i];
+            }
+            spans.Sort((x, y) => x[0].CompareTo(y[0]));
+            for (int i = spans.Count - 1; i > 0; i--)
+            {
+                if (spans[i][0] > spans[i - 1][1] + 1.5 / total) continue;
+                spans[i - 1][1] = Math.Max(spans[i - 1][1], spans[i][1]);
+                spans.RemoveAt(i);
+            }
+            // The network measures along the road between its junctions, which take up the first and last few meters of the run.
+            double lostAtFrom = run.JunctionAtFrom ? JunctionSize : 0, lostAtTo = run.JunctionAtTo ? JunctionSize : 0;
+            double road = Math.Max(total - lostAtFrom - lostAtTo, 1);
+            foreach (double[] span in spans)
+            {
+                for (int k = 0; k < 2; k++) span[k] = Geo.Clamp((span[k] * total - lostAtFrom) / road, 0, 1);
+                // One that all but reaches the end of the road runs right to it, to become a lane of the junction there.
+                if (span[0] * road < LaneEndSnap) span[0] = 0;
+                if ((1 - span[1]) * road < LaneEndSnap) span[1] = 1;
+            }
+            return spans;
+        }
+
+        /// <summary>The lanes of one direction of a run, with its extra lanes added outside them.</summary>
+        private TrackSpec[] WithExtras(TrackSpec[] tracks, Run run, bool withRun)
+        {
+            List<double[]> spans = ExtrasAlong(run, withRun);
+            if (spans.Count == 0) return tracks;
+            // Outside the ordinary lanes, and clear of any lane a merge has already added there.
+            int slot = 0;
+            double clear = 0;
+            foreach (TrackSpec t in tracks)
+            {
+                if (t.From == 0 && t.To == 1) slot = Math.Max(slot, t.Slot + 1);
+                else clear = Math.Max(clear, t.To);
+            }
+            var all = new List<TrackSpec>(tracks);
+            foreach (double[] span in spans)
+            {
+                // The run's own direction counts from its start; the other direction counts from its end.
+                double from = withRun ? span[0] : 1 - span[1], to = withRun ? span[1] : 1 - span[0];
+                if (clear > 0) from = Math.Max(from, clear + 0.02);
+                if (to - from <= 0.01) continue;
+                all.Add(new TrackSpec(slot, from, to));
+            }
+            return all.ToArray();
         }
 
         /// <summary>
@@ -1682,6 +2004,7 @@ namespace Traffic.Sim
                 if (s.Curved) sb.Append(',').Append(Num(s.Mid.X)).Append(',').Append(Num(s.Mid.Y)).Append(s.Ring ? ",ring" : ",arc");
                 if (s.Level != 0) sb.Append(",L").Append(s.Level);
                 if (s.Locked) sb.Append(",K");
+                foreach (ExtraLane x in s.Extras) sb.Append(",X").Append(x.Forward ? '+' : '-').Append(x.From.ToString("F4", CultureInfo.InvariantCulture)).Append(':').Append(x.To.ToString("F4", CultureInfo.InvariantCulture));
                 sb.Append(';');
             }
             return sb.ToString();
@@ -1704,7 +2027,14 @@ namespace Traffic.Sim
                 {
                     string[] f = item.Split(',');
                     var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]) };
-                    // Whether it came with a level, and after that its height, are the last things on the line.
+                    // Extra lanes come last of all: X, the side, and where each starts and ends.
+                    while (f[f.Length - 1].StartsWith("X"))
+                    {
+                        string[] ends = f[f.Length - 1].Substring(2).Split(':');
+                        s.Extras.Insert(0, new ExtraLane { Forward = f[f.Length - 1][1] == '+', From = double.Parse(ends[0], CultureInfo.InvariantCulture), To = double.Parse(ends[1], CultureInfo.InvariantCulture) });
+                        Array.Resize(ref f, f.Length - 1);
+                    }
+                    // Before them: whether it came with a level, and before that its height.
                     if (f[f.Length - 1] == "K")
                     {
                         s.Locked = true;
