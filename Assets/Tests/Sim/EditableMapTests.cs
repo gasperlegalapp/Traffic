@@ -1954,6 +1954,242 @@ namespace Traffic.Tests
             Assert.IsNotNull(oneWay.TrySetMiddleLane(P(0, 0), true, true));
         }
 
+        private static List<Lane> RoadLanes(EditableMap map)
+        {
+            return map.ToWorld().Lanes.Where(l => l.Kind == LaneKind.Road).ToList();
+        }
+
+        private static bool Eastbound(Lane lane)
+        {
+            return lane.Path.At(lane.Length).X > lane.Path.At(0).X;
+        }
+
+        [Test]
+        public void ALaneCanBeTurnedRound()
+        {
+            // A one-way street with a single lane, drawn west to east. Turned round it runs east to west, where it lay.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("s1"), true));
+            Assert.IsTrue(map.CouldReverseLane(P(0, 0)));
+            Assert.IsTrue(Eastbound(RoadLanes(map).Single()));
+            Assert.IsNull(map.TryReverseLane(P(0, 0), false), "trying it changes nothing");
+            Assert.IsTrue(Eastbound(RoadLanes(map).Single()));
+            Assert.IsNull(map.TryReverseLane(P(0, 0), true));
+            Lane only = RoadLanes(map).Single();
+            Assert.IsFalse(Eastbound(only));
+            Assert.AreEqual(0, only.Path.At(only.Length / 2).Y, 0.01, "in the same place");
+            Assert.AreEqual("s1", map.Segments[0].Type.Id);
+            Assert.IsNull(map.TryReverseLane(P(0, 0), true));
+            Assert.IsTrue(Eastbound(RoadLanes(map).Single()), "and back again");
+
+            // Two lanes one way: turn one round and it is a two-way street, on the same pavement.
+            var two = new EditableMap();
+            Assert.IsNull(two.TryAdd(P(-200, 0), P(200, 0), T("a1x2"), true));
+            Assert.IsNull(two.TryReverseLane(P(0, 1.5), true));
+            Assert.AreEqual(1, two.Segments[0].Type.Forward);
+            Assert.AreEqual(1, two.Segments[0].Type.Backward);
+            List<Lane> lanes = RoadLanes(two);
+            Assert.AreEqual(2, lanes.Count);
+            Lane east = lanes.Single(Eastbound), west = lanes.Single(l => !Eastbound(l));
+            Assert.AreEqual(-NetworkBuilder.LaneW / 2, east.Path.At(east.Length / 2).Y, 0.01, "traffic keeps to the right");
+            Assert.AreEqual(NetworkBuilder.LaneW / 2, west.Path.At(west.Length / 2).Y, 0.01);
+
+            // And a two-way street gives up a lane to become one-way, either way round.
+            Assert.IsNull(two.TryReverseLane(P(0, 2), true));
+            Assert.IsTrue(two.Segments[0].Type.OneWay);
+            lanes = RoadLanes(two);
+            Assert.AreEqual(2, lanes.Count);
+            Assert.IsTrue(lanes.All(Eastbound), "the westbound lane was the one turned round");
+            Assert.AreEqual(NetworkBuilder.LaneW / 2, lanes.Max(l => l.Path.At(l.Length / 2).Y), 0.01, "still on the same pavement");
+            Assert.IsNull(two.TryReverseLane(P(0, 1.5), true));
+            Assert.IsNull(two.TryReverseLane(P(0, -2), true));
+            lanes = RoadLanes(two);
+            Assert.IsTrue(lanes.Count == 2 && lanes.All(l => !Eastbound(l)), "the eastbound lane turned round leaves both going west");
+
+            // On a wider road one lane changes sides: two each way becomes three and one, and the median stays.
+            var wide = new EditableMap();
+            Assert.IsNull(wide.TryAdd(P(-200, 0), P(200, 0), T("a4"), true));
+            Assert.IsNull(wide.TryReverseLane(P(0, 4), true));
+            Assert.AreEqual(3, wide.Segments[0].Type.Forward);
+            Assert.AreEqual(1, wide.Segments[0].Type.Backward);
+            Assert.Greater(wide.Segments[0].Type.Median, 0);
+            Assert.AreEqual(3, RoadLanes(wide).Count(Eastbound));
+            Assert.AreEqual(wide.Serialize(), EditableMap.Parse(wide.Serialize()).Serialize());
+            // No more than four lanes one way.
+            Assert.IsNull(wide.TryChangeLanes(P(0, -4), 1, true));
+            StringAssert.Contains("up to", wide.TryReverseLane(P(0, 4), true));
+
+            // Not the lane down the middle, not an added lane, and not a roundabout's ring.
+            var middle = new EditableMap();
+            Assert.IsNull(middle.TryAdd(P(-250, 0), P(250, 0), T("a4t"), true));
+            Assert.IsFalse(middle.CouldReverseLane(P(0, 0.3)));
+            Assert.IsNotNull(middle.TryReverseLane(P(0, 0.3), true));
+            Assert.IsNull(middle.TryAddLane(P(-100, -11), P(60, -11), true));
+            Vec[] added = middle.AddedLanes().Single();
+            Assert.IsFalse(middle.CouldReverseLane(added[added.Length / 2]));
+            Assert.IsNotNull(middle.TryReverseLane(added[added.Length / 2], true));
+            EditableMap ring = CrossroadsRoundabout("s2", 28);
+            Assert.IsFalse(ring.CouldReverseLane(P(19.8, 19.8)));
+            StringAssert.Contains("roundabout", ring.TryReverseLane(P(19.8, 19.8), true));
+
+            // In a grid of one-way streets, turning one street round leaves a grid that still builds and has no dead spots it did not have.
+            var grid = new EditableMap();
+            for (int i = -1; i <= 1; i++)
+            {
+                Assert.IsNull(grid.TryAdd(P(-200, i * 100), P(200, i * 100), T("s1"), true));
+                Assert.IsNull(grid.TryAdd(P(i * 100, -200), P(i * 100, 200), T("s1"), true));
+            }
+            Assert.IsNull(grid.TryReverseLane(P(50, 0), true), "one block of the middle street");
+            World built = grid.ToWorld();
+            Assert.IsTrue(built.Lanes.Any(l => l.Kind == LaneKind.Road && !Eastbound(l) && Math.Abs(l.Path.At(l.Length / 2).Y) < 1 && Math.Abs(l.Path.At(l.Length / 2).X - 50) < 40));
+        }
+
+        [Test]
+        public void AnAddedLaneCanBeMadeLongerOrShorterFromEitherEnd()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T("s2"), true));
+            // A lane along the south side, where the traffic runs east, from 100 m west of the middle to 60 m east of it.
+            Assert.IsNull(map.TryAddLane(P(-100, -5), P(60, -5), true));
+            Vec[] lane = map.AddedLanes().Single();
+            Assert.AreEqual(-100, lane[0].X, 1, "it runs the way its traffic does");
+            Assert.AreEqual(60, lane[lane.Length - 1].X, 1);
+            Assert.Less(lane[0].Y, -NetworkBuilder.LaneW, "outside the eastbound lane");
+            double before = map.Cost();
+
+            // Its far end slid on east: the lane is longer, and costs more.
+            Vec on = lane[lane.Length / 2];
+            Assert.IsNull(map.TryMoveLaneEnd(on, false, P(150, -8), false), "trying it changes nothing");
+            Assert.AreEqual(60, map.AddedLanes().Single().Last().X, 1);
+            Assert.IsNull(map.TryMoveLaneEnd(on, false, P(150, -8), true));
+            lane = map.AddedLanes().Single();
+            Assert.AreEqual(-100, lane[0].X, 1);
+            Assert.AreEqual(150, lane[lane.Length - 1].X, 1);
+            Assert.Greater(map.Cost(), before);
+
+            // Its near end slid east as well: shorter, from the other end.
+            on = lane[lane.Length / 2];
+            Assert.IsNull(map.TryMoveLaneEnd(on, true, P(20, 3), true), "anywhere near the road will do: it goes to the nearest place along it");
+            lane = map.AddedLanes().Single();
+            Assert.AreEqual(20, lane[0].X, 1);
+            Assert.AreEqual(150, lane[lane.Length - 1].X, 1);
+            Assert.Less(lane[0].Y, -NetworkBuilder.LaneW, "still on the side it was on");
+
+            // Not shorter than a lane can be, and not off the road.
+            on = lane[lane.Length / 2];
+            string saved = map.Serialize();
+            StringAssert.Contains("short", map.TryMoveLaneEnd(on, true, P(140, -5), true));
+            Assert.IsNotNull(map.TryMoveLaneEnd(on, true, P(20, -200), true));
+            Assert.IsNotNull(map.TryMoveLaneEnd(P(0, 5), true, P(20, -5), true), "there is no added lane on the other side");
+            Assert.AreEqual(saved, map.Serialize());
+            Assert.DoesNotThrow(() => map.ToWorld());
+
+            // A lane that runs on from one piece of a road to the next is one lane, with two ends.
+            var chain = new EditableMap();
+            Assert.IsNull(chain.TryAdd(P(-300, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(chain.TryAdd(P(0, 0), P(300, 60), T("s2"), true));
+            Assert.IsNull(chain.TryAddLane(P(-150, -5), P(150, 24), true));
+            Vec[] both = chain.AddedLanes().Single();
+            Assert.Less(both[0].X, -140);
+            Assert.Greater(both[both.Length - 1].X, 140);
+            Assert.IsNull(chain.TryMoveLaneEnd(both[both.Length / 2], false, P(220, 38), true));
+            Assert.Greater(chain.AddedLanes().Single().Last().X, 210);
+        }
+
+        [Test]
+        public void AMedianMakesWayForLeftTurnLanes()
+        {
+            // A divided avenue, two lanes each way, crossed by a street: the grass stops short of the
+            // crossing on each side, and a lane for turning left takes its place there.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-250, 0), P(250, 0), T("a4b"), true));
+            Assert.IsNull(map.TryAdd(P(0, -200), P(0, 200), T("s2"), true));
+            Assert.AreEqual(5 * NetworkBuilder.LaneW, T("a4b").Width, 1e-9);
+            StringAssert.Contains("median and left-turn lanes", T("a4b").Name);
+            World world = map.ToWorld();
+            Node light = world.Nodes.Single(n => n.Arms.Count == 4);
+            Assert.AreEqual(2, world.Medians.Count, "a median each side of the crossing");
+            foreach (Strip median in world.Medians)
+            {
+                double near = median.Left.Min(q => Math.Abs(q.X)), far = median.Left.Max(q => Math.Abs(q.X));
+                Assert.Greater(near, 85, "it stops before the road widens for the turning lane");
+                Assert.Less(near, 125);
+                Assert.Greater(far, 225, "and runs all the way out to the edge of the map, where nobody turns");
+                Assert.AreEqual(NetworkBuilder.LaneW - 0.6, Math.Abs(median.Left[0].Y - median.Right[0].Y), 0.01, "a lane wide, less the paint");
+            }
+
+            // Arriving from the west: two lanes that go on, and in the gap where the median was a lane that only turns left.
+            var arriving = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Node == light.Id && l.Path.At(0).X < -20).OrderByDescending(l => l.Path.At(l.Length).Y).ToList();
+            Assert.AreEqual(3, arriving.Count);
+            Lane turning = arriving[0];
+            Assert.AreEqual(-1, turning.Slot);
+            Assert.AreEqual(0, turning.Path.At(turning.Length).Y, 0.05, "it lies along the middle of the road");
+            Assert.IsTrue(turning.Allows(Turn.Left) && !turning.Allows(Turn.Straight) && !turning.Allows(Turn.Right));
+            Assert.Less(turning.Length, 90);
+            Assert.IsTrue(arriving.Skip(1).All(l => !l.Allows(Turn.Left)), "the other lanes no longer turn left");
+            // No median lies where the turning lane does.
+            foreach (Strip median in world.Medians) Assert.IsFalse(median.Left.Any(q => Math.Abs(q.X) < Math.Abs(turning.Path.At(0).X) + 10));
+
+            var sim = new Simulation(world, 6);
+            sim.ArrivalsPerMinute = 18;
+            int used = 0;
+            Grid.Run(sim, 420, () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    c.Drv.Compliance = 1;
+                    if (c.Lane == turning.Id) used++;
+                }
+            });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(used, 0, "traffic turning left waits in it");
+            Assert.Greater(sim.Left, 60);
+
+            // It saves and loads; and with no junction to turn at, the median simply runs the whole way.
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            var alone = new EditableMap();
+            Assert.IsNull(alone.TryAdd(P(-250, 0), P(250, 0), T("a4b"), true));
+            World plain = alone.ToWorld();
+            Assert.AreEqual(4, plain.Lanes.Count(l => l.Kind == LaneKind.Road));
+            Assert.AreEqual(1, plain.Medians.Count);
+        }
+
+        [Test]
+        public void LeftTurnLanesGoInAndOutOfAMedian()
+        {
+            // An avenue with a plain median, and a side street off it.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-250, 0), P(250, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 200), T("s2"), true));
+            Assert.IsTrue(map.MedianAt(P(-100, 4)));
+            Assert.IsTrue(map.CouldHaveMiddleLane(P(-100, 4)));
+            Assert.IsFalse(map.MiddleLaneAt(P(-100, 0.2)), "a plain median is not a lane");
+            Assert.IsNull(map.TrySetMiddleLane(P(-100, 4), true, false), "trying it changes nothing");
+            Assert.IsTrue(map.Segments.All(s => !s.Type.Bays));
+            Assert.IsNull(map.TrySetMiddleLane(P(-100, 4), true, true));
+            EditSegment west = map.Segments.Single(s => map.Nodes[s.A].X < -200 || map.Nodes[s.B].X < -200);
+            Assert.AreEqual("a4b", west.Type.Id, "the median stays, and makes way for the turning lanes");
+            Assert.IsFalse(map.CouldHaveMiddleLane(P(-100, 4)), "it has them now");
+            Assert.IsFalse(map.Segments.Single(s => map.Nodes[s.A].X > 200 || map.Nodes[s.B].X > 200).Type.Bays, "only as far as the junction");
+            // Eastbound traffic turns left into the side street from the gap in the median.
+            World world = map.ToWorld();
+            Assert.AreEqual(1, world.Lanes.Count(l => l.Kind == LaneKind.Road && l.Slot == -1));
+            // The pointer over the median finds it, and taking the turning lanes out leaves the median as it was.
+            Assert.IsTrue(map.MiddleLaneAt(P(-100, 0.5)));
+            Assert.IsNull(map.TrySetMiddleLane(P(-100, 0.5), false, true));
+            Assert.AreEqual("a4", west.Type.Id == "a4" ? "a4" : map.Segments.First(s => map.Nodes[s.A].X < -200 || map.Nodes[s.B].X < -200).Type.Id);
+            // A road that is not on the toolbar's list gets them too, and is saved under a code of its own.
+            Assert.IsNull(map.TryChangeLanes(P(-100, -5), 1, true));
+            Assert.IsNull(map.TrySetMiddleLane(P(-100, 4), true, true));
+            EditSegment wide = map.Segments.First(s => map.Nodes[s.A].X < -200 || map.Nodes[s.B].X < -200);
+            Assert.IsTrue(wide.Type.Bays);
+            Assert.AreEqual(5, wide.Type.Lanes);
+            StringAssert.EndsWith("-b", wide.Type.Id);
+            Assert.AreEqual(map.Serialize(), EditableMap.Parse(map.Serialize()).Serialize());
+            Assert.DoesNotThrow(() => map.ToWorld());
+        }
+
         // ---------------------------------------------------------------- forks, and roads coming together
 
         /// <summary>A two-lane one-way road that splits into two single lanes, which go their own ways and come back together.</summary>

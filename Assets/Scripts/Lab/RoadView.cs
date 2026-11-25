@@ -243,6 +243,9 @@ namespace Traffic.Lab
                         lawn.Strip(l, r, CurbHeight);
                         walks.Wall(l, 0.02f, CurbHeight, 1.6f, -1);
                         walks.Wall(r, 0.02f, CurbHeight, 1.6f, 1);
+                        // And across each end, which shows where a median stops short to make way for a left-turn lane.
+                        walks.Wall(new[] { l[0], r[0] }, 0.02f, CurbHeight, 1.6f, 1);
+                        walks.Wall(new[] { l[l.Length - 1], r[r.Length - 1] }, 0.02f, CurbHeight, 1.6f, -1);
                     }
                     if (m.Heights != null) continue;
                     for (int i = 9; i < m.Left.Length - 9; i += 11)

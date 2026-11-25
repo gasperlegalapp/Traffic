@@ -163,6 +163,12 @@ namespace Traffic.Ui
         private int grabNode = -1, grabSegment = -1;
         private Vec grabFrom, grabTo;
         private bool grabMoved;
+        /// <summary>
+        /// The move tool has hold of one end of an added lane: a point in the middle of that lane (which
+        /// says which lane), whether the end in hand is the one its traffic comes in at, and where its other end is.
+        /// </summary>
+        private bool grabLane, grabLaneFirst;
+        private Vec grabLaneOn, grabLaneKeep;
 
         private bool hasPointer;
         private Vec pointer;
@@ -176,7 +182,7 @@ namespace Traffic.Ui
         private string checkedProblem;
 
         /// <summary>True while a road is partly drawn, or something is being dragged.</summary>
-        public bool Busy => hasStart || grabNode >= 0 || grabSegment >= 0 || laneDrag;
+        public bool Busy => hasStart || grabNode >= 0 || grabSegment >= 0 || laneDrag || grabLane;
 
         // The lane tool: a lane picked by a click, and a drag along a road to add a lane for part of it.
         private bool picked, laneDrag;
@@ -236,6 +242,8 @@ namespace Traffic.Ui
         public bool PickedIsMiddle => picked && map.MiddleLaneAt(pickedAt);
         /// <summary>Whether the road of the picked lane could be given a turning lane down its middle.</summary>
         public bool CanAddMiddle => picked && map.CouldHaveMiddleLane(pickedAt);
+        /// <summary>Whether the road of the picked lane has a median: what it can be given is then left-turn lanes in the median.</summary>
+        public bool PickedHasMedian => picked && map.MedianAt(pickedAt);
 
         /// <summary>Give the road of the picked lane a turning lane down its middle. Returns true if the map changed.</summary>
         public bool AddMiddleLane(out string refused)
@@ -243,6 +251,20 @@ namespace Traffic.Ui
             refused = picked ? map.TrySetMiddleLane(pickedAt, true, true) : "Pick a lane first.";
             stamp++;
             mapChanges++;
+            return refused == null;
+        }
+
+        /// <summary>Whether the picked lane could be turned round to run the other way.</summary>
+        public bool CanReverse => picked && map.CouldReverseLane(pickedAt);
+
+        /// <summary>Turn the picked lane round, so that it runs the other way. Returns true if the map changed.</summary>
+        public bool ReverseLane(out string refused)
+        {
+            refused = picked ? map.TryReverseLane(pickedAt, true) : "Pick a lane first.";
+            stamp++;
+            mapChanges++;
+            // The lane that was picked may not be where it was: on a road left with unequal sides the pavement has moved over.
+            if (refused == null) picked = map.LaneUnder(pickedAt) != null;
             return refused == null;
         }
 
@@ -342,7 +364,7 @@ namespace Traffic.Ui
             ownAim = false;
             hasFlow = false;
             grabNode = grabSegment = -1;
-            picked = laneDrag = false;
+            picked = laneDrag = grabLane = false;
             stamp++;
         }
 
@@ -350,10 +372,10 @@ namespace Traffic.Ui
         public void Back()
         {
             stamp++;
-            if (grabNode >= 0 || grabSegment >= 0 || laneDrag)
+            if (grabNode >= 0 || grabSegment >= 0 || laneDrag || grabLane)
             {
                 grabNode = grabSegment = -1;
-                laneDrag = false;
+                laneDrag = grabLane = false;
                 return;
             }
             if (Picking)
@@ -579,6 +601,34 @@ namespace Traffic.Ui
             return seg >= 0 && !Fixed(map.Segments[seg]) ? seg : -1;
         }
 
+        /// <summary>
+        /// The end of an added lane within reach of a spot, for the move tool to slide along its
+        /// road: where that end is, a point in the middle of the lane, whether it is the end the
+        /// lane's traffic comes in at, and where the other end is. False if there is none.
+        /// </summary>
+        private bool LaneEndAt(Vec p, out Vec end, out Vec onLane, out bool first, out Vec keep)
+        {
+            end = onLane = keep = default(Vec);
+            first = false;
+            double nearest = Math.Max(5, Ghost.Pixel * 12);
+            bool found = false;
+            foreach (Vec[] line in map.AddedLanes())
+            {
+                for (int k = 0; k < 2; k++)
+                {
+                    Vec at = k == 0 ? line[0] : line[line.Length - 1];
+                    if (Dist(at, p) >= nearest) continue;
+                    nearest = Dist(at, p);
+                    end = at;
+                    onLane = line[line.Length / 2];
+                    first = k == 0;
+                    keep = k == 0 ? line[line.Length - 1] : line[0];
+                    found = true;
+                }
+            }
+            return found;
+        }
+
         /// <summary>The button went down with the move tool out. True if it took hold of a point or a road.</summary>
         public bool Press(Vec p)
         {
@@ -594,8 +644,11 @@ namespace Traffic.Ui
             }
             if (tool != Move || map == null) return false;
             grabNode = HandleAt(p);
-            grabSegment = grabNode >= 0 ? -1 : BendableAt(p);
-            if (grabNode < 0 && grabSegment < 0) return false;
+            Vec end;
+            // A point first; then the end of an added lane; then the road itself, to bend it.
+            grabLane = grabNode < 0 && LaneEndAt(p, out end, out grabLaneOn, out grabLaneFirst, out grabLaneKeep);
+            grabSegment = grabNode >= 0 || grabLane ? -1 : BendableAt(p);
+            if (grabNode < 0 && grabSegment < 0 && !grabLane) return false;
             grabFrom = grabTo = p;
             grabMoved = false;
             stamp++;
@@ -613,7 +666,7 @@ namespace Traffic.Ui
                 stamp++;
                 return;
             }
-            if (grabNode < 0 && grabSegment < 0) return;
+            if (grabNode < 0 && grabSegment < 0 && !grabLane) return;
             if (Dist(p, grabFrom) > Math.Max(1.5, Ghost.Pixel * 5)) grabMoved = true;
             grabTo = grabNode >= 0 ? OnGrid(p) : p;
             pointer = p;
@@ -639,6 +692,14 @@ namespace Traffic.Ui
                 picked = map.LaneUnder(laneFrom) != null;
                 pickedAt = laneFrom;
                 return false;
+            }
+            if (grabLane)
+            {
+                grabLane = false;
+                if (!grabMoved) return false;
+                refused = map.TryMoveLaneEnd(grabLaneOn, grabLaneFirst, grabTo, true);
+                mapChanges++;
+                return refused == null;
             }
             int node = grabNode, segment = grabSegment;
             grabNode = grabSegment = -1;
@@ -868,6 +929,18 @@ namespace Traffic.Ui
                 roads[s.B]++;
                 if (Fixed(s)) held[s.A] = held[s.B] = true;
             }
+            if (tool == Move && !grabLane)
+            {
+                // Each end of an added lane can be slid along its road: a smaller handle than a point's.
+                foreach (Vec[] line in map.AddedLanes())
+                {
+                    foreach (Vec end in new[] { line[0], line[line.Length - 1] })
+                    {
+                        Ghost.Dot(end, 1.25, 4.6, Ghost.GoodInk);
+                        Ghost.Dot(end, 0.75, 2.8, Ghost.White);
+                    }
+                }
+            }
             for (int i = 0; i < map.Nodes.Count; i++)
             {
                 if (tool == Move)
@@ -969,12 +1042,24 @@ namespace Traffic.Ui
         /// <summary>The move tool: what it would take hold of, or what it has hold of and where that is going.</summary>
         private void Handles()
         {
+            if (grabLane)
+            {
+                LaneEndPicture();
+                return;
+            }
             if (grabNode < 0 && grabSegment < 0)
             {
                 int node = HandleAt(pointer);
                 if (node >= 0)
                 {
                     Ghost.Pin(map.Nodes[node], true, true);
+                    return;
+                }
+                Vec end, on, keep;
+                bool first;
+                if (LaneEndAt(pointer, out end, out on, out first, out keep))
+                {
+                    Ghost.Pin(end, true, true);
                     return;
                 }
                 int seg = BendableAt(pointer);
@@ -1007,6 +1092,34 @@ namespace Traffic.Ui
             Note = problem ?? (change >= 0 ? "+" : "−") + Money(Math.Abs(change));
             NoteBad = problem != null;
             if (problem == null) Tag(Note, change >= 0 ? "more road" : "less road");
+        }
+
+        /// <summary>An end of an added lane being slid along its road: the lane as it is, faintly, and as it would become.</summary>
+        private void LaneEndPicture()
+        {
+            Vec[] now = map.LaneUnder(grabLaneOn);
+            if (now != null) Ghost.Band(now, -NetworkBuilder.LaneW / 2, NetworkBuilder.LaneW / 2, 0x55FFFFFF);
+            if (!grabMoved)
+            {
+                if (now != null) Ghost.Pin(grabLaneFirst ? now[0] : now[now.Length - 1], true, true);
+                return;
+            }
+            string problem = Checked(grabTo, () => map.TryMoveLaneEnd(grabLaneOn, grabLaneFirst, grabTo, false));
+            Vec[] line = map.LaneLine(grabLaneKeep, grabTo);
+            double length = line == null ? 0 : Ghost.Length(line);
+            if (length > 1)
+            {
+                LaneBand(line, problem == null);
+                // The end in hand is whichever end of the new lane is not the one that stayed put.
+                Ghost.Pin(Dist(line[0], grabLaneKeep) < Dist(line[line.Length - 1], grabLaneKeep) ? line[line.Length - 1] : line[0], problem == null, false);
+            }
+            Note = problem ?? Ft(length);
+            NoteBad = problem != null;
+            if (problem != null) return;
+            EditableMap after = map.Clone();
+            after.TryMoveLaneEnd(grabLaneOn, grabLaneFirst, grabTo, true);
+            double change = after.Cost() - map.Cost();
+            Tag((change >= 0 ? "+" : "−") + Money(Math.Abs(change)), Ft(length) + " of extra lane");
         }
 
         /// <summary>The roundabout about to be placed: its ring at its real width, with arrows going the way traffic will.</summary>

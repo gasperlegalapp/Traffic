@@ -380,7 +380,23 @@ namespace Traffic.Sim
                 // A divided road has a strip of ground down the middle, a little narrower than the gap between its yellow lines.
                 if (r.Inner > 0.5 && r.Fwd.Length > 0 && r.Back.Length > 0 && !r.PavedMiddle)
                 {
-                    world.Medians.Add(new Strip { Left = Geo.Offset(center, -(r.Inner - 0.3)), Right = Geo.Offset(center, r.Inner - 0.3), Peak = peak, Heights = Lift(center, peak, r.RampLen) });
+                    // Where a lane for turning left lies in the gap on the way into an intersection (slot -1 of either
+                    // direction), the median stops short of where the road starts to widen for it.
+                    double from = 0, to = path.Length;
+                    foreach (TrackSpec t in r.Fwd) if (t.Slot < 0) to = Math.Min(to, Resolve(t.From, path.Length) - Taper);
+                    foreach (TrackSpec t in r.Back) if (t.Slot < 0) from = Math.Max(from, path.Length - Resolve(t.From, path.Length) + Taper);
+                    int first = (int)Math.Ceiling(from / path.Length * n), last = (int)Math.Floor(to / path.Length * n);
+                    if (last - first >= 8)
+                    {
+                        List<Vec> part = center.GetRange(first, last - first + 1);
+                        double[] lift = Lift(center, peak, r.RampLen), heights = null;
+                        if (lift != null)
+                        {
+                            heights = new double[part.Count];
+                            Array.Copy(lift, first, heights, 0, heights.Length);
+                        }
+                        world.Medians.Add(new Strip { Left = Geo.Offset(part, -(r.Inner - 0.3)), Right = Geo.Offset(part, r.Inner - 0.3), Peak = peak, Heights = heights });
+                    }
                 }
             }
             world.Extent = extent + 30;

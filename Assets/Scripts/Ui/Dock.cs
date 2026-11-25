@@ -30,6 +30,8 @@ namespace Traffic.Ui
         public bool Median;
         /// <summary>A turning lane down the middle.</summary>
         public bool Turn;
+        /// <summary>The median makes way for a left-turn lane at each intersection.</summary>
+        public bool Bays;
     }
 
     /// <summary>One thing on the toolbar that can be pointed at and clicked.</summary>
@@ -369,7 +371,7 @@ namespace Traffic.Ui
             int lanes = road.Forward + road.Backward;
             double lane = lanes >= 4 ? 6 : lanes == 3 ? 7 : 8;
             bool twoWay = road.Backward > 0;
-            if (road.Turn) lane = 6;
+            if (road.Turn || road.Bays) lane = 6;
             double gap = !twoWay ? 0 : road.Median ? 6 : road.Turn ? lane : 0;
             double high = lanes * lane + gap + 4, top = item.Y + (item.H - high) / 2;
             double left = item.X, wide = item.W;
@@ -393,7 +395,10 @@ namespace Traffic.Ui
             {
                 s.Fill(left, y - 0.6, wide, 1.1, 0, Yellow);
                 s.Fill(left, y + gap - 0.5, wide, 1.1, 0, Yellow);
-                s.Fill(left, y + 1.2, wide, gap - 2.4, 0, 0xFF7DB862);
+                // With left-turn lanes the grass stops short of the end of the tile, and an arrow lies in the gap.
+                double grass = road.Bays ? wide * 0.56 : wide;
+                s.Fill(left, y + 1.2, grass, gap - 2.4, 0, 0xFF7DB862);
+                if (road.Bays) s.Icon("goleft", left + wide * 0.78 - 4.5, y + 0.8, gap - 1.4, Paint);
             }
             else if (twoWay)
             {

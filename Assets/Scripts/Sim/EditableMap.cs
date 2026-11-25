@@ -28,6 +28,12 @@ namespace Traffic.Sim
         /// way of the traffic going on.
         /// </summary>
         public bool CenterLane;
+        /// <summary>
+        /// The median gives way to a lane for turning left on the way into each intersection, as
+        /// on most divided avenues: the grass stops short, and traffic about to turn left moves
+        /// over into the gap and waits there. The median is a lane wide to make room for it.
+        /// </summary>
+        public bool Bays;
         /// <summary>Speed limit in miles per hour.</summary>
         public int Mph;
         /// <summary>The tightest curve it may be drawn with, meters.</summary>
@@ -46,11 +52,14 @@ namespace Traffic.Sim
 
         public string Name => GroupNames[Group] + ", " + (OneWay
             ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " one-way"
-            : (Forward == Backward ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way" : Forward + " lanes one way and " + Backward + " the other") + (Median > 0 ? ", with a median" : CenterLane ? ", with a turning lane in the middle" : ""));
+            : (Forward == Backward ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way" : Forward + " lanes one way and " + Backward + " the other") + (Bays ? ", with a median and left-turn lanes" : Median > 0 ? ", with a median" : CenterLane ? ", with a turning lane in the middle" : ""));
 
-        /// <summary>What lies between the two directions of a two-way road: a painted line, a grass median, or a lane for turning left from.</summary>
-        public const int Line = 0, Grass = 1, TurnLane = 2;
-        public int Middle => OneWay ? Line : CenterLane ? TurnLane : Median > 0 ? Grass : Line;
+        /// <summary>
+        /// What lies between the two directions of a two-way road: a painted line, a grass median,
+        /// a lane for turning left from, or a median that makes way for such a lane at each intersection.
+        /// </summary>
+        public const int Line = 0, Grass = 1, TurnLane = 2, TurnBays = 3;
+        public int Middle => OneWay ? Line : CenterLane ? TurnLane : Bays ? TurnBays : Median > 0 ? Grass : Line;
 
         /// <summary>The most lanes a road may have in one direction.</summary>
         public const int MostLanes = 4;
@@ -75,13 +84,14 @@ namespace Traffic.Sim
             {
                 if (t.Group == group && t.Forward == forward && t.Backward == backward && t.Middle == middle) return t;
             }
-            string id = "G" + group + "-" + forward + "-" + backward + (middle == Grass ? "-m" : middle == TurnLane ? "-t" : "");
+            string id = "G" + group + "-" + forward + "-" + backward + (middle == Grass ? "-m" : middle == TurnLane ? "-t" : middle == TurnBays ? "-b" : "");
             RoadType one;
             if (made.TryGetValue(id, out one)) return one;
             one = new RoadType
             {
-                Id = id, Group = group, Forward = forward, Backward = backward, Median = middle == Grass ? MedianWidth : 0, CenterLane = middle == TurnLane,
-                Mph = GroupMph[group], MinRadius = GroupRadius[group], CostPerMeter = (forward + backward + (middle == TurnLane ? 1 : 0)) * GroupLanePrice[group],
+                Id = id, Group = group, Forward = forward, Backward = backward, CenterLane = middle == TurnLane, Bays = middle == TurnBays,
+                Median = middle == Grass ? MedianWidth : middle == TurnBays ? NetworkBuilder.LaneW : 0,
+                Mph = GroupMph[group], MinRadius = GroupRadius[group], CostPerMeter = (forward + backward + (middle == TurnLane || middle == TurnBays ? 1 : 0)) * GroupLanePrice[group],
             };
             made[id] = one;
             return one;
@@ -98,6 +108,7 @@ namespace Traffic.Sim
             new RoadType { Id = "a1", Group = Avenue, Forward = 1, Mph = 40, MinRadius = 30, CostPerMeter = 2 },
             new RoadType { Id = "a1x2", Group = Avenue, Forward = 2, Mph = 40, MinRadius = 30, CostPerMeter = 4 },
             new RoadType { Id = "a4t", Group = Avenue, Forward = 2, Backward = 2, CenterLane = true, Mph = 40, MinRadius = 30, CostPerMeter = 7.5 },
+            new RoadType { Id = "a4b", Group = Avenue, Forward = 2, Backward = 2, Median = NetworkBuilder.LaneW, Bays = true, Mph = 40, MinRadius = 30, CostPerMeter = 7.5 },
             new RoadType { Id = "h1", Group = Highway, Forward = 1, Mph = 65, MinRadius = 60, CostPerMeter = 3 },
             new RoadType { Id = "h2", Group = Highway, Forward = 2, Mph = 65, MinRadius = 60, CostPerMeter = 6 },
             new RoadType { Id = "h3", Group = Highway, Forward = 3, Mph = 65, MinRadius = 60, CostPerMeter = 9 },
@@ -107,12 +118,12 @@ namespace Traffic.Sim
         public static RoadType ById(string id)
         {
             foreach (RoadType t in All) if (t.Id == id) return t;
-            // A made-up road: G, its class, and its lanes each way, with -m for a median.
+            // A made-up road: G, its class, and its lanes each way, with -m for a median, -t for a turning lane and -b for a median with left-turn lanes.
             string[] f = id.Split('-');
             int group, forward, backward;
             if (f.Length < 3 || f[0].Length != 2 || f[0][0] != 'G' || !int.TryParse(f[0].Substring(1), out group) || !int.TryParse(f[1], out forward) || !int.TryParse(f[2], out backward)) return null;
             if (group < 0 || group > Highway || forward < 1 || forward > MostLanes || backward < 0 || backward > MostLanes) return null;
-            return With(new RoadType { Group = group }, forward, backward, f.Length > 3 && f[3] == "m" ? Grass : f.Length > 3 && f[3] == "t" ? TurnLane : Line);
+            return With(new RoadType { Group = group }, forward, backward, f.Length > 3 && f[3] == "m" ? Grass : f.Length > 3 && f[3] == "t" ? TurnLane : f.Length > 3 && f[3] == "b" ? TurnBays : Line);
         }
 
         /// <summary>
@@ -729,9 +740,9 @@ namespace Traffic.Sim
             if (!OnRoad(p, out seg, out t, out forward, out across)) return null;
             EditSegment s = Segments[seg];
             int lanes = s.Type.OneWay || forward ? s.Type.Forward : s.Type.Backward;
-            if (s.Type.CenterLane && across < s.Type.Inner)
+            if ((s.Type.CenterLane || s.Type.Bays) && across < s.Type.Inner)
             {
-                // The turning lane down the middle: the line the road is drawn along.
+                // The turning lane down the middle, or the median that makes way for one: the line the road is drawn along.
                 foreach (Run run in Runs())
                 {
                     if (!run.Pieces.Contains(s)) continue;
@@ -948,6 +959,57 @@ namespace Traffic.Sim
             return null;
         }
 
+        /// <summary>
+        /// Every added lane, as the line down its middle, running the way its traffic does. A
+        /// lane carried on from one piece of a road to the next is one lane. The move tool takes
+        /// hold of a lane by either end of this line.
+        /// </summary>
+        public List<Vec[]> AddedLanes()
+        {
+            var lines = new List<Vec[]>();
+            var seen = new HashSet<ExtraLane>();
+            foreach (EditSegment s in Segments)
+            {
+                foreach (ExtraLane x in s.Extras)
+                {
+                    if (seen.Contains(x)) continue;
+                    var own = new List<KeyValuePair<EditSegment, ExtraLane>> { new KeyValuePair<EditSegment, ExtraLane>(s, x) };
+                    Vec[] line = LaneLine(own);
+                    // The whole of it, where neighboring pieces carry it on; found from a point in its middle.
+                    List<KeyValuePair<EditSegment, ExtraLane>> parts = ExtraParts(line[line.Length / 2]);
+                    if (parts == null || !parts.Exists(k => k.Value == x)) parts = own;
+                    foreach (KeyValuePair<EditSegment, ExtraLane> part in parts) seen.Add(part.Value);
+                    lines.Add(LaneLine(parts));
+                }
+            }
+            return lines;
+        }
+
+        /// <summary>
+        /// Slide one end of an added lane along its road, making the lane longer or shorter. The
+        /// lane is the one a point is on (anywhere along it but its very ends); the end is its
+        /// first, where its traffic moves into it, or its last; and it goes to the place on the
+        /// road nearest another point. Returns null if it was moved, or a short reason why not.
+        /// </summary>
+        public string TryMoveLaneEnd(Vec onLane, bool first, Vec to, bool commit)
+        {
+            EditableMap work = Clone();
+            List<KeyValuePair<EditSegment, ExtraLane>> parts = work.ExtraParts(onLane);
+            if (parts == null) return "There is no added lane there.";
+            Vec[] line = work.LaneLine(parts);
+            // The end that stays where it is; the lane is laid afresh from there.
+            Vec keep = first ? line[line.Length - 1] : line[0];
+            foreach (KeyValuePair<EditSegment, ExtraLane> part in parts)
+            {
+                if (part.Key.Locked) return "That road came with the level.";
+                part.Key.Extras.Remove(part.Value);
+            }
+            string problem = work.TryAddLane(keep, to, true);
+            if (problem != null) return problem;
+            if (commit) Segments = work.Segments;
+            return null;
+        }
+
         /// <summary>Turn a piece end for end: the same road on the ground, described from its other end.</summary>
         private static void Flip(EditSegment s)
         {
@@ -1022,16 +1084,95 @@ namespace Traffic.Sim
             return "There is no road there.";
         }
 
-        /// <summary>Whether a point is over the turning lane down the middle of a road that has one.</summary>
+        /// <summary>Whether the lane under a point could be turned round to run the other way: one of a road's ordinary lanes, on a road the player may change.</summary>
+        public bool CouldReverseLane(Vec p)
+        {
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return false;
+            EditSegment s = Segments[seg];
+            return !s.Locked && !s.Ring && !MiddleLaneAt(p) && ExtraParts(p) == null;
+        }
+
+        /// <summary>
+        /// Turn the lane under a point round, so that it runs the other way: for its whole
+        /// length, from one junction or road end to the next. Its side of the road has a lane
+        /// fewer and the other side a lane more. A one-way road with a single lane simply runs
+        /// the other way; a one-way road with more becomes two-way; and a two-way road that
+        /// gives up its last lane one way becomes one-way. The line down the middle of a two-way
+        /// road stays where the road was drawn, so the pavement moves over where the two sides
+        /// come out unequal. Lanes that had been told their turns go back to working them out.
+        /// Returns null if it was changed, or a short reason why it cannot be.
+        /// </summary>
+        public string TryReverseLane(Vec p, bool commit)
+        {
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return "There is no road there.";
+            if (MiddleLaneAt(p)) return "The lane in the middle serves both directions.";
+            if (ExtraParts(p) != null) return "An added lane runs the way of the lanes beside it.";
+            EditableMap work = Clone();
+            EditSegment under = work.Segments[seg];
+            foreach (Run run in work.Runs())
+            {
+                int index = run.Pieces.IndexOf(under);
+                if (index < 0) continue;
+                foreach (EditSegment piece in run.Pieces)
+                {
+                    if (piece.Locked) return "That road came with the level.";
+                    if (piece.Ring) return "Traffic goes one way round a roundabout.";
+                }
+                // The lanes that go the way the run does, and those that go against it: one changes sides.
+                bool turned = run.Turned[index], withRun = forward != turned;
+                RoadType type = under.Type;
+                int with = turned ? type.Backward : type.Forward, against = turned ? type.Forward : type.Backward;
+                if (withRun)
+                {
+                    with--;
+                    against++;
+                }
+                else
+                {
+                    against--;
+                    with++;
+                }
+                if (with < 0 || against < 0) return "There is no lane there to turn round.";
+                if (with > RoadType.MostLanes || against > RoadType.MostLanes) return "A road can have up to " + RoadType.MostLanes + " lanes each way.";
+                // Every piece is described the same way round, so that they are still one road; a road left with lanes one way only runs that way.
+                for (int i = 0; i < run.Pieces.Count; i++) if (run.Turned[i] != (with == 0)) Flip(run.Pieces[i]);
+                RoadType changed = with == 0 ? RoadType.With(type, against, 0) : RoadType.With(type, with, against);
+                foreach (EditSegment piece in run.Pieces)
+                {
+                    piece.Type = changed;
+                    piece.TurnsAtA = piece.TurnsAtB = null;
+                    if (changed.OneWay) piece.Extras.RemoveAll(x => !x.Forward);
+                }
+                var ends = new List<int>(run.Joints) { run.From, run.To };
+                foreach (int node in ends)
+                {
+                    string problem = work.NodeProblem(node);
+                    if (problem != null) return problem;
+                }
+                string noRoom = work.Unbuildable(this, "The road cannot be built that way there.");
+                if (noRoom != null) return noRoom;
+                if (commit) Segments = work.Segments;
+                return null;
+            }
+            return "There is no road there.";
+        }
+
+        /// <summary>Whether a point is over the turning lane down the middle of a road that has one, or over a median that makes way for left-turn lanes.</summary>
         public bool MiddleLaneAt(Vec p)
         {
             int seg;
             double t, across;
             bool forward;
-            return OnRoad(p, out seg, out t, out forward, out across) && Segments[seg].Type.CenterLane && across < Segments[seg].Type.Inner;
+            return OnRoad(p, out seg, out t, out forward, out across) && (Segments[seg].Type.CenterLane || Segments[seg].Type.Bays) && across < Segments[seg].Type.Inner;
         }
 
-        /// <summary>Whether the road under a point could be given a turning lane down its middle: a two-way road that has none.</summary>
+        /// <summary>Whether the road under a point could be given a turning lane down its middle, or left-turn lanes in its median: a two-way road that has neither.</summary>
         public bool CouldHaveMiddleLane(Vec p)
         {
             int seg;
@@ -1039,13 +1180,25 @@ namespace Traffic.Sim
             bool forward;
             if (!OnRoad(p, out seg, out t, out forward, out across)) return false;
             EditSegment s = Segments[seg];
-            return !s.Type.OneWay && !s.Type.CenterLane && !s.Locked && !s.Ring;
+            return !s.Type.OneWay && !s.Type.CenterLane && !s.Type.Bays && !s.Locked && !s.Ring;
+        }
+
+        /// <summary>Whether the road under a point has a median, with or without left-turn lanes in it.</summary>
+        public bool MedianAt(Vec p)
+        {
+            int seg;
+            double t, across;
+            bool forward;
+            return OnRoad(p, out seg, out t, out forward, out across) && Segments[seg].Type.Median > 0;
         }
 
         /// <summary>
-        /// Give the road under a point a turning lane down its middle, in place of a median if
-        /// it has one, or take that lane away: for its whole length, from one junction to the
-        /// next. Returns null if it was changed, or a short reason why it cannot be.
+        /// Give the road under a point somewhere to turn left from, or take it away: for its whole
+        /// length, from one junction to the next. A road with a painted line gets a turning lane
+        /// down its middle. A road with a median keeps the median, which then makes way for a
+        /// left-turn lane on the way into each intersection. Taking it away leaves what was
+        /// there before, the line or the median. Returns null if it was changed, or a short
+        /// reason why it cannot be.
         /// </summary>
         public string TrySetMiddleLane(Vec p, bool there, bool commit)
         {
@@ -1059,7 +1212,9 @@ namespace Traffic.Sim
             foreach (Run run in work.Runs())
             {
                 if (!run.Pieces.Contains(under)) continue;
-                RoadType changed = RoadType.With(under.Type, under.Type.Forward, under.Type.Backward, there ? RoadType.TurnLane : RoadType.Line);
+                int now = under.Type.Middle;
+                int middle = there ? (now == RoadType.Grass || now == RoadType.TurnBays ? RoadType.TurnBays : RoadType.TurnLane) : now == RoadType.TurnBays ? RoadType.Grass : RoadType.Line;
+                RoadType changed = RoadType.With(under.Type, under.Type.Forward, under.Type.Backward, middle);
                 foreach (EditSegment piece in run.Pieces)
                 {
                     if (piece.Locked) return "That road came with the level.";
@@ -2555,9 +2710,10 @@ namespace Traffic.Sim
                 if (back != null) back = WithExtras(back, run, false, exitAtFrom);
                 fwd = Narrowed(fwd, run.To, last, length);
                 if (back != null) back = Narrowed(back, run.From, first, length);
-                if (type.CenterLane)
+                if (type.CenterLane || type.Bays)
                 {
                     // The turning lane is used at each end of the road by the traffic arriving there, where there is a left to take.
+                    // In a median it is all there is of it: the builder stops the grass short to make room.
                     double share = Math.Min(70 / Math.Max(length, 1), 0.45);
                     if (joins[run.To] == null && LeftAhead(run.To, last)) fwd = Plus(fwd, new TrackSpec(-1, 1 - share, 1, Turn.Left));
                     if (joins[run.From] == null && LeftAhead(run.From, first)) back = Plus(back, new TrackSpec(-1, 1 - share, 1, Turn.Left));

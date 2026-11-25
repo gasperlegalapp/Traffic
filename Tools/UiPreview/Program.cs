@@ -138,11 +138,13 @@ internal static class Program
         });
         road("Street", 1, 1, false, "25 mph.  $2 a meter.  24 ft wide.\nA double yellow line divides the two directions.\nWhere only streets meet, drivers get stop signs all round.\nCurves no tighter than 70 ft.");
         road("Street", 1, 0, false, "25 mph.  $1 a meter.  12 ft wide.\nTraffic runs the way you draw it, from the first click to the last.");
+        road("Avenue", 1, 1, false, "40 mph.  $2.50 a meter.  24 ft wide.\nA double yellow line divides the two directions.");
         road("Avenue", 1, 1, true, "40 mph.  $3 a meter.  34 ft wide.\nA grass median divides the two directions.");
         road("Avenue", 2, 2, true, "40 mph.  $6 a meter.  58 ft wide.\nA grass median divides the two directions.\nWhere it meets another road it gets a traffic light.\nCurves no tighter than 100 ft.");
         road("Avenue", 1, 0, false, "40 mph.  $2 a meter.");
         road("Avenue", 2, 0, false, "40 mph.  $4 a meter.");
         roads.Add(new DockRoad { Group = "Avenue", Forward = 2, Backward = 2, Turn = true, Title = "Avenue, 2 lanes each way, with a turning lane in the middle", Body = "40 mph.  $7.50 a meter.  60 ft wide.\nA turning lane runs down the middle: traffic about to turn left waits there, out of the way of the rest." });
+        roads.Add(new DockRoad { Group = "Avenue", Forward = 2, Backward = 2, Median = true, Bays = true, Title = "Avenue, 2 lanes each way, with a median and left-turn lanes", Body = "40 mph.  $7.50 a meter.  60 ft wide.\nA grass median divides the two directions, and makes way for a left-turn lane on the way into each intersection." });
         road("Highway", 1, 0, false, "65 mph.  $3 a meter.");
         road("Highway", 2, 0, false, "65 mph.  $6 a meter.");
         road("Highway", 3, 0, false, "65 mph.  $9 a meter.  36 ft wide.\nTraffic runs the way you draw it, from the first click to the last.\nWhere it meets another road it gets a traffic light.\nCurves no tighter than 200 ft.");
@@ -181,7 +183,7 @@ internal static class Program
         // The lane tool's card, with the pointer on each button in turn.
         for (int i = 0; i < 4; i++)
         {
-            var card = new LaneCard { Added = i == 1, Turns = i >= 2, CanMiddle = i == 3 };
+            var card = new LaneCard { Added = i == 1, Turns = i >= 2, CanMiddle = i == 3, CanReverse = i != 1, Median = false };
             card.TurnThere[0] = card.TurnThere[1] = card.TurnThere[2] = true;
             card.TurnMay[0] = true;
             s.OffsetY = (states.Length - 1) * h;
@@ -450,6 +452,14 @@ internal static class PenScenes
         pen.Press(P(-90, 15));
         pen.Drag(P(70, 14));
         add("Lane tool: dragging along a road adds a lane for that part", pen, 70, 14, 0, 0, z);
+
+        pen = New("s2", -150, 20, 150, 20);
+        pen.Map.TryAddLane(P(-90, 15), P(20, 15), true);
+        pen.Tool = RoadPen.Move;
+        pen.Hover(P(20, 14.5), px);
+        pen.Press(P(20, 14.5));
+        pen.Drag(P(95, 12));
+        add("Move tool: sliding the end of an added lane along its road", pen, 95, 12, 0, 0, z);
 
         // The same curve from far out, where a meter is a fraction of a pixel: the outlines and pins keep their size on screen.
         pen = New("s2", -500, -200, 500, -200);
