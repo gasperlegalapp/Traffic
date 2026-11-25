@@ -145,6 +145,13 @@ namespace Traffic.Lab
                 {
                     cardShown = true;
                     laneCard.Added = pen.PickedIsAdded;
+                    bool[] there, may;
+                    laneCard.Turns = pen.PickedTurns(out there, out may);
+                    for (int i = 0; i < 3; i++)
+                    {
+                        laneCard.TurnThere[i] = there[i];
+                        laneCard.TurnMay[i] = may[i];
+                    }
                     laneCard.Layout(spot.x / scale, (Screen.height - spot.y) / scale, w, (float)dock.Top - 8);
                     if (e.type == EventType.Repaint) laneCard.Draw(surface, mouse.x, mouse.y);
                     if (e.type == EventType.MouseDown && e.button == 0 && laneCard.Contains(mouse.x, mouse.y))

@@ -164,6 +164,36 @@ namespace Traffic.Ui
         /// <summary>Whether the picked lane is one added along part of its road, which Remove takes away by itself.</summary>
         public bool PickedIsAdded => picked && map.ExtraLaneAt(pickedAt) != null;
 
+        private int turnsStamp = -1;
+        private bool turnsThere;
+        private bool[] turnsExist = new bool[3], turnsMay = new bool[3];
+
+        /// <summary>
+        /// For the picked lane, whether it leads to an intersection with a light or signs, and
+        /// if so the ways on that are there (left, straight on, right) and the ways it may go.
+        /// </summary>
+        public bool PickedTurns(out bool[] exist, out bool[] may)
+        {
+            if (turnsStamp != stamp)
+            {
+                // Finding this out means building the network, so it is done once and kept until something changes.
+                turnsStamp = stamp;
+                turnsThere = picked && map.LaneTurns(pickedAt, out turnsExist, out turnsMay);
+            }
+            exist = turnsExist;
+            may = turnsMay;
+            return turnsThere;
+        }
+
+        /// <summary>Let the picked lane go one of the ways (0 left, 1 straight on, 2 right) if it may not now, or forbid it if it may. Returns true if the map changed.</summary>
+        public bool ToggleTurn(int way, out string refused)
+        {
+            bool[] exist, may;
+            refused = !PickedTurns(out exist, out may) ? "That lane does not lead to an intersection." : map.TrySetTurn(pickedAt, (Turn)way, !may[way], true);
+            stamp++;
+            return refused == null;
+        }
+
         /// <summary>Give the road of the picked lane one more lane on that side, for its whole length. Returns true if the map changed.</summary>
         public bool AddLane(out string refused)
         {
@@ -320,7 +350,7 @@ namespace Traffic.Ui
 
             bool lined;
             double line;
-            Vec end = map.SnapTo(Snapped(p, out lined, out line)).Point;
+            Vec end = map.JoinPoint(Snapped(p, out lined, out line));
             if (!hasStart)
             {
                 start = end;
@@ -339,6 +369,7 @@ namespace Traffic.Ui
                 hasAim = true;
                 return false;
             }
+            end = Eased(end, heading);
             Vec via = default(Vec);
             bool curved = false;
             if (shape == Curve)
@@ -362,6 +393,44 @@ namespace Traffic.Ui
         }
 
         private const string TooSharp = "The road cannot double back on itself. Right-click to point it another way.";
+
+        /// <summary>Whether a road from the start to a point could be built, given the way a curve sets off: null if it could, or the reason.</summary>
+        private string Attempt(Vec end, double heading)
+        {
+            Vec via = default(Vec);
+            bool curved = shape == Curve && EditableMap.Bend(start, heading, end, out via);
+            if (shape == Curve && !curved && Behind(heading, end)) return TooSharp;
+            return map.TryAdd(start, end, type, false, curved ? via : (Vec?)null, level);
+        }
+
+        private int easedStamp = -1;
+        private Vec easedFrom, easedTo;
+
+        /// <summary>
+        /// Where the road being drawn should end, when the place asked for leaves no room for a
+        /// junction of its own: the nearest junction or road end that it can reach instead. The
+        /// player points roughly, and the road joins up where it can.
+        /// </summary>
+        private Vec Eased(Vec end, double heading)
+        {
+            if (easedStamp == stamp && Dist(end, easedFrom) < 0.05) return easedTo;
+            easedStamp = stamp;
+            easedFrom = end;
+            easedTo = end;
+            if (Attempt(end, heading) != EditableMap.NoRoom) return end;
+            int tried = 0;
+            foreach (Vec join in map.JoinsNear(end, 48))
+            {
+                if (Dist(join, start) < 1) continue;
+                if (Attempt(join, heading) == null)
+                {
+                    easedTo = join;
+                    break;
+                }
+                if (++tried >= 3) break;
+            }
+            return easedTo;
+        }
 
         /// <summary>The way a curve from the start sets off, if that is settled: as pointed by hand, or carrying on from the road before.</summary>
         private bool Heading(out double heading)
@@ -770,16 +839,28 @@ namespace Traffic.Ui
         {
             bool lined;
             double line;
-            Snap snap = map.SnapTo(Snapped(pointer, out lined, out line));
-            Vec end = snap.Point;
+            Vec end = map.JoinPoint(Snapped(pointer, out lined, out line));
+            Snap snap = map.SnapTo(end);
             bool caught = snap.Node >= 0 || snap.Segment >= 0;
             if (!hasStart)
             {
                 Ghost.Pin(end, true, caught);
                 return;
             }
-            double reach = Dist(end, start);
             double heading = 0;
+            bool settled = shape != Curve || Heading(out heading);
+            if (settled)
+            {
+                // If there is no room to make a junction where the pointer is, reach for the nearest one.
+                Vec eased = Eased(end, heading);
+                if (Dist(eased, end) > 0.05)
+                {
+                    end = eased;
+                    caught = true;
+                    lined = false;
+                }
+            }
+            double reach = Dist(end, start);
             if (shape == Curve && !Heading(out heading))
             {
                 // Pointing the road: a broken line from the start, with an arrowhead, and nothing built yet.

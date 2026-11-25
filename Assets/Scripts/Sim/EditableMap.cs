@@ -148,6 +148,13 @@ namespace Traffic.Sim
         public bool Ring;
         /// <summary>Lanes added along parts of it.</summary>
         public List<ExtraLane> Extras = new List<ExtraLane>();
+        /// <summary>
+        /// The ways each lane may go at the intersection at either end, where the player has
+        /// said: for the lanes arriving at A and at B, one number a lane counting out from the
+        /// middle of the road, made of 1 for left, 2 for straight on and 4 for right. 0, or no
+        /// list at all, leaves the lane to be worked out.
+        /// </summary>
+        public int[] TurnsAtA, TurnsAtB;
     }
 
     /// <summary>
@@ -243,6 +250,8 @@ namespace Traffic.Sim
             {
                 var piece = new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked };
                 foreach (ExtraLane x in s.Extras) piece.Extras.Add(new ExtraLane { Forward = x.Forward, From = x.From, To = x.To });
+                piece.TurnsAtA = s.TurnsAtA == null ? null : (int[])s.TurnsAtA.Clone();
+                piece.TurnsAtB = s.TurnsAtB == null ? null : (int[])s.TurnsAtB.Clone();
                 copy.Segments.Add(piece);
             }
             return copy;
@@ -844,6 +853,9 @@ namespace Traffic.Sim
             int a = s.A;
             s.A = s.B;
             s.B = a;
+            int[] turns = s.TurnsAtA;
+            s.TurnsAtA = s.TurnsAtB;
+            s.TurnsAtB = turns;
             foreach (ExtraLane x in s.Extras)
             {
                 double from = x.From;
@@ -1245,7 +1257,9 @@ namespace Traffic.Sim
                     }
                     if (Dist(x.At, Nodes[s.A]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.A });
                     else if (Dist(x.At, Nodes[s.B]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.B });
-                    else if (LengthBetween(s, 0, u) < Shortest(s) || LengthBetween(s, u, 1) < Shortest(s)) return "That crosses another road too close to an intersection.";
+                    // Crossing right beside the end of a piece: go through that end instead, a few meters out of line.
+                    else if (LengthBetween(s, 0, u) < Shortest(s)) stops.Add(new Stop { T = x.T, Node = s.A });
+                    else if (LengthBetween(s, u, 1) < Shortest(s)) stops.Add(new Stop { T = x.T, Node = s.B });
                     else
                     {
                         stops.Add(new Stop { T = x.T, Node = Split(i, u) });
@@ -1434,11 +1448,9 @@ namespace Traffic.Sim
                 error = "A road can only join a bridge or tunnel at its ends.";
                 return -1;
             }
-            if (LengthBetween(s, 0, snap.T) < Shortest(s) || LengthBetween(s, snap.T, 1) < Shortest(s))
-            {
-                error = "Too close to the end of that road. Join at the end, or further along.";
-                return -1;
-            }
+            // Right beside the end of a piece: join at that end.
+            if (LengthBetween(s, 0, snap.T) < Shortest(s)) return s.A;
+            if (LengthBetween(s, snap.T, 1) < Shortest(s)) return s.B;
             return Split(snap.Segment, snap.T);
         }
 
@@ -1465,6 +1477,9 @@ namespace Traffic.Sim
                 if (x.To > t + 1e-6) rest.Extras.Add(new ExtraLane { Forward = x.Forward, From = (Math.Max(x.From, t) - t) / (1 - t), To = (x.To - t) / (1 - t) });
             }
             s.Extras = kept;
+            // What the lanes may do at the far end goes with the far part.
+            rest.TurnsAtB = s.TurnsAtB;
+            s.TurnsAtB = null;
             Segments.Add(rest);
             s.B = mid;
             return mid;
@@ -2041,11 +2056,62 @@ namespace Traffic.Sim
             return sharp;
         }
 
+        /// <summary>What a change is refused with when it would put two junctions too close together for the network to build.</summary>
+        public const string NoRoom = "Not enough room there: the junctions would be too close together.";
+
+        /// <summary>
+        /// Where a road dropped at a point should really join. A point on a road that is too
+        /// close to a junction, or to the end of the road, for a junction of its own to fit
+        /// there is moved to that junction or road end; any other point is left where it is.
+        /// </summary>
+        public Vec JoinPoint(Vec p)
+        {
+            Snap snap = SnapTo(p);
+            if (snap.Node >= 0 || snap.Segment < 0) return snap.Point;
+            EditSegment on = Segments[snap.Segment];
+            foreach (Run run in Runs())
+            {
+                int index = run.Pieces.IndexOf(on);
+                if (index < 0) continue;
+                // How far along the whole road the point is, from each end.
+                double before = 0, total = 0;
+                for (int i = 0; i < run.Pieces.Count; i++)
+                {
+                    double length = LengthOf(Trace(run.Pieces[i]));
+                    if (i < index) before += length;
+                    else if (i == index) before += length * (run.Turned[i] ? 1 - snap.T : snap.T);
+                    total += length;
+                }
+                // A junction needs about 12 m to itself, and 15 m of road between it and the next thing; a road end needs less.
+                double fromNeeds = run.JunctionAtFrom ? 40 : 30, toNeeds = run.JunctionAtTo ? 40 : 30;
+                bool nearFrom = before < fromNeeds, nearTo = total - before < toNeeds;
+                if (nearFrom && (!nearTo || before <= total - before)) return Nodes[run.From];
+                if (nearTo) return Nodes[run.To];
+                return snap.Point;
+            }
+            return snap.Point;
+        }
+
+        /// <summary>The junctions and road ends within reach of a point, nearest first: places a road that has no room where it is could join instead.</summary>
+        public List<Vec> JoinsNear(Vec p, double reach)
+        {
+            var roads = new int[Nodes.Count];
+            foreach (EditSegment s in Segments)
+            {
+                roads[s.A]++;
+                roads[s.B]++;
+            }
+            var near = new List<Vec>();
+            for (int i = 0; i < Nodes.Count; i++) if (roads[i] != 2 && Dist(Nodes[i], p) < reach && Dist(Nodes[i], p) > 0.5) near.Add(Nodes[i]);
+            near.Sort((a, b) => Dist(a, p).CompareTo(Dist(b, p)));
+            return near;
+        }
+
         /// <summary>
         /// Why the map as it now stands cannot be built, given the map it was changed from: a
         /// corner the change has made too sharp, or junctions with no room between them. Null if it can be.
         /// </summary>
-        private string Unbuildable(EditableMap before, string noRoom = "Not enough room there: the junctions would be too close together.")
+        private string Unbuildable(EditableMap before, string noRoom = NoRoom)
         {
             var already = new HashSet<int>(before.SharpCorners());
             foreach (int node in SharpCorners())
@@ -2122,6 +2188,10 @@ namespace Traffic.Sim
                 TrackSpec[] back = type.OneWay ? null : Tracks(withFirst ? type.Backward : type.Forward, joins[run.From], first, joins[run.To], last, length, exitAtFrom);
                 fwd = WithExtras(fwd, run, true, exitAtTo);
                 if (back != null) back = WithExtras(back, run, false, exitAtFrom);
+                // Lanes the player has given their turns keep to them.
+                int lastPiece = run.Pieces.Count - 1;
+                Told(fwd, run.Turned[lastPiece] ? last.TurnsAtA : last.TurnsAtB);
+                if (back != null) Told(back, run.Turned[0] ? first.TurnsAtB : first.TurnsAtA);
                 double speed = type.Mph * 0.44704;
                 bool rampAtFrom = joins[run.From] != null && joins[run.From].Ramp == first, rampAtTo = joins[run.To] != null && joins[run.To].Ramp == last;
                 if (rampAtFrom || rampAtTo)
@@ -2151,6 +2221,115 @@ namespace Traffic.Sim
                 foreach (Node node in world.Nodes) if (node.Terminal && Dist(node.Pos, end.At) < 2) node.Name = end.Name;
             }
             return world;
+        }
+
+        /// <summary>Give the lanes that reach the end of a road the turns the player has set for them, where they have.</summary>
+        private static void Told(TrackSpec[] tracks, int[] turns)
+        {
+            if (turns == null) return;
+            for (int i = 0; i < tracks.Length; i++)
+            {
+                int slot = tracks[i].Slot;
+                if (tracks[i].To != 1 || tracks[i].Onto != null || slot < 0 || slot >= turns.Length || turns[slot] == 0) continue;
+                var may = new List<Turn>();
+                if ((turns[slot] & 1) != 0) may.Add(Turn.Left);
+                if ((turns[slot] & 2) != 0) may.Add(Turn.Straight);
+                if ((turns[slot] & 4) != 0) may.Add(Turn.Right);
+                tracks[i].Turns = may.ToArray();
+            }
+        }
+
+        /// <summary>The lane of a built network that a point is on, or null.</summary>
+        private static Lane LaneOf(World world, Vec p)
+        {
+            Lane best = null;
+            double nearest = NetworkBuilder.LaneW * 0.75;
+            foreach (Lane lane in world.Lanes)
+            {
+                if (lane.Kind != LaneKind.Road) continue;
+                double d = lane.Path.Project(p.X, p.Y).D;
+                if (d >= nearest) continue;
+                nearest = d;
+                best = lane;
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// For the lane under a point, the ways it could go at the intersection it leads to
+        /// (left, straight on, right: whichever roads are there) and the ways it may go as things
+        /// stand. False if the lane does not lead to an intersection with a light or signs.
+        /// </summary>
+        public bool LaneTurns(Vec p, out bool[] exist, out bool[] allowed)
+        {
+            int slot;
+            return LaneTurns(p, out exist, out allowed, out slot);
+        }
+
+        private bool LaneTurns(Vec p, out bool[] exist, out bool[] allowed, out int slot)
+        {
+            exist = new bool[3];
+            allowed = new bool[3];
+            slot = 0;
+            World world;
+            try
+            {
+                world = ToWorld();
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+            Lane lane = LaneOf(world, p);
+            if (lane == null || lane.Connectors == null || lane.ApproachTurns == null || !world.Nodes[lane.Node].Controlled) return false;
+            slot = lane.Slot;
+            for (int t = 0; t < 3; t++)
+            {
+                exist[t] = lane.ApproachTurns[t];
+                allowed[t] = lane.Connectors[t] >= 0;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Let the lane under a point make a turn at the intersection it leads to, or forbid it
+        /// to. The other lanes keep whatever they had. Returns null if it was set, or a short
+        /// reason why it cannot be.
+        /// </summary>
+        public string TrySetTurn(Vec p, Turn turn, bool may, bool commit)
+        {
+            bool[] exist, allowed;
+            int slot, seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across) || !LaneTurns(p, out exist, out allowed, out slot)) return "That lane does not lead to an intersection.";
+            if ((int)turn > 2 || !exist[(int)turn]) return "There is no road to go on to that way.";
+            allowed[(int)turn] = may;
+            int ways = (allowed[0] ? 1 : 0) | (allowed[1] ? 2 : 0) | (allowed[2] ? 4 : 0);
+            if (ways == 0) return "A lane has to lead somewhere.";
+            EditableMap work = Clone();
+            EditSegment under = work.Segments[seg];
+            foreach (Run run in work.Runs())
+            {
+                int index = run.Pieces.IndexOf(under);
+                if (index < 0) continue;
+                // The piece at the end of the road this lane arrives at, and which of its ends that is.
+                bool withRun = forward != run.Turned[index];
+                int at = withRun ? run.Pieces.Count - 1 : 0;
+                EditSegment piece = run.Pieces[at];
+                if (piece.Locked) return "That road came with the level.";
+                bool atB = withRun != run.Turned[at];
+                int[] turns = atB ? piece.TurnsAtB : piece.TurnsAtA;
+                if (turns == null || turns.Length <= slot) Array.Resize(ref turns, slot + 1);
+                turns[slot] = ways;
+                if (atB) piece.TurnsAtB = turns;
+                else piece.TurnsAtA = turns;
+                string problem = work.Unbuildable(this);
+                if (problem != null) return problem;
+                if (commit) Segments = work.Segments;
+                return null;
+            }
+            return "That lane does not lead to an intersection.";
         }
 
         /// <summary>How long an extra lane has to be, meters, and how near the end of its road it is taken to run right to the end.</summary>
@@ -2301,6 +2480,8 @@ namespace Traffic.Sim
                 if (s.Level != 0) sb.Append(",L").Append(s.Level);
                 if (s.Locked) sb.Append(",K");
                 foreach (ExtraLane x in s.Extras) sb.Append(",X").Append(x.Forward ? '+' : '-').Append(x.From.ToString("F4", CultureInfo.InvariantCulture)).Append(':').Append(x.To.ToString("F4", CultureInfo.InvariantCulture));
+                if (s.TurnsAtA != null) sb.Append(",TA:").Append(string.Join(".", s.TurnsAtA));
+                if (s.TurnsAtB != null) sb.Append(",TB:").Append(string.Join(".", s.TurnsAtB));
                 sb.Append(';');
             }
             return sb.ToString();
@@ -2323,7 +2504,15 @@ namespace Traffic.Sim
                 {
                     string[] f = item.Split(',');
                     var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]) };
-                    // Extra lanes come last of all: X, the side, and where each starts and ends.
+                    // What the lanes may do at each end comes last of all: TA or TB, and a number for each lane.
+                    while (f[f.Length - 1].StartsWith("TA:") || f[f.Length - 1].StartsWith("TB:"))
+                    {
+                        int[] turns = Array.ConvertAll(f[f.Length - 1].Substring(3).Split('.'), int.Parse);
+                        if (f[f.Length - 1][1] == 'A') s.TurnsAtA = turns;
+                        else s.TurnsAtB = turns;
+                        Array.Resize(ref f, f.Length - 1);
+                    }
+                    // Before that, extra lanes: X, the side, and where each starts and ends.
                     while (f[f.Length - 1].StartsWith("X"))
                     {
                         string[] ends = f[f.Length - 1].Substring(2).Split(':');

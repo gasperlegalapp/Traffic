@@ -176,12 +176,14 @@ internal static class Program
             dock.Draw(s, mx, my);
         }
         // The lane tool's card, with the pointer on each button in turn.
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < 3; i++)
         {
-            var card = new LaneCard { Added = i == 1 };
+            var card = new LaneCard { Added = i == 1, Turns = i == 2 };
+            card.TurnThere[0] = card.TurnThere[1] = card.TurnThere[2] = true;
+            card.TurnMay[0] = true;
             s.OffsetY = (states.Length - 1) * h;
-            card.Layout(170 + i * 300, 150, w, h);
-            card.Draw(s, 80 + i * 430, 80);
+            card.Layout(170 + i * 300, i == 2 ? 215 : 150, w, h);
+            card.Draw(s, 80 + i * 430, i == 2 ? 130 : 80);
         }
         // Every icon, large, to check the drawing.
         s.OffsetY = states.Length * h;

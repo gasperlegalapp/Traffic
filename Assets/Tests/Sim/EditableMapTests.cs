@@ -1285,6 +1285,67 @@ namespace Traffic.Tests
             Assert.IsNotNull(map.TryAddLane(P(150, -5), P(160, -5), true), "by itself it is still too short");
         }
 
+        // ---------------------------------------------------------------- what each lane may do at a light
+
+        [Test]
+        public void ALaneCanBeToldWhichWaysItMayGo()
+        {
+            // Two avenues with two lanes each way, crossing.
+            EditableMap map = Cross(4, 40);
+            bool[] exist, may;
+            // Eastbound, the lane next to the middle of the road, picked well back from the light.
+            Vec inner = P(-120, -1.8), outer = P(-120, -5.5);
+            Assert.IsTrue(map.LaneTurns(inner, out exist, out may));
+            Assert.IsTrue(exist[0] && exist[1] && exist[2], "left, straight on and right are all there to take");
+            Assert.IsTrue(may[0] && may[1] && !may[2], "as worked out: left and straight on from the inside lane");
+            Assert.IsTrue(map.LaneTurns(outer, out exist, out may));
+            Assert.IsTrue(!may[0] && may[1] && may[2], "straight on and right from the outside lane");
+            Assert.IsFalse(map.LaneTurns(P(150, -1.8), out exist, out may), "a lane on its way out of the map leads to no intersection");
+
+            // Make the inside lane a lane for turning left and nothing else.
+            Assert.IsNull(map.TrySetTurn(inner, Turn.Straight, false, false), "trying it changes nothing");
+            Assert.IsTrue(map.LaneTurns(inner, out exist, out may) && may[1]);
+            Assert.IsNull(map.TrySetTurn(inner, Turn.Straight, false, true));
+            Assert.IsTrue(map.LaneTurns(inner, out exist, out may));
+            Assert.IsTrue(may[0] && !may[1] && !may[2]);
+            Assert.IsTrue(map.LaneTurns(outer, out exist, out may));
+            Assert.IsTrue(!may[0] && may[1] && may[2], "the lane beside it is left as it was");
+            Assert.IsNotNull(map.TrySetTurn(inner, Turn.Left, false, true), "a lane has to lead somewhere");
+
+            // It is kept when the drawing is saved, and when the road is cut by another.
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.IsTrue(loaded.LaneTurns(inner, out exist, out may) && may[0] && !may[1]);
+            Assert.IsNull(map.TryAdd(P(-140, 0), P(-140, 150), T("s2"), true));
+            Assert.IsTrue(map.LaneTurns(P(-60, -1.8), out exist, out may) && may[0] && !may[1], "the part still leading to the light keeps it");
+
+            // Traffic follows it: everyone who goes straight on from the west does so from the outside lane.
+            World world = Cross(4, 40).ToWorld();
+            EditableMap ruled = Cross(4, 40);
+            Assert.IsNull(ruled.TrySetTurn(inner, Turn.Straight, false, true));
+            world = ruled.ToWorld();
+            Node light = world.Nodes.Single(n => n.Arms.Count == 4);
+            Lane turnLane = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Node == light.Id && Math.Abs(l.Path.At(l.Length).Y + 1.83) < 0.3 && l.Path.At(l.Length).X < 0);
+            var sim = new Simulation(world, 4);
+            sim.ArrivalsPerMinute = 16;
+            int wrong = 0, turned = 0;
+            Grid.Run(sim, 400, () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    c.Drv.Compliance = 1;
+                    Lane on = world.Lanes[c.Lane];
+                    if (on.Kind != LaneKind.Connector || on.From != turnLane.Id) continue;
+                    if (on.Turn == Turn.Left) turned++;
+                    else wrong++;
+                }
+            });
+            Assert.AreEqual(0, wrong, "nobody goes straight on from the left-turn lane");
+            Assert.Greater(turned, 0, "and it is used for turning left");
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 40);
+        }
+
         // ---------------------------------------------------------------- forks, and roads coming together
 
         /// <summary>A two-lane one-way road that splits into two single lanes, which go their own ways and come back together.</summary>

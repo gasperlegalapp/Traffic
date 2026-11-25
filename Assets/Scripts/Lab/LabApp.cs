@@ -348,7 +348,7 @@ namespace Traffic.Lab
         {
             string before = drawing.Serialize();
             string refused;
-            bool changed = act == LaneAct.Add ? pen.AddLane(out refused) : pen.RemoveLane(out refused);
+            bool changed = act == LaneAct.Add ? pen.AddLane(out refused) : act == LaneAct.Remove ? pen.RemoveLane(out refused) : pen.ToggleTurn(act - LaneAct.Left, out refused);
             if (refused != null) Toast(refused);
             if (changed) DrawingChanged(before);
         }
