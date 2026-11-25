@@ -1,9 +1,11 @@
+using System;
+
 namespace Traffic.Ui
 {
     /// <summary>The icons on the toolbar, each drawn in code as a white shape that can be tinted.</summary>
     public static class Icons
     {
-        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star", "replace", "angle", "grid", "move", "lane", "plus", "minus", "goleft", "goahead", "goright", "sign" };
+        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star", "replace", "angle", "grid", "move", "lane", "plus", "minus", "goleft", "goahead", "goright", "sign", "sun", "moon" };
 
         /// <summary>Draw an icon into a square of the given size. Returns coverage per pixel, rows from the top.</summary>
         public static float[] Draw(string name, int size)
@@ -143,6 +145,19 @@ namespace Traffic.Ui
                     break;
                 case "minus":
                     p.Line(18, 50, 82, 50, 13);
+                    break;
+                case "sun": // a disc with rays
+                    p.Dot(50, 50, 34);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double a = i * Math.PI / 4;
+                        p.Line(50 + Math.Cos(a) * 30, 50 + Math.Sin(a) * 30, 50 + Math.Cos(a) * 43, 50 + Math.Sin(a) * 43, 8);
+                    }
+                    break;
+                case "moon": // a crescent: a disc with a bite out of it
+                    p.Dot(46, 52, 66);
+                    p.Erase = true;
+                    p.Dot(64, 38, 56);
                     break;
                 case "sign": // an eight-sided sign on a post
                     p.Line(36, 8, 64, 8, 8);

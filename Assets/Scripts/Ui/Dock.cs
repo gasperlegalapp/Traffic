@@ -17,7 +17,7 @@ namespace Traffic.Ui
         void Text(string text, double x, double y, double w, double h, int size, bool bold, int align, uint color);
     }
 
-    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Snap, Grid, Pause, Step, Rate }
+    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Snap, Grid, Pause, Step, Rate, Night }
 
     /// <summary>A kind of road on offer in the tray: enough to draw its picture and explain it.</summary>
     public sealed class DockRoad
@@ -58,7 +58,10 @@ namespace Traffic.Ui
         public const uint Lift = 0x16FFFFFF, Hover = 0x2CFFFFFF;
         private const uint Panel = 0xF2141A1E, Edge = 0x26FFFFFF;
         private const uint Grass = 0xFF6F9C5B, Asphalt = 0xFF3B4147, Yellow = 0xFFF2C744, Paint = 0xE6FFFFFF;
-        private const double Button = 44, Gap = 6, Pad = 8, BarHeight = 60, Margin = 14;
+        // The buttons on the bar are big, with a word under each picture: easy to hit, and nobody has to hover to find out what one does.
+        private const double Button = 64, ButtonH = 58, Gap = 6, Pad = 8, BarHeight = ButtonH + 2 * Pad, Margin = 14;
+        /// <summary>The Drive button is the loud one: road-paint yellow.</summary>
+        public const uint Go = 0xFFFFC832, GoHot = 0xFFFFD866;
 
         public static readonly string[] RateNames = { "1/4x", "1x", "2x", "4x" };
         /// <summary>The shapes a road can be drawn in, by the name of their icon, in the order the tray shows them.</summary>
@@ -72,6 +75,9 @@ namespace Traffic.Ui
         /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen, 3 moves and bends what is there, 4 adds and removes lanes, 5 sets signs, lights and speed limits.</summary>
         public int Tool;
         private static readonly string[] ToolIcons = { "road", "bulldoze", "replace", "move", "lane", "sign" };
+        private static readonly string[] ToolNames = { "Road", "Bulldoze", "Replace", "Move", "Lanes", "Signs" };
+        /// <summary>True after dark: lamps, headlights and signals do the lighting.</summary>
+        public bool Night;
         public int Shape, Road, Rate;
         /// <summary>Snapping: pull new roads into line with the roads they start from.</summary>
         public bool SnapAngles;
@@ -125,19 +131,18 @@ namespace Traffic.Ui
                 Add(DockKind.Redo, 0, Button);
                 Add(DockKind.Clear, 0, Button);
                 Add(DockKind.None, 0, 0);
-                Add(DockKind.Drive, 0, 104);
+                Add(DockKind.Night, 0, Button);
+                Add(DockKind.Drive, 0, 132);
             }
             else
             {
                 Add(DockKind.Pause, 0, Button);
                 Add(DockKind.Step, 0, Button);
                 Add(DockKind.None, 0, 0);
-                for (int i = 0; i < RateNames.Length; i++) Add(DockKind.Rate, i, 50);
-                if (OwnMap)
-                {
-                    Add(DockKind.None, 0, 0);
-                    Add(DockKind.Build, 0, 104);
-                }
+                for (int i = 0; i < RateNames.Length; i++) Add(DockKind.Rate, i, 54);
+                Add(DockKind.None, 0, 0);
+                Add(DockKind.Night, 0, Button);
+                if (OwnMap) Add(DockKind.Build, 0, 124);
             }
             barW = Pad * 2 - Gap;
             foreach (DockItem k in kinds) barW += k.W + Gap;
@@ -147,7 +152,7 @@ namespace Traffic.Ui
             foreach (DockItem k in kinds)
             {
                 if (k.Kind == DockKind.None) dividers.Add(x - Gap / 2);
-                else Items.Add(new DockItem { Kind = k.Kind, Index = k.Index, X = x, Y = barY + Pad, W = k.W, H = Button });
+                else Items.Add(new DockItem { Kind = k.Kind, Index = k.Index, X = x, Y = barY + Pad, W = k.W, H = ButtonH });
                 x += k.W + Gap;
             }
             Top = barY;
@@ -241,8 +246,8 @@ namespace Traffic.Ui
         {
             DockItem over = ItemAt(mouseX, mouseY);
 
-            Card(s, barX, barY, barW, BarHeight, 20);
-            foreach (double d in dividers) s.Fill(d - 0.5, barY + 16, 1, BarHeight - 32, 0, Edge);
+            Card(s, barX, barY, barW, BarHeight, 24);
+            foreach (double d in dividers) s.Fill(d - 0.5, barY + 18, 1, BarHeight - 36, 0, Edge);
             if (tray)
             {
                 Card(s, trayX, trayY, trayW, trayH, 20);
@@ -261,22 +266,25 @@ namespace Traffic.Ui
                 switch (item.Kind)
                 {
                     case DockKind.Tool:
-                        Glyph(s, item, ToolIcons[item.Index], Tool == item.Index, hot, true);
+                        Labeled(s, item, ToolIcons[item.Index], ToolNames[item.Index], Tool == item.Index, hot, true);
                         break;
                     case DockKind.Undo:
-                        Glyph(s, item, "undo", false, hot, CanUndo);
+                        Labeled(s, item, "undo", "Undo", false, hot, CanUndo);
                         break;
                     case DockKind.Redo:
-                        Glyph(s, item, "redo", false, hot, CanRedo);
+                        Labeled(s, item, "redo", "Redo", false, hot, CanRedo);
                         break;
                     case DockKind.Clear:
-                        Glyph(s, item, "trash", false, hot, true);
+                        Labeled(s, item, "trash", "Clear", false, hot, true);
                         break;
                     case DockKind.Pause:
-                        Glyph(s, item, Paused ? "play" : "pause", false, hot, true);
+                        Labeled(s, item, Paused ? "play" : "pause", Paused ? "Play" : "Pause", false, hot, true);
                         break;
                     case DockKind.Step:
-                        Glyph(s, item, "step", false, hot, true);
+                        Labeled(s, item, "step", "Step", false, hot, true);
+                        break;
+                    case DockKind.Night:
+                        Labeled(s, item, Night ? "moon" : "sun", Night ? "Night" : "Day", false, hot, true);
                         break;
                     case DockKind.Shape:
                         if (Shape != item.Index) s.Fill(item.X, item.Y, item.W, item.H, 12, Lift);
@@ -285,20 +293,19 @@ namespace Traffic.Ui
                     case DockKind.Rate:
                         {
                             bool on = Rate == item.Index && !Paused;
-                            if (on) s.Fill(item.X, item.Y, item.W, item.H, 12, Accent);
-                            else if (hot) s.Fill(item.X, item.Y, item.W, item.H, 12, Hover);
-                            s.Text(RateNames[item.Index], item.X, item.Y, item.W, item.H, 14, true, 1, on ? Ink : Light);
+                            s.Fill(item.X, item.Y, item.W, item.H, 16, on ? Accent : hot ? Hover : Lift);
+                            s.Text(RateNames[item.Index], item.X, item.Y, item.W, item.H, 15, true, 1, on ? Ink : Light);
                         }
                         break;
                     case DockKind.Drive:
-                        s.Fill(item.X, item.Y, item.W, item.H, 12, hot ? 0xFF8BF0D6 : Accent);
-                        s.Icon("play", item.X + 16, item.Y + 13, 18, Ink);
-                        s.Text("Drive", item.X + 40, item.Y, item.W - 48, item.H, 15, true, 0, Ink);
+                        s.Fill(item.X, item.Y, item.W, item.H, 16, hot ? GoHot : Go);
+                        s.Icon("play", item.X + 22, item.Y + 18, 22, Ink);
+                        s.Text("Drive", item.X + 52, item.Y, item.W - 60, item.H, 20, true, 0, Ink);
                         break;
                     case DockKind.Build:
-                        s.Fill(item.X, item.Y, item.W, item.H, 12, hot ? Hover : Lift);
-                        s.Icon("cone", item.X + 14, item.Y + 12, 20, Light);
-                        s.Text("Build", item.X + 40, item.Y, item.W - 48, item.H, 15, true, 0, Light);
+                        s.Fill(item.X, item.Y, item.W, item.H, 16, hot ? 0xFF8BF0D6 : Accent);
+                        s.Icon("cone", item.X + 20, item.Y + 17, 24, Ink);
+                        s.Text("Build", item.X + 52, item.Y, item.W - 60, item.H, 20, true, 0, Ink);
                         break;
                     case DockKind.Road:
                         RoadTile(s, item, Roads[item.Index], Road == item.Index, hot);
@@ -338,6 +345,16 @@ namespace Traffic.Ui
         }
 
         /// <summary>A square button with an icon in the middle.</summary>
+        /// <summary>A button on the bar: its picture over its name.</summary>
+        private static void Labeled(ISurface s, DockItem item, string icon, string name, bool chosen, bool hot, bool enabled)
+        {
+            s.Fill(item.X, item.Y, item.W, item.H, 16, chosen ? Accent : hot && enabled ? Hover : Lift);
+            uint ink = chosen ? Ink : enabled ? Light : 0x4DE7EDF0;
+            const double size = 26;
+            s.Icon(icon, item.X + (item.W - size) / 2, item.Y + 7, size, ink);
+            s.Text(name, item.X, item.Y + 36, item.W, 16, 11, true, 1, ink);
+        }
+
         private static void Glyph(ISurface s, DockItem item, string icon, bool chosen, bool hot, bool enabled)
         {
             if (chosen) s.Fill(item.X, item.Y, item.W, item.H, 12, Accent);
@@ -463,6 +480,10 @@ namespace Traffic.Ui
                         : item.Index == 2 ? "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.\nKey R."
                         : item.Index == 3 ? "Drag a point to move it, and the roads that meet there follow.\nDrag the middle of a road to bend it into a curve, or pull a curve back straight.\nKey M."
                         : "Work on single lanes. Click a lane to pick it, and a card offers to add a lane on that side of the road or take one away.\nDrag along the side of a road to add a lane for just that part: room to pull over, to pass, or to wait to turn. Run it to the end of the road and it becomes a lane of the junction there; run it up to an exit and it is the exit's own lane; start it where a ramp merges in and the ramp keeps its lane.\nKey L.";
+                    break;
+                case DockKind.Night:
+                    title = Night ? "Night" : "Day";
+                    body = Night ? "It is after dark: street lamps, headlights and signals light the roads. Click for daylight.\nKey K." : "Click to see the same roads after dark, by street lamps and headlights.\nKey K.";
                     break;
                 case DockKind.Undo:
                     title = "Undo";

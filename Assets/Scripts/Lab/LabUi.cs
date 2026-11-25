@@ -114,6 +114,7 @@ namespace Traffic.Lab
             dock.OwnMap = Buildable;
             dock.Building = building;
             dock.Paused = paused;
+            dock.Night = night;
             dock.CanUndo = undo.Count > 0;
             dock.CanRedo = redo.Count > 0;
             dock.Tool = pen.Tool;
@@ -265,6 +266,9 @@ namespace Traffic.Lab
                     break;
                 case DockKind.Grid:
                     pen.Grid = RoadPen.GridFeet[item.Index];
+                    break;
+                case DockKind.Night:
+                    SetNight(!night);
                     break;
                 case DockKind.Pause:
                     paused = !paused;
@@ -859,6 +863,7 @@ namespace Traffic.Lab
                         else if (e.keyCode == KeyCode.M) pen.Tool = RoadPen.Move;
                         else if (e.keyCode == KeyCode.L) pen.Tool = RoadPen.Lane;
                         else if (e.keyCode == KeyCode.T) pen.Tool = RoadPen.Signs;
+                        else if (e.keyCode == KeyCode.K) SetNight(!night);
                         else if (e.keyCode == KeyCode.R) pen.Tool = RoadPen.Replace;
                         else if (e.keyCode == KeyCode.B) pen.Tool = RoadPen.Bulldoze;
                         else if (e.keyCode == KeyCode.G) pen.Grid = RoadPen.GridFeet[(System.Array.IndexOf(RoadPen.GridFeet, pen.Grid) + 1) % RoadPen.GridFeet.Length];

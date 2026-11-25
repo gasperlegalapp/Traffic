@@ -365,6 +365,15 @@ namespace Traffic.Lab
             if (changed) DrawingChanged(before);
         }
 
+        /// <summary>True after dark.</summary>
+        private bool night;
+
+        /// <summary>Switch between daylight and night.</summary>
+        private void SetNight(bool dark)
+        {
+            night = dark;
+        }
+
         private Mesh ghostMesh;
         private GameObject ghostObject;
         private int ghostVersion = -1;
