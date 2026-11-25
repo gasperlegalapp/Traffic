@@ -40,13 +40,14 @@ namespace Traffic.Sim
 
         public string Name => GroupNames[Group] + ", " + (OneWay
             ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " one-way"
-            : (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way");
+            : (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way" + (Median > 0 ? ", with a median" : ""));
 
         /// <summary>The roads on offer, in the order the toolbar shows them.</summary>
         public static readonly RoadType[] All =
         {
             new RoadType { Id = "s2", Group = Street, Forward = 1, Backward = 1, Mph = 25, MinRadius = 22, CostPerMeter = 2 },
             new RoadType { Id = "s1", Group = Street, Forward = 1, Mph = 25, MinRadius = 22, CostPerMeter = 1 },
+            new RoadType { Id = "a2p", Group = Avenue, Forward = 1, Backward = 1, Mph = 40, MinRadius = 30, CostPerMeter = 2.5 },
             new RoadType { Id = "a2", Group = Avenue, Forward = 1, Backward = 1, Median = 3, Mph = 40, MinRadius = 30, CostPerMeter = 3 },
             new RoadType { Id = "a4", Group = Avenue, Forward = 2, Backward = 2, Median = 3, Mph = 40, MinRadius = 30, CostPerMeter = 6 },
             new RoadType { Id = "a1", Group = Avenue, Forward = 1, Mph = 40, MinRadius = 30, CostPerMeter = 2 },
@@ -106,6 +107,13 @@ namespace Traffic.Sim
         public bool Locked;
         /// <summary>Part of a roundabout. Where a road meets one there are no lights or signs: traffic going round has the right of way.</summary>
         public bool Ring;
+    }
+
+    /// <summary>A place where the roads as drawn cannot work, and why.</summary>
+    public struct Fault
+    {
+        public Vec At;
+        public string What;
     }
 
     /// <summary>Where a point lands when it is dropped on the map.</summary>
@@ -513,6 +521,54 @@ namespace Traffic.Sim
                 foreach (Crossing x in Crossings(path, Trace(s))) places.Add(x.At);
             }
             return places;
+        }
+
+        // ---------------------------------------------------------------- what cannot work
+
+        /// <summary>
+        /// The places where traffic could not flow as the roads are drawn: a point that traffic
+        /// arrives at with no road to leave by, because the one-way roads there run the wrong
+        /// way, or a road that nothing leads into. These are not refused while drawing, since a
+        /// junction is often right only once its last road is in; they are shown, so that none is left by mistake.
+        /// </summary>
+        public List<Fault> Faults()
+        {
+            // How many of the roads at each point bring traffic to it, and how many take traffic away.
+            var arrive = new int[Nodes.Count];
+            var leave = new int[Nodes.Count];
+            var roads = new int[Nodes.Count];
+            foreach (EditSegment s in Segments)
+            {
+                roads[s.A]++;
+                roads[s.B]++;
+                arrive[s.B]++;
+                leave[s.A]++;
+                if (s.Type.OneWay) continue;
+                arrive[s.A]++;
+                leave[s.B]++;
+            }
+            var faults = new List<Fault>();
+            var found = new bool[Nodes.Count];
+            foreach (EditSegment s in Segments)
+            {
+                foreach (int node in new[] { s.A, s.B })
+                {
+                    // A road end with nothing joined to it is the edge of the map, where traffic comes and goes.
+                    if (roads[node] < 2 || found[node]) continue;
+                    bool brings = !s.Type.OneWay || s.B == node, takes = !s.Type.OneWay || s.A == node;
+                    if (brings && leave[node] - (takes ? 1 : 0) == 0)
+                    {
+                        faults.Add(new Fault { At = Nodes[node], What = "Traffic arriving here has nowhere to go: no road leads away. A one-way road runs the way it was drawn." });
+                        found[node] = true;
+                    }
+                    else if (takes && arrive[node] - (brings ? 1 : 0) == 0)
+                    {
+                        faults.Add(new Fault { At = Nodes[node], What = "Nothing can reach the road that leaves here: no road leads in. A one-way road runs the way it was drawn." });
+                        found[node] = true;
+                    }
+                }
+            }
+            return faults;
         }
 
         // ---------------------------------------------------------------- moving and reshaping

@@ -500,11 +500,29 @@ namespace Traffic.Ui
             else if (tool == Move) Handles();
             else if (shape == Roundabout) RingPicture();
             else RoadPicture();
+            // With nothing else to say, say what is wrong with a ringed place the pointer is on.
+            if (Note.Length > 0 || Busy) return;
+            foreach (Fault fault in faults)
+            {
+                if (Dist(fault.At, pointer) > NodeReach) continue;
+                Note = fault.What;
+                NoteBad = true;
+                break;
+            }
         }
+
+        private List<Fault> faults = new List<Fault>();
 
         /// <summary>Marks on the map itself: the open road ends a new road can carry on from, or everything the move tool can drag.</summary>
         private void Marks()
         {
+            // A red ring round every place where traffic could not flow, whatever tool is out.
+            faults = map.Faults();
+            foreach (Fault fault in faults)
+            {
+                Ghost.Ring(fault.At, Ghost.AtLeast(7, 13), Ghost.AtLeast(0.9, 3), Ghost.BadInk);
+                Ghost.Dot(fault.At, 1.2, 4, Ghost.BadInk);
+            }
             if (tool != Road && tool != Move) return;
             var roads = new int[map.Nodes.Count];
             var held = new bool[map.Nodes.Count];

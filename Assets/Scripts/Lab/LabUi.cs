@@ -27,12 +27,14 @@ namespace Traffic.Lab
         private Texture2D white;
         private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint;
         private Vector2 labScroll;
-        private bool dragging;
-        /// <summary>The move tool has hold of something, so the drag in progress moves that and not the view.</summary>
+        /// <summary>The right button is down, to drag the view; the middle button is down, to turn it.</summary>
+        private bool panning, turning;
+        /// <summary>The move tool has hold of something, so the drag in progress moves that.</summary>
         private bool grabbing;
-        /// <summary>The pointer has gone far enough from where the button went down to count as a drag and not a click.</summary>
-        private bool dragMoved;
+        /// <summary>The pointer has gone far enough from where the right button went down to count as a drag and not a click.</summary>
+        private bool panMoved;
         private Vector2 lastMouse, pressPixel;
+        private const string ViewHelp = "Right-drag moves the view.  Wheel zooms.  Middle-drag, or Q and E, turns it.  N puts north back up.";
 
         private void BuildStyles()
         {
@@ -145,6 +147,14 @@ namespace Traffic.Lab
                 if (!pen.NoteBad) Card(r, 9);
                 else if (e.type == EventType.Repaint) surface.Fill(r.x, r.y, r.width, r.height, 9, 0xF2A32920);
                 GUI.Label(new Rect(r.x + 10, r.y + 3, size.x + 4, 20), pen.Note, label);
+            }
+
+            // How to move the view, in the top right corner, out of the way.
+            {
+                Vector2 size = hint.CalcSize(new GUIContent(ViewHelp));
+                var r = new Rect(w - size.x - 36, 12, size.x + 24, 28);
+                Card(r, 14);
+                GUI.Label(new Rect(r.x + 12, r.y + 5, size.x + 4, 18), ViewHelp, hint);
             }
 
             if (Time.unscaledTime < toastUntil)
@@ -701,42 +711,81 @@ namespace Traffic.Lab
             switch (e.type)
             {
                 case EventType.MouseDown:
-                    if (!overUi && e.button == 1 && building) pen.Back(); // right-click takes back the last click of the road being drawn
-                    if (!overUi && e.button == 0)
+                    if (overUi) break;
+                    if (e.button == 0)
                     {
-                        // With the move tool, a press on a point or a road takes hold of it; anywhere else it is the view that is dragged.
+                        // The left button builds and picks things; it never moves the view. With the move tool a press
+                        // on a point or a road takes hold of it; any other press is a click, there and then.
                         grabbing = building && GrabAt(pixel);
-                        dragging = !grabbing;
-                        dragMoved = false;
-                        lastMouse = pressPixel = pixel;
-                    }
-                    break;
-                case EventType.MouseDrag:
-                    if (grabbing) GrabTo(pixel);
-                    else if (dragging)
-                    {
-                        // A hand is never quite still: the view only starts to move once the pointer has clearly left
-                        // where it went down. Anything less is a click.
-                        if (!dragMoved && (pixel - pressPixel).magnitude > Mathf.Max(8f, Screen.height / 120f)) dragMoved = true;
-                        if (!dragMoved) break;
-                        Vector2 d = pixel - lastMouse;
-                        lastMouse = pixel;
-                        Pan(d.x, d.y);
-                    }
-                    break;
-                case EventType.MouseUp:
-                    if (grabbing) GrabDrop();
-                    else if (dragging && !dragMoved)
-                    {
+                        if (grabbing) break;
                         if (building) EditClick(pixel);
                         else ClickAt(pixel);
                     }
-                    dragging = grabbing = false;
+                    else if (e.button == 1)
+                    {
+                        panning = true;
+                        panMoved = false;
+                        lastMouse = pressPixel = pixel;
+                    }
+                    else if (e.button == 2)
+                    {
+                        turning = true;
+                        lastMouse = pixel;
+                    }
+                    break;
+                case EventType.MouseDrag:
+                    if (grabbing && e.button == 0) GrabTo(pixel);
+                    else if (panning && e.button == 1)
+                    {
+                        // A hand is never quite still: the view only starts to move once the pointer has clearly left
+                        // where it went down. Anything less is a right-click.
+                        if (!panMoved && (pixel - pressPixel).magnitude > Mathf.Max(8f, Screen.height / 120f)) panMoved = true;
+                        if (!panMoved) break;
+                        Pan(pixel.x - lastMouse.x, pixel.y - lastMouse.y);
+                        lastMouse = pixel;
+                    }
+                    else if (turning && e.button == 2)
+                    {
+                        Swing((pixel.x - lastMouse.x) * 0.006f, (lastMouse.y - pixel.y) * 0.004f);
+                        lastMouse = pixel;
+                    }
+                    break;
+                case EventType.MouseUp:
+                    if (e.button == 0)
+                    {
+                        if (grabbing) GrabDrop();
+                        grabbing = false;
+                    }
+                    else if (e.button == 1)
+                    {
+                        // A right-click that did not drag the view takes back the last click of the road being drawn.
+                        if (panning && !panMoved && building) pen.Back();
+                        panning = false;
+                    }
+                    else if (e.button == 2) turning = false;
                     break;
                 case EventType.ScrollWheel:
-                    if (!overUi) Zoom(Mathf.Exp(e.delta.y * 0.04f));
+                    if (!overUi) Zoom(Mathf.Exp(e.delta.y * 0.04f), pixel);
+                    break;
+                case EventType.KeyUp:
+                    held.Remove(e.keyCode);
                     break;
                 case EventType.KeyDown:
+                    if (!(e.control || e.command || e.alt))
+                    {
+                        // Keys that move or turn the view work while they are held: see LabApp.MoveView.
+                        if (e.keyCode == KeyCode.W || e.keyCode == KeyCode.A || e.keyCode == KeyCode.S || e.keyCode == KeyCode.D || e.keyCode == KeyCode.Q || e.keyCode == KeyCode.E
+                            || e.keyCode == KeyCode.LeftArrow || e.keyCode == KeyCode.RightArrow || e.keyCode == KeyCode.UpArrow || e.keyCode == KeyCode.DownArrow)
+                        {
+                            held.Add(e.keyCode);
+                            break;
+                        }
+                        if (e.keyCode == KeyCode.N || e.keyCode == KeyCode.Home)
+                        {
+                            FaceNorth();
+                            break;
+                        }
+                    }
                     if (building)
                     {
                         if (e.keyCode == KeyCode.Escape) StopDrawing();

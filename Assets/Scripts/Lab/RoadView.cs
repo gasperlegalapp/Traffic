@@ -70,7 +70,7 @@ namespace Traffic.Lab
             var lanePoints = new Dictionary<long, List<Vec>>();
             foreach (Lane lane in world.Lanes)
             {
-                if (lane.Kind != LaneKind.Road) continue;
+                if (!Sidewalks || lane.Kind != LaneKind.Road) continue;
                 for (double d = 0; d <= lane.Length; d += 2)
                 {
                     PathPose at = lane.Path.At(d);
@@ -94,8 +94,8 @@ namespace Traffic.Lab
                 }
                 return false;
             }
-            // The roadside along one edge of the pavement: a raised sidewalk with a curb on a street,
-            // a gravel shoulder on a highway. Side is 1 for the right of the line, -1 for the left.
+            // The roadside along one edge of the pavement: a gravel shoulder on a highway and, when
+            // sidewalks are on, a raised sidewalk with a curb on a street. Side is 1 for the right of the line, -1 for the left.
             void Roadside(IList<Vec> edge, int side, bool fast)
             {
                 if (edge.Count < 2) return;
@@ -106,6 +106,7 @@ namespace Traffic.Lab
                     else shoulders.Strip(outer, edge, 0.022f);
                     return;
                 }
+                if (!Sidewalks) return;
                 var list = new List<Vec>(edge);
                 Vec[] full = Geo.Offset(list, side * WalkWidth), slim = Geo.Offset(list, side * 0.35);
                 var far = new Vec[edge.Count];
@@ -167,7 +168,6 @@ namespace Traffic.Lab
             // The roads are newly laid: dark, even asphalt with nothing worn into it, and bright paint.
             Material asphaltMaterial = MeshKit.Textured(asphaltPhoto, asphaltPhoto != null ? Color.white : MeshKit.Hex(0x3c3e42), 0.1f);
             MeshKit.Spawn("Asphalt", asphalt.Build(), asphaltMaterial, root, false);
-            if (!walks.Empty) MeshKit.Spawn("Sidewalks", walks.Build(), MeshKit.Textured(walkPhoto, walkPhoto != null ? Color.white : MeshKit.Hex(0xc6c4be), 0.05f), root, true);
             if (!shoulders.Empty) MeshKit.Spawn("Shoulders", shoulders.Build(), MeshKit.Textured(gravelPhoto, gravelPhoto != null ? Color.white : MeshKit.Hex(0x89816f), 0), root, false);
             if (anyBridge)
             {
@@ -211,6 +211,9 @@ namespace Traffic.Lab
                 MeshKit.Spawn("Medians", lawn.Build(), GroundMaterial(), root, false);
                 if (planted > 0) MeshKit.Spawn("Median plants", plants.Build(), ArtKit.Canopy, root, true);
             }
+
+            // Built last of the surfaces, so that it holds the curbs round the medians as well as any sidewalks.
+            if (!walks.Empty) MeshKit.Spawn("Curbs", walks.Build(), MeshKit.Textured(walkPhoto, walkPhoto != null ? Color.white : MeshKit.Hex(0xc6c4be), 0.05f), root, true);
 
             var white = new FlatBuilder();
             var yellow = new FlatBuilder();
@@ -296,8 +299,14 @@ namespace Traffic.Lab
             AddScenery(world, root);
         }
 
-        /// <summary>A road this fast (meters per second) has gravel shoulders; a slower one has curbs and sidewalks.</summary>
+        /// <summary>A road this fast (meters per second) has gravel shoulders.</summary>
         private const double FastRoad = 24;
+        /// <summary>
+        /// Whether slower roads get a raised sidewalk and curb along each side and round each
+        /// corner. Off for now: the plan is for the zones a city is built from to lay sidewalks
+        /// where they belong, not for every road to have them.
+        /// </summary>
+        private static readonly bool Sidewalks = false;
         private const double WalkWidth = 2.2, ShoulderWidth = 2.6, LaneReach = 2.1;
         private const float CurbHeight = 0.16f;
 

@@ -24,8 +24,10 @@ namespace Traffic.Lab
     {
         private const float Mph = 2.23694f;
         private const float Feet = 3.28084f;
-        /// <summary>Camera tilt away from straight down, radians.</summary>
-        private const float Tilt = 0.4f;
+        /// <summary>How far the camera leans away from straight down, radians, and which way it faces (0 is north up).</summary>
+        private float tilt = 0.4f, yaw;
+        /// <summary>Keys held down that move or turn the view. Kept from GUI key events, so it works under either input setting.</summary>
+        private readonly HashSet<KeyCode> held = new HashSet<KeyCode>();
 
         /// <summary>The running lab, if any.</summary>
         public static LabApp Instance { get; private set; }
@@ -276,6 +278,7 @@ namespace Traffic.Lab
             if (level != null && routesJoined < level.RouteCount) Toast("Not every route is joined up yet: nothing can get from " + routeMissing + ".");
             else if (level != null && drawing.Cost() > level.Budget + 0.5) Toast("These roads cost more than the budget, so the level will not count as solved.");
             else if (world.Entries.Count == 0 && drawing.Segments.Count > 0) Toast("No road runs off the map, so no traffic will arrive. Leave a road end open.");
+            else if (drawing.Faults().Count > 0) Toast("Traffic cannot get through everywhere. The trouble spots are ringed in red when you build.");
         }
 
         /// <summary>The spot on the ground under a screen point (pixels, y down).</summary>
@@ -410,7 +413,7 @@ namespace Traffic.Lab
             for (int i = 0; i < tiles.Length; i++)
             {
                 RoadType t = RoadType.All[i];
-                string body = t.Mph + " mph.  " + Money(t.CostPerMeter) + " a meter.  " + Mathf.RoundToInt((float)t.Width * Feet) + " ft wide.\n";
+                string body = t.Mph + " mph.  $" + t.CostPerMeter.ToString(t.CostPerMeter % 1 == 0 ? "0" : "0.00", System.Globalization.CultureInfo.InvariantCulture) + " a meter.  " + Mathf.RoundToInt((float)t.Width * Feet) + " ft wide.\n";
                 body += t.OneWay ? "Traffic runs the way you draw it. Bring it in alongside another road, on the right of that road's traffic, and it merges in; start it on one the same way and it peels off."
                     : t.Median > 0 ? "A grass median divides the two directions."
                     : "A double yellow line divides the two directions.";
@@ -592,24 +595,77 @@ namespace Traffic.Lab
             UpdateSensorLines();
             ShowGhost();
 
-            cam.transform.position = target + new Vector3(0, dist * Mathf.Cos(Tilt), -dist * Mathf.Sin(Tilt));
-            cam.transform.LookAt(target, Vector3.forward);
+            MoveView(Mathf.Min(Time.unscaledDeltaTime, 0.1f));
+            PlaceCamera();
         }
 
         // ------------------------------------------------------------ camera and clicks
 
-        private void Zoom(float factor)
+        /// <summary>Put the camera where the view says: so far from the point looked at, leaning so much, facing such a way.</summary>
+        private void PlaceCamera()
         {
+            float sin = Mathf.Sin(yaw), cos = Mathf.Cos(yaw), back = dist * Mathf.Sin(tilt);
+            cam.transform.position = target + new Vector3(-sin * back, dist * Mathf.Cos(tilt), -cos * back);
+            cam.transform.LookAt(target, new Vector3(sin, 0, cos));
+        }
+
+        /// <summary>Zoom in or out, keeping the spot under the pointer (pixels, y down) under it.</summary>
+        private void Zoom(float factor, Vector2 pixel)
+        {
+            Vec before, after;
+            bool anchored = GroundAt(pixel, out before) && !follow;
             dist = Mathf.Clamp(dist * factor, 35, 2600);
+            PlaceCamera();
+            if (!anchored || !GroundAt(pixel, out after)) return;
+            target.x += (float)(before.X - after.X);
+            target.z += (float)(before.Y - after.Y);
+            PlaceCamera();
         }
 
         /// <summary>Drag the view. dx and dy are in screen pixels, y down.</summary>
         private void Pan(float dx, float dy)
         {
             float perPixel = 2 * dist * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad) / Mathf.Max(Screen.height, 1);
-            target.x -= dx * perPixel;
-            target.z += dy * perPixel / Mathf.Cos(Tilt);
+            float sin = Mathf.Sin(yaw), cos = Mathf.Cos(yaw);
+            // Across the screen and up it, as directions on the ground.
+            target -= new Vector3(cos, 0, -sin) * (dx * perPixel);
+            target += new Vector3(sin, 0, cos) * (dy * perPixel / Mathf.Cos(tilt));
             follow = false;
+        }
+
+        /// <summary>Swing the view round the point it looks at, and lean it nearer to or further from straight down.</summary>
+        private void Swing(float round, float lean)
+        {
+            yaw = Mathf.Repeat(yaw + round, 2 * Mathf.PI);
+            tilt = Mathf.Clamp(tilt + lean, 0.1f, 1.05f);
+        }
+
+        /// <summary>Back to north up, at the usual lean.</summary>
+        private void FaceNorth()
+        {
+            yaw = 0;
+            tilt = 0.4f;
+        }
+
+        /// <summary>Move and turn the view for the keys held down: W, A, S, D or the arrows to move, Q and E to turn.</summary>
+        private void MoveView(float dt)
+        {
+            if (held.Count == 0) return;
+            float step = 0.9f * Screen.height * dt, dx = 0, dy = 0, round = 0;
+            if (held.Contains(KeyCode.A) || held.Contains(KeyCode.LeftArrow)) dx += step;
+            if (held.Contains(KeyCode.D) || held.Contains(KeyCode.RightArrow)) dx -= step;
+            if (held.Contains(KeyCode.W) || held.Contains(KeyCode.UpArrow)) dy += step;
+            if (held.Contains(KeyCode.S) || held.Contains(KeyCode.DownArrow)) dy -= step;
+            if (held.Contains(KeyCode.Q)) round -= 1;
+            if (held.Contains(KeyCode.E)) round += 1;
+            if (dx != 0 || dy != 0) Pan(dx, dy);
+            if (round != 0) Swing(round * 1.4f * dt, 0);
+        }
+
+        /// <summary>A key let go while the window is not looking would stay held for ever, so let them all go.</summary>
+        private void OnApplicationFocus(bool focused)
+        {
+            if (!focused) held.Clear();
         }
 
         /// <summary>The car under a screen point (pixels, y down), or -1.</summary>
