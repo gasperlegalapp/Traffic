@@ -43,7 +43,6 @@ namespace Traffic.Lab
         private readonly List<SignalView> signals = new List<SignalView>();
         private readonly Transform nodeRing;
         private readonly GameObject rootObject;
-        private readonly Material face = MeshKit.Lit(MeshKit.Hex(0xc9ced6), 0.2f);
 
         public RoadView(World world, Transform parent)
         {
@@ -160,7 +159,7 @@ namespace Traffic.Lab
             foreach (Node node in world.Nodes)
             {
                 if (node.Box.Count <= 2) continue;
-                asphalt.Fan(node.Pos, node.Box, 0.03f);
+                asphalt.Fan(node.Hub, node.Box, 0.03f);
                 double fastest = 0;
                 foreach (Lane lane in world.Lanes) if (lane.Kind == LaneKind.Road && lane.ApproachNode == node.Id) fastest = System.Math.Max(fastest, lane.SpeedLimit);
                 foreach (Vec[] corner in node.Corners) Roadside(corner, 1, fastest >= FastRoad);
@@ -598,7 +597,8 @@ namespace Traffic.Lab
         /// <summary>
         /// The signal for one approach, the American way: a pole on the far side of the
         /// intersection with an arm reaching over the road, and one signal head hung from it
-        /// in line with each lane, so a driver waiting at the stop line looks across at it.
+        /// in line with each lane, upright and facing the drivers it is for, so a driver
+        /// waiting at the stop line looks across at it.
         /// The stop sign that replaces it stands at the roadside by the stop line.
         /// </summary>
         private SignalView BuildSignal(Approach arm, Material dark, Transform root)
@@ -626,7 +626,7 @@ namespace Traffic.Lab
             view.Heads.transform.SetParent(root, false);
             view.Heads.transform.position = MeshKit.ToWorld(arm.Post.X + System.Math.Cos(arm.H) * far, arm.Post.Y + System.Math.Sin(arm.H) * far);
             view.Heads.transform.rotation = MeshKit.Heading(arm.H);
-            MeshKit.Spawn("Pole", MeshKit.Box(0.28f, 4.4f, 0.28f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 2.2f, 0);
+            MeshKit.Spawn("Pole", MeshKit.Box(0.3f, 6.6f, 0.3f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 3.3f, 0);
             float reach = 0;
             foreach (int id in arm.Inbound)
             {
@@ -636,37 +636,35 @@ namespace Traffic.Lab
                 reach = Mathf.Max(reach, across);
                 var head = new LaneHead { Lane = lane };
                 bool leftOnly = (lane.Allows(Turn.Left) || lane.Allows(Turn.UTurn)) && !lane.Allows(Turn.Straight) && !lane.Allows(Turn.Right);
-                // Lamps face up so they read from above.
+                // Each head hangs upright over its lane with its lamps toward the traffic it controls (local -x),
+                // red at the top. From straight overhead only the housing shows: the bar at the stop line tells the state there.
                 if (leftOnly)
                 {
                     // A lane that only turns left gets a single arrow.
-                    MeshKit.Spawn("Housing", MeshKit.Box(1.5f, 0.5f, 1.5f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 4.5f, across);
-                    MeshKit.Spawn("Face", MeshKit.Box(0.12f, 0.52f, 1.5f), face, view.Heads.transform, false).transform.localPosition = new Vector3(-0.81f, 4.5f, across);
+                    MeshKit.Spawn("Housing", MeshKit.Box(0.42f, 1.5f, 1.5f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 5.65f, across);
                     head.Arrow = MeshKit.Unlit(DimRed);
                     var arrow = new FlatBuilder();
                     arrow.Fan(new Vec(0, 0), new[] { new Vec(-0.5, 0), new Vec(0.2, 0.55), new Vec(0.2, 0.2), new Vec(0.5, 0.2), new Vec(0.5, -0.2), new Vec(0.2, -0.2), new Vec(0.2, -0.55) }, 0);
-                    // The arrow mesh points along local -x; turn it to point left across the road (+z).
+                    // The arrow is drawn flat, pointing along -x. Stand it up on the face of the housing, pointing to the driver's left (+z).
                     Transform lamp = MeshKit.Spawn("Arrow", arrow.Build(), head.Arrow, view.Heads.transform, false).transform;
-                    lamp.localPosition = new Vector3(0, 4.78f, across);
-                    lamp.localRotation = Quaternion.Euler(0, 90, 0);
+                    lamp.localPosition = new Vector3(-0.23f, 5.65f, across);
+                    lamp.localRotation = Quaternion.LookRotation(Vector3.up, Vector3.left);
                     lamp.localScale = new Vector3(1.2f, 1, 1.2f);
                 }
                 else
                 {
-                    MeshKit.Spawn("Housing", MeshKit.Box(3.3f, 0.5f, 1.15f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 4.5f, across);
-                    // A pale strip on the edge facing the drivers it controls, to tell it from the signal for the other direction.
-                    MeshKit.Spawn("Face", MeshKit.Box(0.12f, 0.52f, 1.15f), face, view.Heads.transform, false).transform.localPosition = new Vector3(-1.71f, 4.5f, across);
+                    MeshKit.Spawn("Housing", MeshKit.Box(0.42f, 2.7f, 1.0f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 5.05f, across);
                     head.Lamps = new Material[3];
                     for (int i = 0; i < 3; i++)
                     {
                         head.Lamps[i] = MeshKit.Unlit(DimRed);
-                        MeshKit.Spawn("Lamp", MeshKit.Box(0.8f, 0.06f, 0.8f), head.Lamps[i], view.Heads.transform, false).transform.localPosition = new Vector3(-1.05f + i * 1.05f, 4.78f, across);
+                        MeshKit.Spawn("Lamp", MeshKit.Box(0.1f, 0.72f, 0.72f), head.Lamps[i], view.Heads.transform, false).transform.localPosition = new Vector3(-0.24f, 5.91f - i * 0.86f, across);
                     }
                 }
                 view.Lanes.Add(head);
             }
-            // The arm reaches out over the farthest lane.
-            MeshKit.Spawn("Arm", MeshKit.Box(0.16f, 0.16f, reach), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 4.3f, reach / 2);
+            // The arm reaches out over the farthest lane, and the heads hang from it.
+            MeshKit.Spawn("Arm", MeshKit.Box(0.18f, 0.18f, reach + 0.5f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 6.49f, (reach + 0.5f) / 2);
 
             view.StopSign = new GameObject("Stop sign");
             view.StopSign.transform.SetParent(root, false);
