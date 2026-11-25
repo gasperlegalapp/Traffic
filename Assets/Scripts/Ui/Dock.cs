@@ -432,7 +432,7 @@ namespace Traffic.Ui
                         : item.Index == 1 ? "Click a road to remove it.\nKey B."
                         : item.Index == 2 ? "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.\nKey R."
                         : item.Index == 3 ? "Drag a point to move it, and the roads that meet there follow.\nDrag the middle of a road to bend it into a curve, or pull a curve back straight.\nKey M."
-                        : "Add a lane along part of a road: room to pull over, to pass, or to wait to turn. Click the side of the road where it should start, then where it should end.\nRun it right to the end of the road and it becomes a lane of the junction there. Click an added lane to remove it.\nKey L.";
+                        : "Add a lane along part of a road: room to pull over, to pass, or to wait to turn. Click the side of the road where it should start, then where it should end.\nRun it right to the end of the road and it becomes a lane of the junction there; run it up to an exit and it is the exit's own lane; start it where a ramp merges in and the ramp keeps its lane.\nClick an added lane to remove it. Key L.";
                     break;
                 case DockKind.Undo:
                     title = "Undo";

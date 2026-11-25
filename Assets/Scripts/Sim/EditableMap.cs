@@ -1844,8 +1844,8 @@ namespace Traffic.Sim
                 bool withFirst = !run.Turned[0];
                 TrackSpec[] fwd = Tracks(withFirst ? type.Forward : type.Backward, joins[run.To], last, joins[run.From], first, length);
                 TrackSpec[] back = type.OneWay ? null : Tracks(withFirst ? type.Backward : type.Forward, joins[run.From], first, joins[run.To], last, length);
-                fwd = WithExtras(fwd, run, true);
-                if (back != null) back = WithExtras(back, run, false);
+                fwd = WithExtras(fwd, run, true, joins[run.To] != null && !joins[run.To].Merge && joins[run.To].Up == last);
+                if (back != null) back = WithExtras(back, run, false, joins[run.From] != null && !joins[run.From].Merge && joins[run.From].Up == first);
                 double speed = type.Mph * 0.44704;
                 bool rampAtFrom = joins[run.From] != null && joins[run.From].Ramp == first, rampAtTo = joins[run.To] != null && joins[run.To].Ramp == last;
                 if (rampAtFrom || rampAtTo)
@@ -1932,27 +1932,44 @@ namespace Traffic.Sim
             return spans;
         }
 
-        /// <summary>The lanes of one direction of a run, with its extra lanes added outside them.</summary>
-        private TrackSpec[] WithExtras(TrackSpec[] tracks, Run run, bool withRun)
+        /// <summary>
+        /// The lanes of one direction of a run, with its extra lanes added outside them. Two
+        /// cases tie an extra lane to a ramp. One that starts where a ramp merges in is the
+        /// ramp's own lane carrying on, so its traffic need not move over. One that runs up to an
+        /// exit (exitAhead) is a lane for the exit alone, and the lane inside it then only goes straight on.
+        /// </summary>
+        private TrackSpec[] WithExtras(TrackSpec[] tracks, Run run, bool withRun, bool exitAhead)
         {
             List<double[]> spans = ExtrasAlong(run, withRun);
             if (spans.Count == 0) return tracks;
-            // Outside the ordinary lanes, and clear of any lane a merge has already added there.
-            int slot = 0;
-            double clear = 0;
-            foreach (TrackSpec t in tracks)
-            {
-                if (t.From == 0 && t.To == 1) slot = Math.Max(slot, t.Slot + 1);
-                else clear = Math.Max(clear, t.To);
-            }
             var all = new List<TrackSpec>(tracks);
+            // The first place outside the ordinary lanes, and the lane a merge has already put there, if any.
+            int slot = 0, merged = -1;
+            for (int i = 0; i < all.Count; i++)
+            {
+                if (all[i].From == 0 && all[i].To == 1) slot = Math.Max(slot, all[i].Slot + 1);
+                else if (merged < 0 || all[i].Slot < all[merged].Slot) merged = i;
+            }
             foreach (double[] span in spans)
             {
                 // The run's own direction counts from its start; the other direction counts from its end.
                 double from = withRun ? span[0] : 1 - span[1], to = withRun ? span[1] : 1 - span[0];
-                if (clear > 0) from = Math.Max(from, clear + 0.02);
+                if (merged >= 0 && from <= all[merged].To + 0.02)
+                {
+                    // It starts within the lane the ramp brought: that lane simply runs on to where this one ends.
+                    if (to > all[merged].To) all[merged] = new TrackSpec(all[merged].Slot, 0, to);
+                    if (to < 1) continue;
+                    from = 0;
+                    all.RemoveAt(merged);
+                    merged = -1;
+                }
                 if (to - from <= 0.01) continue;
-                all.Add(new TrackSpec(slot, from, to));
+                if (to == 1 && exitAhead)
+                {
+                    all.Add(new TrackSpec(slot, from, 1, Turn.Right));
+                    for (int i = 0; i < all.Count; i++) if (all[i].Slot == slot - 1 && all[i].To == 1) all[i] = new TrackSpec(all[i].Slot, all[i].From, 1, Turn.Straight);
+                }
+                else all.Add(new TrackSpec(slot, from, to));
             }
             return all.ToArray();
         }

@@ -1102,6 +1102,57 @@ namespace Traffic.Tests
             Assert.IsTrue(east.Extras.All(x => x.Forward));
         }
 
+        [Test]
+        public void ALaneAddedUpToAnExitIsForTheExitAlone()
+        {
+            // A two-lane highway with a ramp peeling off, and a third lane added over the 200 m before the ramp.
+            EditableMap map = HighwayWithRamps();
+            World before = map.ToWorld();
+            Assert.IsNull(map.TryAddLane(P(-50, -5), P(145, -5), true));
+            World world = map.ToWorld();
+            Node exit = world.Nodes.First(n => n.Arms.Count == 3 && n.Pos.X > 0);
+            var arriving = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Node == exit.Id).OrderByDescending(l => l.Path.At(l.Length).Y).ToList();
+            Assert.AreEqual(3, arriving.Count, "the two highway lanes and the added one");
+            Assert.IsTrue(arriving[0].Allows(Turn.Straight) && !arriving[0].Allows(Turn.Right), "the inside lane goes on");
+            Assert.IsTrue(arriving[1].Allows(Turn.Straight) && !arriving[1].Allows(Turn.Right), "so does the old outside lane, which no longer exits");
+            Assert.IsTrue(arriving[2].Allows(Turn.Right) && !arriving[2].Allows(Turn.Straight), "the added lane leads only to the ramp");
+            // Before the lane was added the outside lane did both.
+            Node old = before.Nodes.First(n => n.Arms.Count == 3 && n.Pos.X > 0);
+            Assert.IsTrue(before.Lanes.Any(l => l.Kind == LaneKind.Road && l.Node == old.Id && l.Allows(Turn.Straight) && l.Allows(Turn.Right)));
+
+            var sim = new Simulation(world, 4);
+            sim.ArrivalsPerMinute = 26;
+            int offRamp = 0;
+            Grid.Run(sim, 420, () =>
+            {
+                foreach (Car c in sim.Cars) if (c.X > 300 && c.Y < -60) offRamp = Math.Max(offRamp, 1);
+            });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.AreEqual(1, offRamp, "traffic still takes the exit");
+            Assert.Greater(sim.Left, 80);
+        }
+
+        [Test]
+        public void ALaneAddedFromAMergeIsTheRampsLaneCarryingOn()
+        {
+            EditableMap map = HighwayWithRamps();
+            // From the merge at x = -150 on for 250 m: well past where the ramp's lane used to end.
+            Assert.IsNull(map.TryAddLane(P(-145, -5), P(100, -5), true));
+            World world = map.ToWorld();
+            Node merge = world.Nodes.First(n => n.Arms.Count == 3 && n.Pos.X < 0);
+            var leaving = world.Lanes.Where(l => l.Kind == LaneKind.Road && Math.Abs(l.Path.At(0).X - (merge.Pos.X + NetworkBuilder.FreeRadius)) < 1.5 && Math.Abs(l.Path.At(0).Y) < 12).ToList();
+            Assert.AreEqual(3, leaving.Count, "still one lane from the ramp, not two");
+            Lane added = leaving.OrderBy(l => l.Path.At(0).Y).First();
+            Assert.Greater(added.Length, 220, "and it now runs as far as the lane that was added");
+            Assert.AreEqual(1, added.Preds.Count);
+
+            var sim = new Simulation(world, 8);
+            sim.ArrivalsPerMinute = 26;
+            Grid.Run(sim, 420);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 80);
+        }
+
         // ---------------------------------------------------------------- levels
 
         /// <summary>One way of solving each level, in order.</summary>
