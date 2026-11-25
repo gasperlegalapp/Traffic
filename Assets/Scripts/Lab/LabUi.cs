@@ -23,6 +23,7 @@ namespace Traffic.Lab
         private static readonly Color Bad = MeshKit.Hex(0xff5d5d);
 
         private readonly Dock dock = new Dock();
+        private readonly LaneCard laneCard = new LaneCard();
         private GuiSurface surface;
         private Texture2D white;
         private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint;
@@ -135,12 +136,33 @@ namespace Traffic.Lab
                 e.Use();
             }
 
+            // Beside a lane picked with the lane tool: what can be done with it.
+            bool cardShown = false;
+            if (building && pen.Tool == RoadPen.Lane && pen.Picked)
+            {
+                Vector3 spot = cam.WorldToScreenPoint(MeshKit.ToWorld(pen.PickedAt.X, pen.PickedAt.Y));
+                if (spot.z > 0)
+                {
+                    cardShown = true;
+                    laneCard.Added = pen.PickedIsAdded;
+                    laneCard.Layout(spot.x / scale, (Screen.height - spot.y) / scale, w, (float)dock.Top - 8);
+                    if (e.type == EventType.Repaint) laneCard.Draw(surface, mouse.x, mouse.y);
+                    if (e.type == EventType.MouseDown && e.button == 0 && laneCard.Contains(mouse.x, mouse.y))
+                    {
+                        LaneAct act = laneCard.ItemAt(mouse.x, mouse.y);
+                        if (act != LaneAct.None) LaneAction(act);
+                        e.Use();
+                    }
+                }
+            }
+            bool overCard = cardShown && laneCard.Contains(mouse.x, mouse.y);
+
             if (e.type == EventType.Repaint) DrawPlaceNames(scale);
             if (level != null && stars > 0 && !resultShown) DrawResult(w, h);
 
             // Beside the pointer while a road is being drawn: how long it is and what it costs,
             // or, in red, why it cannot be built there.
-            if (building && !overDock && pen.Note.Length > 0)
+            if (building && !overDock && !overCard && pen.Note.Length > 0)
             {
                 Vector2 size = label.CalcSize(new GUIContent(pen.Note));
                 var r = new Rect(Mathf.Max(8, Mathf.Min(mouse.x + 18, w - size.x - 28)), mouse.y + 16, size.x + 20, 26);
@@ -165,7 +187,7 @@ namespace Traffic.Lab
                 GUI.Label(new Rect(r.x + 16, r.y + 8, size.x + 4, 20), toast, label);
             }
 
-            bool overUi = overDock || top.Contains(mouse) || lab.Contains(mouse) || (car != null && inspector.Contains(mouse));
+            bool overUi = overDock || overCard || top.Contains(mouse) || lab.Contains(mouse) || (car != null && inspector.Contains(mouse));
             HandleSceneInput(e, overUi, scale);
         }
 

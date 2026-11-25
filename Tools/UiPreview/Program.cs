@@ -175,6 +175,14 @@ internal static class Program
             }
             dock.Draw(s, mx, my);
         }
+        // The lane tool's card, with the pointer on each button in turn.
+        for (int i = 0; i < 2; i++)
+        {
+            var card = new LaneCard { Added = i == 1 };
+            s.OffsetY = (states.Length - 1) * h;
+            card.Layout(170 + i * 300, 150, w, h);
+            card.Draw(s, 80 + i * 430, 80);
+        }
         // Every icon, large, to check the drawing.
         s.OffsetY = states.Length * h;
         s.Html.Append("<div style='left:0;top:" + s.OffsetY + "px;width:" + w + "px;height:130px;background:#141a1e'></div>\n");
@@ -349,15 +357,23 @@ internal static class PenScenes
         Click(pen, -60, -110, px);
         add("Crossing two roads: a ring where each intersection will be", pen, 20, 100, 0, 0, z);
 
-        pen = New("s2", -150, 20, 150, 20);
+        pen = New("a4", -150, 20, 150, 20);
         pen.Tool = RoadPen.Lane;
-        Click(pen, -90, 15, px);
-        add("Lane tool: a lane being added along the south side", pen, 70, 14, 0, 0, z);
+        add("Lane tool: the lane under the pointer, lit for its whole length", pen, 30, 14, 0, 0, 2.2);
+
+        pen = New("a4", -150, 20, 150, 20);
+        pen.Tool = RoadPen.Lane;
+        pen.Press(P(30, 12));
+        string no;
+        pen.Release(out no);
+        add("Lane tool: a lane picked with a click (the card goes beside it)", pen, 60, -40, 0, 0, 2.2);
 
         pen = New("s2", -150, 20, 150, 20);
-        pen.Map.TryAddLane(P(-90, 15), P(70, 15), true);
         pen.Tool = RoadPen.Lane;
-        add("Lane tool: over an added lane, a click removes it", pen, 0, 14.5, 0, 0, z);
+        pen.Hover(P(-90, 15), px);
+        pen.Press(P(-90, 15));
+        pen.Drag(P(70, 14));
+        add("Lane tool: dragging along a road adds a lane for that part", pen, 70, 14, 0, 0, z);
 
         // The same curve from far out, where a meter is a fraction of a pixel: the outlines and pins keep their size on screen.
         pen = New("s2", -500, -200, 500, -200);

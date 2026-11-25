@@ -343,6 +343,16 @@ namespace Traffic.Lab
             if (changed) DrawingChanged(before);
         }
 
+        /// <summary>A button on the lane tool's card was pressed.</summary>
+        private void LaneAction(LaneAct act)
+        {
+            string before = drawing.Serialize();
+            string refused;
+            bool changed = act == LaneAct.Add ? pen.AddLane(out refused) : pen.RemoveLane(out refused);
+            if (refused != null) Toast(refused);
+            if (changed) DrawingChanged(before);
+        }
+
         private Mesh ghostMesh;
         private GameObject ghostObject;
         private int ghostVersion = -1;

@@ -53,7 +53,8 @@ namespace Traffic.Ui
     public sealed class Dock
     {
         public const uint Accent = 0xFF5EE0C0, Ink = 0xFF0C1A16, Light = 0xFFE7EDF0, Dim = 0xFF8D9AA3;
-        private const uint Panel = 0xF2141A1E, Edge = 0x26FFFFFF, Lift = 0x16FFFFFF, Hover = 0x2CFFFFFF;
+        public const uint Lift = 0x16FFFFFF, Hover = 0x2CFFFFFF;
+        private const uint Panel = 0xF2141A1E, Edge = 0x26FFFFFF;
         private const uint Grass = 0xFF6F9C5B, Asphalt = 0xFF3B4147, Yellow = 0xFFF2C744, Paint = 0xE6FFFFFF;
         private const double Button = 44, Gap = 6, Pad = 8, BarHeight = 60, Margin = 14;
 
@@ -432,7 +433,7 @@ namespace Traffic.Ui
                         : item.Index == 1 ? "Click a road to remove it.\nKey B."
                         : item.Index == 2 ? "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.\nKey R."
                         : item.Index == 3 ? "Drag a point to move it, and the roads that meet there follow.\nDrag the middle of a road to bend it into a curve, or pull a curve back straight.\nKey M."
-                        : "Add a lane along part of a road: room to pull over, to pass, or to wait to turn. Click the side of the road where it should start, then where it should end.\nRun it right to the end of the road and it becomes a lane of the junction there; run it up to an exit and it is the exit's own lane; start it where a ramp merges in and the ramp keeps its lane.\nClick an added lane to remove it. Key L.";
+                        : "Work on single lanes. Click a lane to pick it, and a card offers to add a lane on that side of the road or take one away.\nDrag along the side of a road to add a lane for just that part: room to pull over, to pass, or to wait to turn. Run it to the end of the road and it becomes a lane of the junction there; run it up to an exit and it is the exit's own lane; start it where a ramp merges in and the ramp keeps its lane.\nKey L.";
                     break;
                 case DockKind.Undo:
                     title = "Undo";

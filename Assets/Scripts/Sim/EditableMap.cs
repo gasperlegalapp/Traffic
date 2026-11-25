@@ -40,7 +40,41 @@ namespace Traffic.Sim
 
         public string Name => GroupNames[Group] + ", " + (OneWay
             ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " one-way"
-            : (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way" + (Median > 0 ? ", with a median" : ""));
+            : (Forward == Backward ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way" : Forward + " lanes one way and " + Backward + " the other") + (Median > 0 ? ", with a median" : ""));
+
+        /// <summary>The most lanes a road may have in one direction.</summary>
+        public const int MostLanes = 4;
+        // What each class of road is like, whatever its lanes: speed limit, tightest curve, price of a lane, width of a median.
+        private static readonly int[] GroupMph = { 25, 40, 65 };
+        private static readonly double[] GroupRadius = { 22, 30, 60 }, GroupLanePrice = { 1, 1.5, 3 };
+        private const double MedianWidth = 3;
+        private static readonly Dictionary<string, RoadType> made = new Dictionary<string, RoadType>();
+
+        /// <summary>
+        /// A road of the same class as another but with its own count of lanes each way: this is
+        /// how a road gains or loses a single lane. It is one of the listed roads where one
+        /// matches; otherwise it is made up, with a code that says what it is (its class, its
+        /// lanes each way, and whether it has a median), so that it can be saved and read back.
+        /// </summary>
+        public static RoadType With(RoadType like, int forward, int backward)
+        {
+            bool median = backward > 0 && like.Median > 0;
+            int group = like.Group;
+            foreach (RoadType t in All)
+            {
+                if (t.Group == group && t.Forward == forward && t.Backward == backward && (backward == 0 || t.Median > 0 == median)) return t;
+            }
+            string id = "G" + group + "-" + forward + "-" + backward + (median ? "-m" : "");
+            RoadType one;
+            if (made.TryGetValue(id, out one)) return one;
+            one = new RoadType
+            {
+                Id = id, Group = group, Forward = forward, Backward = backward, Median = median ? MedianWidth : 0,
+                Mph = GroupMph[group], MinRadius = GroupRadius[group], CostPerMeter = (forward + backward) * GroupLanePrice[group],
+            };
+            made[id] = one;
+            return one;
+        }
 
         /// <summary>The roads on offer, in the order the toolbar shows them.</summary>
         public static readonly RoadType[] All =
@@ -61,7 +95,12 @@ namespace Traffic.Sim
         public static RoadType ById(string id)
         {
             foreach (RoadType t in All) if (t.Id == id) return t;
-            return null;
+            // A made-up road: G, its class, and its lanes each way, with -m for a median.
+            string[] f = id.Split('-');
+            int group, forward, backward;
+            if (f.Length < 3 || f[0].Length != 2 || f[0][0] != 'G' || !int.TryParse(f[0].Substring(1), out group) || !int.TryParse(f[1], out forward) || !int.TryParse(f[2], out backward)) return null;
+            if (group < 0 || group > Highway || forward < 1 || forward > MostLanes || backward < 0 || backward > MostLanes) return null;
+            return With(new RoadType { Group = group, Median = f.Length > 3 && f[3] == "m" ? MedianWidth : 0 }, forward, backward);
         }
 
         /// <summary>
@@ -678,16 +717,26 @@ namespace Traffic.Sim
             EditableMap work = Clone();
             List<KeyValuePair<EditSegment, ExtraLane>> parts = work.Between(p, q);
             if (parts == null) return "A lane runs along one road: start and end it on the same road, with no junction between.";
-            double length = 0;
             foreach (KeyValuePair<EditSegment, ExtraLane> part in parts)
             {
                 if (part.Key.Locked) return "That road came with the level.";
                 if (part.Key.Ring) return "A roundabout's ring has one lane.";
                 if (part.Key.Level != 0) return "A bridge or tunnel cannot be widened.";
-                length += (part.Value.To - part.Value.From) * LengthOf(work.Trace(part.Key));
             }
-            if (length < ShortestLane) return "Too short for a lane: it needs at least " + Math.Round(ShortestLane * 3.28084 / 10) * 10 + " ft.";
+            if (parts.Count == 0) return "Too short for a lane: it needs at least " + Math.Round(ShortestLane * 3.28084 / 10) * 10 + " ft.";
             foreach (KeyValuePair<EditSegment, ExtraLane> part in parts) AddExtra(part.Key, part.Value.Forward, part.Value.From, part.Value.To);
+            // It is the lane that results that has to be long enough: a short stretch that lengthens a lane, or joins two, is fine.
+            foreach (Run run in work.Runs())
+            {
+                int index = run.Pieces.IndexOf(parts[0].Key);
+                if (index < 0) continue;
+                double total = 0;
+                foreach (EditSegment piece in run.Pieces) total += LengthOf(work.Trace(piece));
+                foreach (double[] span in work.ExtrasAlong(run, parts[0].Value.Forward != run.Turned[index], false))
+                {
+                    if ((span[1] - span[0]) * total < ShortestLane) return "Too short for a lane: it needs at least " + Math.Round(ShortestLane * 3.28084 / 10) * 10 + " ft.";
+                }
+            }
             string problem = work.Unbuildable(this, "There is not room for a lane there.");
             if (problem != null) return problem;
             if (commit) Segments = work.Segments;
@@ -787,6 +836,74 @@ namespace Traffic.Sim
             }
             if (commit) Segments = work.Segments;
             return null;
+        }
+
+        /// <summary>Turn a piece end for end: the same road on the ground, described from its other end.</summary>
+        private static void Flip(EditSegment s)
+        {
+            int a = s.A;
+            s.A = s.B;
+            s.B = a;
+            foreach (ExtraLane x in s.Extras)
+            {
+                double from = x.From;
+                x.From = 1 - x.To;
+                x.To = 1 - from;
+                x.Forward = !x.Forward;
+            }
+        }
+
+        /// <summary>
+        /// Give the road under a point one lane more, or one lane fewer, on the side the point is
+        /// on: for its whole length, from one junction or road end to the next. Returns null if
+        /// it was changed, or a short reason why it cannot be. A road that loses all the lanes of
+        /// one direction becomes one-way.
+        /// </summary>
+        public string TryChangeLanes(Vec p, int change, bool commit)
+        {
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return "There is no road there.";
+            EditableMap work = Clone();
+            EditSegment under = work.Segments[seg];
+            foreach (Run run in work.Runs())
+            {
+                int index = run.Pieces.IndexOf(under);
+                if (index < 0) continue;
+                foreach (EditSegment piece in run.Pieces)
+                {
+                    if (piece.Locked) return "That road came with the level.";
+                    if (piece.Ring) return "A roundabout's ring has one lane.";
+                }
+                // The lanes that go the way the run does, and those that go against it.
+                bool turned = run.Turned[index], withRun = forward != turned;
+                RoadType type = under.Type;
+                int with = turned ? type.Backward : type.Forward, against = turned ? type.Forward : type.Backward;
+                if (withRun) with += change;
+                else against += change;
+                if (with + against < 1) return "That is its last lane. Use the bulldozer to remove the road.";
+                if (with > RoadType.MostLanes || against > RoadType.MostLanes) return "A road can have up to " + RoadType.MostLanes + " lanes each way.";
+                // Every piece is described the same way round, so that they are still one road; a road left with lanes one way only runs that way.
+                for (int i = 0; i < run.Pieces.Count; i++) if (run.Turned[i] != (with == 0)) Flip(run.Pieces[i]);
+                RoadType changed = with == 0 ? RoadType.With(type, against, 0) : RoadType.With(type, with, against);
+                foreach (EditSegment piece in run.Pieces)
+                {
+                    piece.Type = changed;
+                    if (changed.OneWay) piece.Extras.RemoveAll(x => !x.Forward);
+                }
+                var ends = new List<int>(run.Joints) { run.From, run.To };
+                foreach (int node in ends)
+                {
+                    string problem = work.NodeProblem(node);
+                    if (problem != null) return problem;
+                }
+                string noRoom = work.Unbuildable(this, change > 0 ? "There is not room for another lane there." : "The road cannot be built that way there.");
+                if (noRoom != null) return noRoom;
+                if (commit) Segments = work.Segments;
+                return null;
+            }
+            return "There is no road there.";
         }
 
         // ---------------------------------------------------------------- what cannot work
@@ -1962,7 +2079,7 @@ namespace Traffic.Sim
         /// end (shares of its length, 0 to 1). Extra lanes on neighboring pieces that meet end
         /// to end are one lane. withRun is the side whose traffic goes the way the run does.
         /// </summary>
-        private List<double[]> ExtrasAlong(Run run, bool withRun)
+        private List<double[]> ExtrasAlong(Run run, bool withRun, bool asBuilt = true)
         {
             var lengths = new double[run.Pieces.Count];
             double total = 0;
@@ -1988,6 +2105,7 @@ namespace Traffic.Sim
                 spans[i - 1][1] = Math.Max(spans[i - 1][1], spans[i][1]);
                 spans.RemoveAt(i);
             }
+            if (!asBuilt) return spans;
             // The network measures along the road between its junctions, which take up the first and last few meters of the run.
             double lostAtFrom = run.JunctionAtFrom ? JunctionSize : 0, lostAtTo = run.JunctionAtTo ? JunctionSize : 0;
             double road = Math.Max(total - lostAtFrom - lostAtTo, 1);

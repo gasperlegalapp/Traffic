@@ -151,7 +151,35 @@ namespace Traffic.Ui
         private string checkedProblem;
 
         /// <summary>True while a road is partly drawn, or something is being dragged.</summary>
-        public bool Busy => hasStart || grabNode >= 0 || grabSegment >= 0;
+        public bool Busy => hasStart || grabNode >= 0 || grabSegment >= 0 || laneDrag;
+
+        // The lane tool: a lane picked by a click, and a drag along a road to add a lane for part of it.
+        private bool picked, laneDrag;
+        private Vec pickedAt, laneFrom, laneTo;
+
+        /// <summary>True while a lane is picked: the lane tool's card then offers what can be done with it.</summary>
+        public bool Picked => picked;
+        /// <summary>The spot on the picked lane that was clicked.</summary>
+        public Vec PickedAt => pickedAt;
+        /// <summary>Whether the picked lane is one added along part of its road, which Remove takes away by itself.</summary>
+        public bool PickedIsAdded => picked && map.ExtraLaneAt(pickedAt) != null;
+
+        /// <summary>Give the road of the picked lane one more lane on that side, for its whole length. Returns true if the map changed.</summary>
+        public bool AddLane(out string refused)
+        {
+            refused = picked ? map.TryChangeLanes(pickedAt, 1, true) : "Pick a lane first.";
+            stamp++;
+            return refused == null;
+        }
+
+        /// <summary>Take the picked lane away: an added lane by itself, or else one lane off that side of the road. Returns true if the map changed.</summary>
+        public bool RemoveLane(out string refused)
+        {
+            refused = !picked ? "Pick a lane first." : PickedIsAdded ? map.TryRemoveLane(pickedAt, true) : map.TryChangeLanes(pickedAt, -1, true);
+            stamp++;
+            if (refused == null) picked = false;
+            return refused == null;
+        }
 
         // ---------------------------------------------------------------- the pointer
 
@@ -183,6 +211,7 @@ namespace Traffic.Ui
             ownAim = false;
             hasFlow = false;
             grabNode = grabSegment = -1;
+            picked = laneDrag = false;
             stamp++;
         }
 
@@ -190,9 +219,15 @@ namespace Traffic.Ui
         public void Back()
         {
             stamp++;
-            if (grabNode >= 0 || grabSegment >= 0)
+            if (grabNode >= 0 || grabSegment >= 0 || laneDrag)
             {
                 grabNode = grabSegment = -1;
+                laneDrag = false;
+                return;
+            }
+            if (tool == Lane)
+            {
+                picked = false;
                 return;
             }
             if (shape == Curve && hasStart)
@@ -222,7 +257,8 @@ namespace Traffic.Ui
                 if (tool == Bulldoze) return "Click a road to remove it.";
                 if (tool == Replace) return "Click a road to change it to the kind chosen.";
                 if (tool == Move) return "Drag a point to move it. Drag the middle of a road to bend it, or pull it back straight.";
-                if (tool == Lane) return hasStart ? "Click where the lane should end, on the same road. Right-click to stop." : "Click the side of a road where a lane should start. Click an added lane to remove it.";
+                if (tool == Lane) return picked ? "Add or remove a lane with the card. Click another lane to pick it, or drag along a road to add a lane for part of it."
+                    : "Click a lane to pick it. Drag along the side of a road to add a lane for just that part of it.";
                 if (shape == Roundabout) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
                 if (!hasStart)
                 {
@@ -263,31 +299,8 @@ namespace Traffic.Ui
                 return refused == null;
             }
             if (tool == Move) return false;
-            if (tool == Lane)
-            {
-                if (hasStart)
-                {
-                    refused = map.TryAddLane(start, p, true);
-                    if (refused != null) return false;
-                    hasStart = false;
-                    return true;
-                }
-                // On an added lane, a click takes it away; anywhere else on a road, it starts a new one.
-                if (map.ExtraLaneAt(p) != null)
-                {
-                    refused = map.TryRemoveLane(p, true);
-                    return refused == null;
-                }
-                Vec on;
-                if (map.NearestSegment(p, LaneReach, out on) < 0)
-                {
-                    refused = "Click the side of a road where the lane should start.";
-                    return false;
-                }
-                start = p;
-                hasStart = true;
-                return false;
-            }
+            // The lane tool works by presses and drags: see Press and Release.
+            if (tool == Lane) return false;
 
             if (shape == Roundabout)
             {
@@ -393,6 +406,15 @@ namespace Traffic.Ui
         /// <summary>The button went down with the move tool out. True if it took hold of a point or a road.</summary>
         public bool Press(Vec p)
         {
+            if (tool == Lane && map != null)
+            {
+                // Every press of the lane tool is taken: let go where it went down it picks a lane, dragged along a road it lays one.
+                laneDrag = true;
+                laneFrom = laneTo = p;
+                grabMoved = false;
+                stamp++;
+                return true;
+            }
             if (tool != Move || map == null) return false;
             grabNode = HandleAt(p);
             grabSegment = grabNode >= 0 ? -1 : BendableAt(p);
@@ -406,6 +428,14 @@ namespace Traffic.Ui
         /// <summary>The pointer moved with the button held.</summary>
         public void Drag(Vec p)
         {
+            if (laneDrag)
+            {
+                if (Dist(p, laneFrom) > Math.Max(1.5, Ghost.Pixel * 5)) grabMoved = true;
+                laneTo = pointer = p;
+                hasPointer = true;
+                stamp++;
+                return;
+            }
             if (grabNode < 0 && grabSegment < 0) return;
             if (Dist(p, grabFrom) > Math.Max(1.5, Ghost.Pixel * 5)) grabMoved = true;
             grabTo = grabNode >= 0 ? OnGrid(p) : p;
@@ -418,9 +448,22 @@ namespace Traffic.Ui
         public bool Release(out string refused)
         {
             refused = null;
+            stamp++;
+            if (laneDrag)
+            {
+                laneDrag = false;
+                if (grabMoved)
+                {
+                    refused = map.TryAddLane(laneFrom, laneTo, true);
+                    return refused == null;
+                }
+                // A click: pick the lane there. A click off the road lets go of the one picked.
+                picked = map.LaneUnder(laneFrom) != null;
+                pickedAt = laneFrom;
+                return false;
+            }
             int node = grabNode, segment = grabSegment;
             grabNode = grabSegment = -1;
-            stamp++;
             if (!grabMoved || (node < 0 && segment < 0)) return false;
             refused = node >= 0 ? map.TryMove(node, grabTo, true) : map.TryBend(segment, grabTo, true);
             return refused == null;
@@ -532,7 +575,8 @@ namespace Traffic.Ui
             if (!hasPointer)
             {
                 // Over the toolbar or a panel: only where the half-drawn road starts.
-                if (hasStart && (tool == Road || tool == Lane)) Ghost.Pin(start, true, false);
+                if (hasStart && tool == Road) Ghost.Pin(start, true, false);
+                if (tool == Lane) LanePicture();
                 return;
             }
             if (tool == Bulldoze || tool == Replace) OverRoad();
@@ -624,36 +668,35 @@ namespace Traffic.Ui
             Ghost.Band(line, half - rim / 2, half + rim / 2, good ? Ghost.GoodEdge : Ghost.BadEdge);
         }
 
-        /// <summary>The lane tool: the lane about to be added along the side of a road, or the added lane about to be removed.</summary>
+        /// <summary>
+        /// The lane tool: the lane picked, lit up for its whole length; the lane the pointer is
+        /// on, lit more faintly; and, during a drag, the lane about to be added along the road.
+        /// </summary>
         private void LanePicture()
         {
-            Vec on;
-            if (!hasStart)
+            if (laneDrag && grabMoved)
             {
-                Vec[] there = map.ExtraLaneAt(pointer);
-                if (there != null)
-                {
-                    LaneBand(there, false);
-                    Note = "Click to remove this lane.";
-                    return;
-                }
-                // The lane the pointer is on, lit up for its whole length: the new lane will go outside the lanes on that side.
-                Vec[] under = map.LaneUnder(pointer);
-                if (under == null) return;
-                LaneBand(under, true);
-                Note = "Click where a new lane should start, on this side of the road.";
+                string problem = Checked(laneTo, () => map.TryAddLane(laneFrom, laneTo, false));
+                Vec[] line = map.LaneLine(laneFrom, laneTo);
+                double length = line == null ? 0 : Ghost.Length(line);
+                if (length > 1) LaneBand(line, problem == null);
+                // Off the road altogether there is no lane to show, only the reason.
+                if (length <= 1 && problem == null) return;
+                Vec on;
+                int road = map.NearestSegment(laneFrom, LaneReach, out on);
+                Note = problem ?? Ft(length) + "   " + Money(length * EditableMap.LanePrice(map.Segments[road].Type));
+                NoteBad = problem != null;
                 return;
             }
-            string problem = Checked(pointer, () => map.TryAddLane(start, pointer, false));
-            Vec[] line = map.LaneLine(start, pointer);
-            double length = line == null ? 0 : Ghost.Length(line);
-            if (length > 1) LaneBand(line, problem == null);
-            int road = map.NearestSegment(start, LaneReach, out on);
-            if (road >= 0) Ghost.Pin(on, problem == null || length <= 1, false);
-            // Off the road altogether there is no lane to show, only the reason.
-            if (length <= 1 && (problem == null || Dist(pointer, start) < 5)) return;
-            Note = problem ?? Ft(length) + "   " + Money(length * EditableMap.LanePrice(map.Segments[road].Type));
-            NoteBad = problem != null;
+            Vec[] held = picked ? map.LaneUnder(pickedAt) : null;
+            if (picked && held == null) picked = false;
+            if (hasPointer)
+            {
+                Vec[] under = map.LaneUnder(pointer);
+                bool same = under != null && held != null && under.Length == held.Length && Dist(under[0], held[0]) < 0.01 && Dist(under[under.Length - 1], held[held.Length - 1]) < 0.01;
+                if (under != null && !same) Ghost.Band(under, -NetworkBuilder.LaneW / 2, NetworkBuilder.LaneW / 2, 0x55FFFFFF);
+            }
+            if (held != null) LaneBand(held, true);
         }
 
         /// <summary>The move tool: what it would take hold of, or what it has hold of and where that is going.</summary>
