@@ -135,8 +135,6 @@ namespace Traffic.Sim
     /// </summary>
     public sealed class EditableMap
     {
-        /// <summary>The shortest stretch of road allowed between two points, meters.</summary>
-        public const double MinLength = 45;
         /// <summary>How close a click has to be to an existing point, or to a road, to land on it.</summary>
         public const double SnapNode = 13;
         public const double SnapRoad = 9;
@@ -379,17 +377,9 @@ namespace Traffic.Sim
         public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through = null, int level = 0)
         {
             EditableMap work = Clone();
-            string error = work.Add(p, q, type, through, level);
-            if (error != null) return error;
             // Make sure the result can actually be built before accepting it.
-            try
-            {
-                work.ToWorld();
-            }
-            catch (Exception)
-            {
-                return "That puts two intersections too close together.";
-            }
+            string error = work.Add(p, q, type, through, level) ?? work.Unbuildable(this);
+            if (error != null) return error;
             if (commit)
             {
                 Nodes = work.Nodes;
@@ -639,7 +629,7 @@ namespace Traffic.Sim
         {
             EditableMap work = Clone();
             work.Shift(node, to);
-            string problem = work.ProblemWith(work.RoadsAt(node), node);
+            string problem = work.ProblemWith(work.RoadsAt(node), node) ?? work.Unbuildable(this);
             if (problem != null) return problem;
             if (commit)
             {
@@ -657,7 +647,7 @@ namespace Traffic.Sim
         {
             EditableMap work = Clone();
             work.Reshape(segment, through);
-            string problem = work.ProblemWith(new List<EditSegment> { work.Segments[segment] }, -1);
+            string problem = work.ProblemWith(new List<EditSegment> { work.Segments[segment] }, -1) ?? work.Unbuildable(this);
             if (problem != null) return problem;
             if (commit)
             {
@@ -693,7 +683,6 @@ namespace Traffic.Sim
                 Vec[] path = Trace(s);
                 if (Bound > 0) foreach (Vec v in path) if (Math.Abs(v.X) > Bound + 0.5 || Math.Abs(v.Y) > Bound + 0.5) return "That is outside the area you can build in.";
                 double length = LengthOf(path);
-                if (length < MinLength) return "Too short: each stretch of road needs to be at least " + Math.Round(MinLength * 3.28084 / 10) * 10 + " ft.";
                 if (s.Level != 0 && length < 2 * RampFor(s.Level) + 20) return "Too short to " + (s.Level > 0 ? "climb that high." : "go down that deep.");
                 if (s.Curved && TightestRadius(path) < s.Type.MinRadius) return "That curve is too tight for this kind of road.";
                 for (int i = 0; i < Nodes.Count; i++)
@@ -733,14 +722,6 @@ namespace Traffic.Sim
             {
                 string problem = NodeProblem(node);
                 if (problem != null) return problem;
-            }
-            try
-            {
-                ToWorld();
-            }
-            catch (Exception)
-            {
-                return "That puts two intersections too close together.";
             }
             return null;
         }
@@ -888,7 +869,6 @@ namespace Traffic.Sim
                     piece.Mid = CurvePoint(pa, c, pb, (chain[i].T + chain[i + 1].T) / 2);
                 }
                 Vec[] shape = Trace(Nodes[from], Nodes[to], piece.Curved, piece.Mid);
-                if (LengthOf(shape) < MinLength) return "Too short: each stretch of road needs to be at least " + Math.Round(MinLength * 3.28084 / 10) * 10 + " ft.";
                 if (piece.Curved && TightestRadius(shape) < type.MinRadius) return "That curve is too tight for this kind of road.";
                 foreach (EditSegment s in Segments)
                 {
@@ -941,16 +921,8 @@ namespace Traffic.Sim
             EditSegment s = work.Segments[seg];
             s.Type = type;
             if (s.Curved && TightestRadius(work.Trace(s)) < type.MinRadius) return "Its curve is too tight for that kind of road.";
-            string problem = work.NodeProblem(s.A) ?? work.NodeProblem(s.B);
+            string problem = work.NodeProblem(s.A) ?? work.NodeProblem(s.B) ?? work.Unbuildable(this, "There is not room for that kind of road there.");
             if (problem != null) return problem;
-            try
-            {
-                work.ToWorld();
-            }
-            catch (Exception)
-            {
-                return "There is not room for that kind of road there.";
-            }
             if (commit)
             {
                 Nodes = work.Nodes;
@@ -1036,10 +1008,14 @@ namespace Traffic.Sim
         /// <summary>The shortest stretch of ring allowed between two roads that join it.</summary>
         public const double RingPiece = 24;
 
-        /// <summary>The shortest piece a road may be cut into: shorter on a roundabout, whose junctions are small.</summary>
+        /// <summary>
+        /// The shortest piece a road may be cut into where another road joins or crosses it. It
+        /// only keeps a new junction from landing right beside the end of a road; whether two
+        /// junctions have room between them is settled when the network is built.
+        /// </summary>
         private static double Shortest(EditSegment s)
         {
-            return s.Ring ? RingPiece : MinLength;
+            return s.Ring ? RingPiece : SnapNode + 2;
         }
 
         /// <summary>The road a roundabout's ring is made of: one lane, one-way, of the same class as the road chosen.</summary>
@@ -1112,7 +1088,7 @@ namespace Traffic.Sim
             Segments.RemoveAll(s => Dist(PointAt(s, 0.5), c) < r);
             foreach (EditSegment s in Segments)
             {
-                if ((onRing.Contains(s.A) || onRing.Contains(s.B)) && LengthOf(Trace(s)) < MinLength) return "That would leave a road too short beside the roundabout.";
+                if ((onRing.Contains(s.A) || onRing.Contains(s.B)) && LengthOf(Trace(s)) < 20) return "That would leave a road too short beside the roundabout.";
             }
 
             // The ring needs at least three points round it, and no stretch of more than half a turn.
@@ -1337,17 +1313,274 @@ namespace Traffic.Sim
         // ---------------------------------------------------------------- building
 
         /// <summary>
-        /// Turn the drawing into a network. Where roads meet, the control is chosen from the
-        /// roads themselves: two roads are just a bend; three or more quiet streets (25 mph)
+        /// One road as traffic sees it: a run of stretches of the same kind joined end to end,
+        /// at points where nothing else meets them, into a single line with its corners rounded.
+        /// The player draws a road in as many pieces as they like; the network gets one road
+        /// from each junction or road end to the next.
+        /// </summary>
+        private sealed class Run
+        {
+            public readonly List<EditSegment> Pieces = new List<EditSegment>();
+            /// <summary>For each piece, whether the run goes along it from its B end to its A end.</summary>
+            public readonly List<bool> Turned = new List<bool>();
+            /// <summary>The points at its two ends, and the points between its pieces.</summary>
+            public int From, To;
+            public readonly List<int> Joints = new List<int>();
+            /// <summary>For each joint, whether its corner is too sharp for the road: there was not room to round it.</summary>
+            public bool[] Sharp;
+            public Vec[] Trace;
+        }
+
+        /// <summary>A corner turns this little, in radians, without needing to be rounded.</summary>
+        private const double Gentle = 0.035;
+        /// <summary>How much of a road's end is left alone when rounding corners, where it meets a junction.</summary>
+        private const double JunctionRoom = 16;
+
+        /// <summary>
+        /// Whether the two roads at a point carry on as one road: the same kind of road, on the
+        /// ground, with nothing else there, and (if one-way) running the same way through.
+        /// </summary>
+        private bool CarriesOn(List<EditSegment> here, int node)
+        {
+            if (here.Count != 2) return false;
+            EditSegment x = here[0], y = here[1];
+            if (x == y || x.Ring || y.Ring || x.Level != 0 || y.Level != 0 || x.Type.Id != y.Type.Id) return false;
+            // The lanes one way must match the lanes that way on the other piece.
+            bool sameWay = (x.B == node) != (y.B == node);
+            return sameWay || x.Type.Forward == x.Type.Backward;
+        }
+
+        /// <summary>Every road on the map, as runs of pieces.</summary>
+        private List<Run> Runs()
+        {
+            var at = new List<EditSegment>[Nodes.Count];
+            for (int i = 0; i < at.Length; i++) at[i] = new List<EditSegment>();
+            foreach (EditSegment s in Segments)
+            {
+                at[s.A].Add(s);
+                at[s.B].Add(s);
+            }
+            var joint = new bool[Nodes.Count];
+            for (int i = 0; i < joint.Length; i++) joint[i] = CarriesOn(at[i], i);
+
+            var runs = new List<Run>();
+            var done = new HashSet<EditSegment>();
+            Action<int, EditSegment> walk = (start, first) =>
+            {
+                var run = new Run { From = start };
+                int node = start;
+                EditSegment piece = first;
+                while (true)
+                {
+                    run.Pieces.Add(piece);
+                    run.Turned.Add(piece.A != node);
+                    done.Add(piece);
+                    node = piece.A == node ? piece.B : piece.A;
+                    if (!joint[node]) break;
+                    run.Joints.Add(node);
+                    piece = at[node][0] == piece ? at[node][1] : at[node][0];
+                }
+                run.To = node;
+                // A one-way road runs the way its traffic does, and a single stretch the way it was drawn.
+                if (run.Turned[0] && (first.Type.OneWay || run.Pieces.Count == 1))
+                {
+                    run.Pieces.Reverse();
+                    run.Turned.Reverse();
+                    for (int i = 0; i < run.Turned.Count; i++) run.Turned[i] = !run.Turned[i];
+                    run.Joints.Reverse();
+                    int swap = run.From;
+                    run.From = run.To;
+                    run.To = swap;
+                }
+                runs.Add(run);
+            };
+            for (int i = 0; i < Nodes.Count; i++)
+            {
+                if (joint[i]) continue;
+                foreach (EditSegment s in at[i]) if (!done.Contains(s)) walk(i, s);
+            }
+            // What is left is rings of pieces with no junction anywhere on them: each needs one point to begin and end at.
+            foreach (EditSegment s in Segments)
+            {
+                if (done.Contains(s)) continue;
+                joint[s.A] = false;
+                walk(s.A, s);
+            }
+            foreach (Run run in runs) Lay(run, at[run.From].Count > 1, at[run.To].Count > 1);
+            // In the order their first pieces were drawn, so that the network comes out the same however the walk went.
+            var drawn = new Dictionary<EditSegment, int>();
+            for (int i = 0; i < Segments.Count; i++) drawn[Segments[i]] = i;
+            Func<Run, int> earliest = run =>
+            {
+                int first = int.MaxValue;
+                foreach (EditSegment s in run.Pieces) first = Math.Min(first, drawn[s]);
+                return first;
+            };
+            runs.Sort((x, y) => earliest(x).CompareTo(earliest(y)));
+            return runs;
+        }
+
+        /// <summary>The spot a distance along a traced line, and the way the line is heading there.</summary>
+        private static PathPose PoseAlong(Vec[] line, double s)
+        {
+            for (int i = 0; i + 1 < line.Length; i++)
+            {
+                double dx = line[i + 1].X - line[i].X, dy = line[i + 1].Y - line[i].Y, len = Geo.Hypot(dx, dy);
+                if (len < 1e-9) continue;
+                if (s <= len || i + 2 == line.Length)
+                {
+                    double f = Geo.Clamp(s / len, 0, 1);
+                    return new PathPose { X = line[i].X + dx * f, Y = line[i].Y + dy * f, H = Math.Atan2(dy, dx) };
+                }
+                s -= len;
+            }
+            return new PathPose { X = line[line.Length - 1].X, Y = line[line.Length - 1].Y };
+        }
+
+        /// <summary>
+        /// Work out the line a run follows. Where two of its pieces meet at an angle the corner
+        /// is rounded, taking as much of the pieces either side as a comfortable curve needs, or
+        /// as much as there is. A corner left tighter than the road allows is marked as sharp.
+        /// </summary>
+        private void Lay(Run run, bool junctionAtFrom, bool junctionAtTo)
+        {
+            RoadType type = run.Pieces[0].Type;
+            int count = run.Pieces.Count;
+            var lines = new Vec[count][];
+            var length = new double[count];
+            for (int i = 0; i < count; i++)
+            {
+                EditSegment s = run.Pieces[i];
+                // A point every few meters, on straight pieces as well as curved ones.
+                Vec a = Nodes[s.A], b = Nodes[s.B];
+                int steps = Math.Max(s.Curved ? 8 : 1, (int)Math.Ceiling((s.Curved ? LengthOf(Trace(s)) : Dist(a, b)) / 3));
+                lines[i] = s.Curved ? Trace(a, b, true, s.Mid, steps) : new Vec[steps + 1];
+                if (!s.Curved) for (int k = 0; k <= steps; k++) lines[i][k] = Lerp(a, b, (double)k / steps);
+                if (run.Turned[i]) Array.Reverse(lines[i]);
+                length[i] = LengthOf(lines[i]);
+            }
+            run.Sharp = new bool[Math.Max(count - 1, 0)];
+            if (count == 1)
+            {
+                run.Trace = lines[0];
+                return;
+            }
+
+            // How far each corner turns, and how much of each piece it would like for its curve.
+            var turn = new double[count - 1];
+            var want = new double[count - 1];
+            var take = new double[count - 1];
+            for (int j = 0; j < count - 1; j++)
+            {
+                double arrive = PoseAlong(lines[j], length[j]).H, leave = PoseAlong(lines[j + 1], 0).H;
+                turn[j] = Math.Abs(Math.Atan2(Math.Sin(leave - arrive), Math.Cos(leave - arrive)));
+                want[j] = turn[j] < Gentle ? 0 : type.MinRadius * 1.5 * Math.Tan(Math.Min(turn[j], 3) / 2);
+            }
+            var room = new double[count];
+            for (int i = 0; i < count; i++)
+            {
+                room[i] = length[i] - (i == 0 && junctionAtFrom ? JunctionRoom : 0) - (i == count - 1 && junctionAtTo ? JunctionRoom : 0);
+                room[i] = Math.Max(room[i], 0);
+            }
+            // Share each piece between the corners at its two ends; then let each corner have what its neighbors left.
+            for (int j = 0; j < count - 1; j++)
+            {
+                double before = room[j] * (j > 0 && want[j - 1] > 0 ? 0.5 : 1), after = room[j + 1] * (j + 2 < count && want[j + 1] > 0 ? 0.5 : 1);
+                take[j] = Math.Min(want[j], Math.Min(before, after));
+            }
+            for (int j = 0; j < count - 1; j++)
+            {
+                double before = room[j] - (j > 0 ? take[j - 1] : 0), after = room[j + 1] - (j + 2 < count ? take[j + 1] : 0);
+                take[j] = Math.Max(take[j], Math.Min(want[j], Math.Min(before, after)));
+                // A corner that hardly turns is no trouble even left as it is.
+                run.Sharp[j] = turn[j] > 0.14 && take[j] / Math.Tan(Math.Min(turn[j], 3) / 2) < type.MinRadius * 0.98;
+            }
+
+            var trace = new List<Vec>();
+            Action<Vec> add = p =>
+            {
+                if (trace.Count == 0 || Dist(trace[trace.Count - 1], p) > 0.05) trace.Add(p);
+            };
+            for (int i = 0; i < count; i++)
+            {
+                double from = i > 0 ? take[i - 1] : 0, to = length[i] - (i < count - 1 ? take[i] : 0);
+                // The part of this piece that is left between its corners.
+                add(PoseAlong(lines[i], from).Point);
+                double along = 0;
+                for (int k = 0; k + 1 < lines[i].Length; k++)
+                {
+                    along += Dist(lines[i][k], lines[i][k + 1]);
+                    if (along > from + 0.05 && along < to - 0.05) add(lines[i][k + 1]);
+                }
+                PathPose end = PoseAlong(lines[i], to);
+                add(end.Point);
+                if (i == count - 1 || take[i] < 0.05) continue;
+                // The corner: a smooth sweep from the way this piece is heading to the way the next one is.
+                PathPose next = PoseAlong(lines[i + 1], take[i]);
+                double bend = Math.Abs(Math.Atan2(Math.Sin(next.H - end.H), Math.Cos(next.H - end.H))), chord = Dist(end.Point, next.Point);
+                double reach = bend < 1e-3 ? chord / 3 : 4.0 / 3 * Math.Tan(bend / 4) * chord / (2 * Math.Sin(bend / 2));
+                Vec[] sweep = Geo.Bezier(end, next, reach, Math.Max(6, (int)Math.Ceiling(chord / 2.5)));
+                for (int k = 1; k < sweep.Length - 1; k++) add(sweep[k]);
+            }
+            run.Trace = trace.ToArray();
+        }
+
+        /// <summary>
+        /// The points where a road turns a corner too sharply for its kind: there was not room
+        /// either side to round the corner off. New ones are refused as they are drawn.
+        /// </summary>
+        public List<int> SharpCorners()
+        {
+            var sharp = new List<int>();
+            foreach (Run run in Runs())
+            {
+                for (int j = 0; j < run.Joints.Count; j++) if (run.Sharp[j]) sharp.Add(run.Joints[j]);
+            }
+            return sharp;
+        }
+
+        /// <summary>
+        /// Why the map as it now stands cannot be built, given the map it was changed from: a
+        /// corner the change has made too sharp, or junctions with no room between them. Null if it can be.
+        /// </summary>
+        private string Unbuildable(EditableMap before, string noRoom = "Not enough room there: the junctions would be too close together.")
+        {
+            var already = new HashSet<int>(before.SharpCorners());
+            foreach (int node in SharpCorners())
+            {
+                if (!already.Contains(node)) return "Too sharp a corner for this kind of road. Make the turn gentler, or leave more room either side of it.";
+            }
+            try
+            {
+                ToWorld();
+            }
+            catch (Exception)
+            {
+                return noRoom;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Turn the drawing into a network. Stretches that carry on from one another become one
+        /// road with its corners rounded. Where roads meet, the control is chosen from the roads
+        /// themselves: two different roads are just a bend; three or more quiet streets (25 mph)
         /// get stop signs all round; anything faster gets a traffic light. A road end with
         /// nothing joined to it is the edge of the map, where traffic comes in and leaves.
         /// </summary>
         public World ToWorld()
         {
             var b = new NetworkBuilder();
+            List<Run> runs = Runs();
+            // A point between two pieces of one road is not a junction: the network never hears of it.
+            var inside = new bool[Nodes.Count];
+            foreach (Run run in runs) foreach (int node in run.Joints) inside[node] = true;
             var joins = new Join[Nodes.Count];
+            var built = new int[Nodes.Count];
             for (int i = 0; i < Nodes.Count; i++)
             {
+                built[i] = -1;
+                if (inside[i]) continue;
                 int arms = 0, fastest = 0;
                 foreach (EditSegment s in Segments)
                 {
@@ -1360,35 +1593,36 @@ namespace Traffic.Sim
                 bool onRing = false;
                 foreach (EditSegment s in Segments) if (s.Ring && (s.A == i || s.B == i)) onRing = true;
                 JunctionMode mode = arms <= 2 || joins[i] != null || onRing ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
-                b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
+                built[i] = b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
             }
-            foreach (EditSegment s in Segments)
+            foreach (Run run in runs)
             {
-                TrackSpec[] fwd = Tracks(s, true, joins), back = s.Type.OneWay ? null : Tracks(s, false, joins);
-                double speed = s.Mph * 0.44704;
-                bool rampAtA = joins[s.A] != null && joins[s.A].Ramp == s, rampAtB = joins[s.B] != null && joins[s.B].Ramp == s;
-                if (rampAtA || rampAtB)
+                EditSegment first = run.Pieces[0], last = run.Pieces[run.Pieces.Count - 1];
+                RoadType type = first.Type;
+                double length = LengthOf(run.Trace);
+                // The lanes that run from the start of the run to its end, and those that run back.
+                bool withFirst = !run.Turned[0];
+                TrackSpec[] fwd = Tracks(withFirst ? type.Forward : type.Backward, joins[run.To], last, joins[run.From], first, length);
+                TrackSpec[] back = type.OneWay ? null : Tracks(withFirst ? type.Backward : type.Forward, joins[run.From], first, joins[run.To], last, length);
+                double speed = type.Mph * 0.44704;
+                bool rampAtFrom = joins[run.From] != null && joins[run.From].Ramp == first, rampAtTo = joins[run.To] != null && joins[run.To].Ramp == last;
+                if (rampAtFrom || rampAtTo)
                 {
                     // A ramp: bring each joining end in beside the lanes of the road it joins.
-                    Vec[] trace = Trace(Nodes[s.A], Nodes[s.B], s.Curved, s.Mid, Math.Max(8, (int)Math.Ceiling(LengthOf(Trace(s)) / 3)));
-                    double shiftA = 0, shiftB = 0;
-                    if (rampAtB) trace = BesideTheRoad(trace, Nodes[s.B], joins[s.B], s.Type.Width, out shiftB);
-                    if (rampAtA)
+                    var trace = (Vec[])run.Trace.Clone();
+                    double shiftFrom = 0, shiftTo = 0;
+                    if (rampAtTo) trace = BesideTheRoad(trace, Nodes[run.To], joins[run.To], type.Width, out shiftTo);
+                    if (rampAtFrom)
                     {
                         Array.Reverse(trace);
-                        trace = BesideTheRoad(trace, Nodes[s.A], joins[s.A], s.Type.Width, out shiftA);
+                        trace = BesideTheRoad(trace, Nodes[run.From], joins[run.From], type.Width, out shiftFrom);
                         Array.Reverse(trace);
                     }
-                    b.AddRamp(s.A, s.B, fwd, trace, speed, s.Type.Inner, rampAtA, shiftA, rampAtB, shiftB);
+                    b.AddRamp(built[run.From], built[run.To], fwd, trace, speed, type.Inner, rampAtFrom, shiftFrom, rampAtTo, shiftTo);
                 }
-                else if (!s.Curved) b.AddRoad(s.A, s.B, fwd, back, null, speed, 0, 0, false, s.Type.Inner);
-                else
-                {
-                    // Trace the curve with a point every few meters.
-                    int steps = Math.Max(8, (int)Math.Ceiling(LengthOf(Trace(s)) / 3));
-                    b.AddCurvedRoad(s.A, s.B, fwd, back, Trace(Nodes[s.A], Nodes[s.B], true, s.Mid, steps), speed, s.Type.Inner);
-                }
-                if (s.Level != 0) b.Raise(s.Level * LevelHeight, RampFor(s.Level));
+                else if (run.Pieces.Count == 1 && !first.Curved) b.AddRoad(built[run.From], built[run.To], fwd, back, null, speed, 0, 0, false, type.Inner);
+                else b.AddCurvedRoad(built[run.From], built[run.To], fwd, back, run.Trace, speed, type.Inner);
+                if (first.Level != 0) b.Raise(first.Level * LevelHeight, RampFor(first.Level));
             }
             World world = b.Build();
             // Keep the surroundings the same size however much has been drawn.
@@ -1402,25 +1636,24 @@ namespace Traffic.Sim
         }
 
         /// <summary>
-        /// The lanes of a stretch of road in one direction. Where it ends at a merge or an exit
-        /// its lanes are told which way they may go, and where it leaves a merge it gains a lane
-        /// for each lane of the ramp, which ends further on so that traffic has room to move over.
+        /// The lanes of a road in one direction. Where it ends at a merge or an exit its lanes
+        /// are told which way they may go, and where it leaves a merge it gains a lane for each
+        /// lane of the ramp, which ends further on so that traffic has room to move over. The
+        /// join ahead is the one this direction arrives at, with the piece of the road that
+        /// touches it; the join behind is the one it sets off from.
         /// </summary>
-        private TrackSpec[] Tracks(EditSegment s, bool forward, Join[] joins)
+        private static TrackSpec[] Tracks(int count, Join ahead, EditSegment atAhead, Join behind, EditSegment atBehind, double length)
         {
-            int count = forward ? s.Type.Forward : s.Type.Backward;
-            Join ahead = joins[forward ? s.B : s.A], behind = joins[forward ? s.A : s.B];
             var tracks = new List<TrackSpec>();
             for (int i = 0; i < count; i++)
             {
                 if (ahead == null) tracks.Add(new TrackSpec(i));
                 // Traffic arriving at an exit may take it from the outside lane; nobody else may turn there.
-                else if (!ahead.Merge && s == ahead.Up && i == count - 1) tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight, Turn.Right));
+                else if (!ahead.Merge && atAhead == ahead.Up && i == count - 1) tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight, Turn.Right));
                 else tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight));
             }
-            if (behind != null && behind.Merge && s == behind.Down)
+            if (behind != null && behind.Merge && atBehind == behind.Down)
             {
-                double length = LengthOf(Trace(s));
                 double until = Math.Min(0.75, 150 / Math.Max(length, 1));
                 for (int i = 0; i < behind.Ramp.Type.Forward; i++) tracks.Add(new TrackSpec(count + i, 0, until));
             }

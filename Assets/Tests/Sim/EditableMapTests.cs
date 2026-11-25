@@ -58,7 +58,9 @@ namespace Traffic.Tests
             Assert.IsNull(map.TryAdd(P(0, 0), P(150, 0), 2, 25, true));
             Assert.IsNull(map.TryAdd(P(154, 4), P(150, 160), 2, 25, true)); // starts near the first road's end
             Assert.AreEqual(3, map.Nodes.Count);
-            Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Arms.Count == 2), "the shared end is a bend");
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count, "the two stretches are one road, from one open end to the other");
+            Assert.AreEqual(2, world.Lanes.Count(l => l.Kind == LaneKind.Road));
         }
 
         [Test]
@@ -830,6 +832,145 @@ namespace Traffic.Tests
             // Bending one road across another is refused: crossing is what drawing is for.
             Assert.IsNull(map.TryAdd(P(40, 60), P(160, 60), T("s2"), true));
             Assert.IsNotNull(map.TryBend(east, P(100, 90), true));
+        }
+
+        // ---------------------------------------------------------------- pieces that make one road
+
+        [Test]
+        public void ARoadCanBeDrawnInShortPiecesAndIsStillOneRoad()
+        {
+            // Nine pieces of about 80 ft each, wandering a little: far shorter than a stretch used to have to be.
+            var map = new EditableMap();
+            var points = new[] { P(-110, 0), P(-86, 3), P(-62, 2), P(-37, 7), P(-12, 9), P(13, 6), P(37, 9), P(62, 15), P(86, 16), P(110, 22) };
+            for (int i = 0; i + 1 < points.Length; i++) Assert.IsNull(map.TryAdd(points[i], points[i + 1], T("s2"), true), "piece " + i);
+            Assert.AreEqual(9, map.Segments.Count);
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count, "only its two ends are points of the network");
+            Assert.AreEqual(2, world.Lanes.Count(l => l.Kind == LaneKind.Road), "one lane each way, the whole length");
+            Assert.Greater(world.Lanes.First(l => l.Kind == LaneKind.Road).Length, 200);
+            Assert.AreEqual(0, map.SharpCorners().Count);
+
+            var sim = new Simulation(world, 2);
+            sim.ArrivalsPerMinute = 10;
+            Grid.Run(sim, 180);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 15);
+        }
+
+        [Test]
+        public void ACornerBetweenTwoPiecesIsRounded()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-150, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 150), T("s2"), true));
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count);
+            // The road cuts the corner: no lane comes within a few meters of the point where the pieces meet.
+            double nearest = double.PositiveInfinity, tightest = double.PositiveInfinity;
+            foreach (Lane lane in world.Lanes)
+            {
+                for (double d = 0; d <= lane.Length; d += 1) nearest = Math.Min(nearest, Geo.Hypot(lane.Path.At(d).X, lane.Path.At(d).Y));
+                for (double d = 6; d + 6 <= lane.Length; d += 2) tightest = Math.Min(tightest, Geo.Circumradius(lane.Path.At(d - 6).Point, lane.Path.At(d).Point, lane.Path.At(d + 6).Point));
+            }
+            Assert.Greater(nearest, 7);
+            Assert.Greater(tightest, 22, "nowhere tighter than a street may turn");
+        }
+
+        [Test]
+        public void ACornerWithNoRoomToRoundItIsRefused()
+        {
+            // A square turn with only 60 ft either side of it: a street cannot get round that.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(18, 0), T("s2"), true), "a short stretch on its own is fine now");
+            string refused = map.TryAdd(P(18, 0), P(18, 18), T("s2"), true);
+            Assert.IsNotNull(refused);
+            StringAssert.Contains("sharp", refused);
+            // A gentle turn in the same space is fine, and so is the square turn given room.
+            Assert.IsNull(map.TryAdd(P(18, 0), P(38, 4), T("s2"), true));
+            var roomy = new EditableMap();
+            Assert.IsNull(roomy.TryAdd(P(0, 0), P(60, 0), T("s2"), true));
+            Assert.IsNull(roomy.TryAdd(P(60, 0), P(60, 60), T("s2"), true));
+            // A highway needs far more room than a street for the same turn.
+            var fast = new EditableMap();
+            Assert.IsNull(fast.TryAdd(P(0, 0), P(45, 0), T("h2"), true));
+            Assert.IsNotNull(fast.TryAdd(P(45, 0), P(45, 45), T("h2"), true));
+            Assert.IsNull(fast.TryAdd(P(45, 0), P(140, 20), T("h2"), true));
+        }
+
+        [Test]
+        public void MovingAPointCannotMakeACornerTooSharp()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-100, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(100, 20), T("s2"), true));
+            int far = map.NodeAt(P(100, 20), 5);
+            string refused = map.TryMove(far, P(3, 16), true);
+            Assert.IsNotNull(refused, "a square turn with 50 ft to make it in");
+            StringAssert.Contains("sharp", refused);
+            Assert.IsNull(map.TryMove(far, P(5, 30), true), "with 100 ft there is just room to round it");
+            Assert.IsNull(map.TryMove(far, P(90, 60), true));
+        }
+
+        [Test]
+        public void PiecesOnlyMakeOneRoadWhenTheyAreTheSameKindRunningTheSameWay()
+        {
+            // Two-way pieces drawn toward each other still carry on as one road.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-150, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(150, 10), P(0, 0), T("s2"), true));
+            Assert.AreEqual(2, map.ToWorld().Nodes.Count);
+
+            // A street that becomes an avenue changes at a point of its own.
+            var change = new EditableMap();
+            Assert.IsNull(change.TryAdd(P(-150, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(change.TryAdd(P(0, 0), P(150, 10), T("a2p"), true));
+            Assert.AreEqual(1, change.ToWorld().Nodes.Count(n => n.Arms.Count == 2));
+
+            // One-way pieces carry on only if traffic runs the same way through.
+            var oneWay = new EditableMap();
+            Assert.IsNull(oneWay.TryAdd(P(-150, 0), P(0, 0), T("s1"), true));
+            Assert.IsNull(oneWay.TryAdd(P(0, 0), P(150, 10), T("s1"), true));
+            World through = oneWay.ToWorld();
+            Assert.AreEqual(2, through.Nodes.Count);
+            Assert.AreEqual(1, through.Entries.Count, "traffic comes in at the end it was drawn from");
+            Assert.AreEqual(0, oneWay.Faults().Count);
+            var headOn = new EditableMap();
+            Assert.IsNull(headOn.TryAdd(P(-150, 0), P(0, 0), T("s1"), true));
+            Assert.IsNull(headOn.TryAdd(P(150, 10), P(0, 0), T("s1"), true));
+            Assert.AreEqual(3, headOn.ToWorld().Nodes.Count);
+            Assert.AreEqual(1, headOn.Faults().Count, "two one-way roads running into each other");
+        }
+
+        [Test]
+        public void ARingOfPiecesWithNoJunctionStillBuildsAndCarriesTraffic()
+        {
+            // A closed circuit: no road end anywhere, and no junction either.
+            var map = new EditableMap();
+            var corners = new[] { P(-120, -80), P(120, -80), P(120, 80), P(-120, 80) };
+            for (int i = 0; i < 4; i++) Assert.IsNull(map.TryAdd(corners[i], corners[(i + 1) % 4], T("s2"), true), "side " + i);
+            World world = map.ToWorld();
+            Assert.AreEqual(1, world.Nodes.Count, "one point for the road to begin and end at");
+            var sim = new Simulation(world, 6);
+            for (int i = 0; i < 8; i++) sim.Spawn(DriverParams.Normal, 0.3, VehicleKind.Car);
+            Assert.Greater(sim.Cars.Count, 4);
+            Grid.Run(sim, 180);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.IsTrue(sim.Cars.All(c => c.V > 2), "everyone is still going round");
+
+            // A loop that leaves a road and comes back to it at the same junction.
+            var lollipop = new EditableMap();
+            Assert.IsNull(lollipop.TryAdd(P(0, -200), P(0, 0), T("s2"), true));
+            Assert.IsNull(lollipop.TryAdd(P(0, 0), P(90, 90), T("s2"), true));
+            Assert.IsNull(lollipop.TryAdd(P(90, 90), P(0, 180), T("s2"), true));
+            Assert.IsNull(lollipop.TryAdd(P(0, 180), P(-90, 90), T("s2"), true));
+            Assert.IsNull(lollipop.TryAdd(P(-90, 90), P(0, 0), T("s2"), true));
+            World loop = lollipop.ToWorld();
+            Assert.AreEqual(2, loop.Nodes.Count);
+            var round = new Simulation(loop, 3);
+            round.ArrivalsPerMinute = 6;
+            Grid.Run(round, 240);
+            Assert.AreEqual(0, round.Crashes);
+            Assert.Greater(round.Left, 6, "traffic goes round the loop and back out the way it came");
         }
 
         // ---------------------------------------------------------------- levels
