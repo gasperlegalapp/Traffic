@@ -4,7 +4,7 @@ using Traffic.Sim;
 namespace Traffic.Ui
 {
     /// <summary>What the signs tool's card can do.</summary>
-    public enum SignAct { None, Control, Slower, Faster, UsualSpeed }
+    public enum SignAct { None, Control, Slower, Faster, UsualSpeed, NoTurnOnRed }
 
     /// <summary>
     /// The card that sits beside a lane picked with the signs tool. It sets what runs the
@@ -19,6 +19,9 @@ namespace Traffic.Ui
         /// <summary>What runs that intersection now, as seen from the picked lane's road, and whether the game chose it.</summary>
         public Control Now;
         public bool Automatic;
+        /// <summary>A sign forbids this road's traffic to turn on red at the intersection. The card offers it where a light runs the intersection.</summary>
+        public bool NoRed;
+        private bool Lit => Intersection && (Now == Control.Light || Now == Control.LightWithArrows);
         /// <summary>The speed limit on the picked lane's road, miles per hour, and whether the player posted it.</summary>
         public int Mph;
         public bool Posted;
@@ -65,12 +68,14 @@ namespace Traffic.Ui
             }
         }
 
-        private double SpeedTop => y + 30 + (Intersection ? 4 * (ButtonH + Gap) + 30 : 0);
+        private double SpeedTop => y + 30 + (Intersection ? 4 * (ButtonH + Gap) + 30 : 0) + (Lit ? ButtonH + Gap : 0);
+        /// <summary>The top of the no-turn-on-red switch: under the choices for the intersection.</summary>
+        private double NoRedTop => y + 30 + 4 * (ButtonH + Gap);
 
         /// <summary>Place the card by the spot on the screen where the picked lane was clicked: above it, or below if there is no room.</summary>
         public void Layout(double anchorX, double anchorY, double screenW, double screenH)
         {
-            high = 30 + (Intersection ? 4 * (ButtonH + Gap) + 30 : 0) + 44 + 62;
+            high = 30 + (Intersection ? 4 * (ButtonH + Gap) + 30 : 0) + (Lit ? ButtonH + Gap : 0) + 44 + 62;
             x = Math.Max(8, Math.Min(screenW - Wide - 8, anchorX - Wide / 2));
             y = anchorY - high - 30;
             if (y < 8) y = Math.Min(screenH - high - 8, anchorY + 30);
@@ -99,6 +104,7 @@ namespace Traffic.Ui
                 which = Choices[i];
                 return SignAct.Control;
             }
+            if (Lit && px >= x + 10 && px < x + Wide - 10 && py >= NoRedTop && py < NoRedTop + ButtonH) return SignAct.NoTurnOnRed;
             double top = SpeedTop;
             if (py >= top && py < top + ButtonH)
             {
@@ -129,6 +135,12 @@ namespace Traffic.Ui
                     s.Text(Name(Choices[i]), bx, by, ButtonW, ButtonH, 13, true, 1, on ? Dock.Ink : Dock.Light);
                 }
             }
+            if (Lit)
+            {
+                // A switch: lit while the sign is up.
+                s.Fill(x + 10, NoRedTop, Wide - 20, ButtonH, 11, NoRed ? Dock.Accent : over == SignAct.NoTurnOnRed ? Dock.Hover : Dock.Lift);
+                s.Text("No turn on red from this road", x + 10, NoRedTop, Wide - 20, ButtonH, 13, true, 1, NoRed ? Dock.Ink : Dock.Light);
+            }
             double top = SpeedTop;
             s.Text("SPEED LIMIT ON THIS ROAD", x + 12, top - 21, Wide - 24, 14, 10, true, 0, Dock.Dim);
             s.Fill(x + 10, top, 44, ButtonH, 11, over == SignAct.Slower ? Dock.Hover : Dock.Lift);
@@ -142,6 +154,7 @@ namespace Traffic.Ui
                 s.Text("Usual", x + Wide - 10 - 84, top, 84, ButtonH, 13, true, 1, Dock.Light);
             }
             string tip = over == SignAct.Control ? About(which)
+                : over == SignAct.NoTurnOnRed ? "A sign at the light: traffic from this road waits for the green before turning, where otherwise it could turn right on red after stopping."
                 : over == SignAct.Slower || over == SignAct.Faster ? "Steps through the speed limits Ohio's law sets out, from 15 mph for an alley to 70 for a freeway in the country."
                 : over == SignAct.UsualSpeed ? "Take the posted limit down: back to the usual one for this kind of road."
                 : Posted && EditableMap.SpeedLimitFor(Mph).Length > 0 ? "Posted at " + Mph + " mph: the limit for " + EditableMap.SpeedLimitFor(Mph) + "."

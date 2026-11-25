@@ -51,6 +51,10 @@ namespace Traffic.Lab
         private float variation = 0.3f;
         private float truckShare = 0.12f;
         private float bikeShare = 0.06f;
+        /// <summary>Of the trucks, the share that are big: box trucks and semis, half and half.</summary>
+        private float bigTruckShare = 0.4f;
+        /// <summary>The share of arriving drivers who camp in the left lane under the speed limit. None in a puzzle, where the score depends on the traffic.</summary>
+        private float camperShare = 0.04f;
         private bool showSensors = true;
         private bool showLabels = true;
 
@@ -83,6 +87,7 @@ namespace Traffic.Lab
         {
             bool crashes = Sim == null || Sim.CrashesEnabled;
             bool rightOnRed = Sim == null || Sim.RightOnRed;
+            bool keepRight = Sim == null || Sim.KeepRight;
             if (roads != null) roads.Destroy();
             if (carViews != null) carViews.Destroy();
             selected = -1;
@@ -92,6 +97,7 @@ namespace Traffic.Lab
             Sim = new Simulation(world, (uint)(System.DateTime.Now.Ticks & 0xffff));
             Sim.CrashesEnabled = crashes;
             Sim.RightOnRed = rightOnRed;
+            Sim.KeepRight = keepRight;
             Sim.OnAccident = accident =>
             {
                 string kind = accident.Kind == CrashKind.RearEnd ? "Rear-end crash" : accident.Kind == CrashKind.Sideswipe ? "Sideswipe" : accident.Kind == CrashKind.HeadOn ? "Head-on crash" : "Broadside crash";
@@ -360,7 +366,8 @@ namespace Traffic.Lab
         {
             string before = drawing.Serialize();
             string refused;
-            bool changed = act == SignAct.Control ? pen.SetControl(which, out refused) : act == SignAct.UsualSpeed ? pen.UsualSpeed(out refused)
+            bool changed = act == SignAct.Control ? pen.SetControl(which, out refused) : act == SignAct.NoTurnOnRed ? pen.SetNoTurnOnRed(!pen.PickedNoTurnOnRed, out refused)
+                : act == SignAct.UsualSpeed ? pen.UsualSpeed(out refused)
                 : pen.StepSpeed(act == SignAct.Faster ? 1 : -1, out refused);
             if (refused != null) Toast(refused);
             if (changed) DrawingChanged(before);
@@ -662,7 +669,7 @@ namespace Traffic.Lab
         private VehicleKind PickVehicle()
         {
             float r = Random.value;
-            if (r < truckShare) return VehicleKind.Truck;
+            if (r < truckShare) return r >= truckShare * bigTruckShare ? VehicleKind.Truck : r < truckShare * bigTruckShare / 2 ? VehicleKind.Semi : VehicleKind.BoxTruck;
             if (r < truckShare + bikeShare) return VehicleKind.Motorcycle;
             return VehicleKind.Car;
         }
@@ -734,6 +741,8 @@ namespace Traffic.Lab
             Sim.ArrivalVariation = variation;
             Sim.ArrivalTrucks = truckShare;
             Sim.ArrivalMotorcycles = bikeShare;
+            Sim.BigTrucks = bigTruckShare;
+            Sim.ArrivalCampers = building || level != null ? 0 : camperShare;
 
             if (building || !paused)
             {

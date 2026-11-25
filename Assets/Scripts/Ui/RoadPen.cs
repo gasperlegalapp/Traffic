@@ -304,6 +304,18 @@ namespace Traffic.Ui
             return refused == null;
         }
 
+        /// <summary>Whether a sign forbids the road of the picked lane to turn on red at the intersection it leads to.</summary>
+        public bool PickedNoTurnOnRed => picked && map.NoTurnOnRedAt(pickedAt);
+
+        /// <summary>Put that sign up, or take it down. Returns true if the map changed.</summary>
+        public bool SetNoTurnOnRed(bool on, out string refused)
+        {
+            refused = picked ? map.TrySetNoTurnOnRed(pickedAt, on, true) : "Pick a lane first.";
+            stamp++;
+            mapChanges++;
+            return refused == null;
+        }
+
         /// <summary>The speed limit on the road of the picked lane, miles per hour, and whether the player posted it.</summary>
         public int PickedSpeed(out bool posted)
         {

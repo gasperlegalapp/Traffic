@@ -604,6 +604,30 @@ namespace Traffic.Lab
             }
         }
 
+        /// <summary>
+        /// A round drum, such as a wheel or a tank: its middle, the way its axle points, its
+        /// radius and its length along the axle. Its sides are flat faces, in keeping with the rest.
+        /// </summary>
+        public void Drum(Vector3 center, Vector3 axis, float radius, float length, int sides = 10)
+        {
+            axis = axis.normalized;
+            Vector3 across = Vector3.Cross(axis, Mathf.Abs(axis.y) > 0.9f ? Vector3.right : Vector3.up).normalized, up = Vector3.Cross(across, axis);
+            Vector3 near = center - axis * (length / 2), far = center + axis * (length / 2);
+            for (int i = 0; i < sides; i++)
+            {
+                float a0 = Mathf.PI * 2 * i / sides, a1 = Mathf.PI * 2 * (i + 1) / sides;
+                Vector3 r0 = (across * Mathf.Cos(a0) + up * Mathf.Sin(a0)) * radius, r1 = (across * Mathf.Cos(a1) + up * Mathf.Sin(a1)) * radius;
+                int b = verts.Count;
+                // The side, then a wedge of each end. Each way round, so it shows whichever way the pipeline counts a face.
+                verts.Add(near + r0); verts.Add(near + r1); verts.Add(far + r1); verts.Add(far + r0);
+                tris.AddRange(new[] { b, b + 2, b + 1, b, b + 3, b + 2 });
+                verts.Add(near); verts.Add(near + r0); verts.Add(near + r1);
+                tris.AddRange(new[] { b + 4, b + 5, b + 6 });
+                verts.Add(far); verts.Add(far + r1); verts.Add(far + r0);
+                tris.AddRange(new[] { b + 7, b + 8, b + 9 });
+            }
+        }
+
         public Mesh Build()
         {
             var mesh = new Mesh();

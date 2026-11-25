@@ -5,6 +5,10 @@ namespace Traffic.Sim
         Car,
         Truck,
         Motorcycle,
+        /// <summary>A big box truck: one rigid body, half as long again as a delivery truck.</summary>
+        BoxTruck,
+        /// <summary>A tractor pulling a trailer, which may be a box or a tank: it bends in the middle.</summary>
+        Semi,
     }
 
     /// <summary>What a kind of vehicle can do, as multiples of what the driver would do in a car.</summary>
@@ -23,6 +27,12 @@ namespace Traffic.Sim
         /// <summary>How long a lane change takes.</summary>
         public double LaneChange = 1;
         public bool CanUTurn = true;
+        /// <summary>
+        /// For a vehicle that pulls a trailer: how much of its length, at the back, is the
+        /// trailer. The tractor in front and the trailer behind each keep to the road, joined
+        /// where they meet, so the whole bends round a corner. 0 for a vehicle in one piece.
+        /// </summary>
+        public double Trailer;
         /// <summary>Paint colors as 0xRRGGBB.</summary>
         public int[] Colors;
 
@@ -46,6 +56,20 @@ namespace Traffic.Sim
                 Kind = VehicleKind.Motorcycle, Name = "Motorcycle", Len = 2.2, Wid = 0.8,
                 Accel = 1.5, Brake = 1.1, Speed = 1.05, Corner = 1.1, LaneChange = 0.7,
                 Colors = new[] { 0xff3b30, 0x1f1f1f, 0x2e86de, 0xf5f5f5, 0x27ae60, 0xff9f1a },
+            },
+            new VehicleSpec
+            {
+                // Heavier than the delivery truck in every way.
+                Kind = VehicleKind.BoxTruck, Name = "Box truck", Len = 7.6, Wid = 2.4,
+                Accel = 0.42, Brake = 0.75, Speed = 0.9, Corner = 0.5, LaneChange = 1.7, CanUTurn = false,
+                Colors = new[] { 0xe9ecef, 0xd9534f, 0x3a7ca5, 0xf2a541, 0x4f9d69, 0x8d99ae },
+            },
+            new VehicleSpec
+            {
+                // Shorter than a real one, as everything here is, but still three cars long: slow to get going, slow round a corner.
+                Kind = VehicleKind.Semi, Name = "Semi", Len = 14, Wid = 2.5, Trailer = 9.6,
+                Accel = 0.32, Brake = 0.7, Speed = 0.88, Corner = 0.42, LaneChange = 2.0, CanUTurn = false,
+                Colors = new[] { 0xc1121f, 0x1d3557, 0x2a9d8f, 0xe9ecef, 0xf77f00, 0x33363b, 0x6a4c93 },
             },
         };
 

@@ -2742,6 +2742,7 @@ namespace Traffic.Sim
                 else b.AddCurvedRoad(built[run.From], built[run.To], fwd, back, run.Trace, speed, type.Inner);
                 Sign atFrom = SignOf(signs, first, run.From), atTo = SignOf(signs, last, run.To);
                 if (atFrom != Sign.None || atTo != Sign.None) b.Signs(atFrom, atTo);
+                if (NoRed(first, run.From) || NoRed(last, run.To)) b.NoTurnOnRed(NoRed(first, run.From), NoRed(last, run.To));
                 if (first.Level != 0) b.Raise(first.Level * LevelHeight, RampFor(first.Level));
                 if (type.CenterLane) b.PaveMiddle();
             }
@@ -2910,6 +2911,8 @@ namespace Traffic.Sim
 
         /// <summary>What the traffic at one end of a piece meets at the intersection there, as kept in EditSegment.ControlAtA and ControlAtB.</summary>
         public const int AsLight = 1, AsStop = 2, AsYield = 3, AsNoSign = 4, AsArrows = 5;
+        /// <summary>Added to one of those: a sign at that end forbids its traffic to turn on a red light.</summary>
+        public const int NoRedBit = 16;
 
         /// <summary>
         /// The speed limits a road can be posted with, miles per hour: the ones Ohio's law sets
@@ -2954,13 +2957,45 @@ namespace Traffic.Sim
 
         private static int ControlCode(EditSegment piece, int node)
         {
-            return piece.A == node ? piece.ControlAtA : piece.ControlAtB;
+            return (piece.A == node ? piece.ControlAtA : piece.ControlAtB) & (NoRedBit - 1);
         }
 
+        /// <summary>Set what the traffic at one end of a piece meets there. A no-turn-on-red sign at that end stays up.</summary>
         private static void SetControlCode(EditSegment piece, int node, int code)
         {
-            if (piece.A == node) piece.ControlAtA = code;
-            if (piece.B == node) piece.ControlAtB = code;
+            if (piece.A == node) piece.ControlAtA = code | (piece.ControlAtA & NoRedBit);
+            if (piece.B == node) piece.ControlAtB = code | (piece.ControlAtB & NoRedBit);
+        }
+
+        private static bool NoRed(EditSegment piece, int node)
+        {
+            return ((piece.A == node ? piece.ControlAtA : piece.ControlAtB) & NoRedBit) != 0;
+        }
+
+        /// <summary>Whether the lane under a point leads to an intersection where a sign forbids its road to turn on red.</summary>
+        public bool NoTurnOnRedAt(Vec p)
+        {
+            EditSegment piece;
+            int node;
+            return ApproachUnder(p, out piece, out node) && NoRed(piece, node);
+        }
+
+        /// <summary>
+        /// Put up a no-turn-on-red sign for the road of the lane under a point, at the
+        /// intersection it leads to, or take it down (Ohio Revised Code 4511.13(C)(4)). It
+        /// only matters while a light runs the intersection. Returns null if it was done, or
+        /// a short reason why it cannot be.
+        /// </summary>
+        public string TrySetNoTurnOnRed(Vec p, bool on, bool commit)
+        {
+            EditSegment piece;
+            int node;
+            if (!ApproachUnder(p, out piece, out node)) return "That lane does not lead to an intersection.";
+            if (piece.Locked) return "That road came with the level.";
+            if (!commit) return null;
+            if (piece.A == node) piece.ControlAtA = on ? piece.ControlAtA | NoRedBit : piece.ControlAtA & ~NoRedBit;
+            if (piece.B == node) piece.ControlAtB = on ? piece.ControlAtB | NoRedBit : piece.ControlAtB & ~NoRedBit;
+            return null;
         }
 
         /// <summary>

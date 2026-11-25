@@ -139,6 +139,8 @@ namespace Traffic.Sim
         public int Arm;
         /// <summary>The sign this road's traffic meets as it arrives, where the intersection is run by signs.</summary>
         public Sign Sign;
+        /// <summary>A sign here forbids turning on a red light: no right on red, and no left on red between one-way streets (Ohio Revised Code 4511.13(C)(4)).</summary>
+        public bool NoTurnOnRed;
         /// <summary>Direction pointing away from the intersection along this road, radians.</summary>
         public double Angle;
         /// <summary>0 for the north-south street, 1 for east-west. Opposite arms share a street and a green.</summary>

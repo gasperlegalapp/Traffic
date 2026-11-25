@@ -12,7 +12,7 @@ namespace Traffic.Lab
     /// </summary>
     public sealed partial class LabApp
     {
-        private static readonly string[] SliderNames = { "Reaction time", "Speed", "Following gap", "Aggression", "Politeness", "Obeys lights and signs", "Weaving between lanes", "Swerving (drunk)", "Looking away (phone)" };
+        private static readonly string[] SliderNames = { "Reaction time", "Speed", "Following gap", "Aggression", "Politeness", "Obeys lights and signs", "Weaving between lanes", "Swerving (drunk)", "Looking away (phone)", "Camping in the left lane" };
         private static readonly string[] StateNames = { "CRUISE", "FOLLOW", "BRAKE", "STOPPING", "WAIT", "YIELD", "LETTING IN", "MERGE", "LANE CHANGE", "STARTLED", "CRASH", "SCARED", "WARY", "LOOKING AWAY", "RUBBERNECKING" };
         private static readonly float[] Speeds = { 0.25f, 1, 2, 4 };
 
@@ -193,6 +193,7 @@ namespace Traffic.Lab
                 {
                     signCard.Intersection = pen.PickedControl(out signCard.Now, out signCard.Automatic);
                     signCard.Mph = pen.PickedSpeed(out signCard.Posted);
+                    signCard.NoRed = pen.PickedNoTurnOnRed;
                     signCard.Layout(spot.x / scale, (Screen.height - spot.y) / scale, w, (float)dock.Top - 8);
                     if (e.type == EventType.Repaint) signCard.Draw(surface, mouse.x, mouse.y);
                     if (e.type == EventType.MouseDown && e.button == 0 && signCard.Contains(mouse.x, mouse.y))
@@ -624,8 +625,14 @@ namespace Traffic.Lab
             if (GUILayout.Button("+ Truck", button) && Sim.Spawn(newDriver, variation, VehicleKind.Truck) == null) Toast("The road is full.");
             if (GUILayout.Button("+ Motorcycle", button) && Sim.Spawn(newDriver, variation, VehicleKind.Motorcycle) == null) Toast("The road is full.");
             GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("+ Box truck", button) && Sim.Spawn(newDriver, variation, VehicleKind.BoxTruck) == null) Toast("The road is full.");
+            if (GUILayout.Button("+ Semi", button) && Sim.Spawn(newDriver, variation, VehicleKind.Semi) == null) Toast("The road is full.");
+            GUILayout.EndHorizontal();
             truckShare = Slider("Trucks among new vehicles", Mathf.RoundToInt(truckShare * 100) + "%", truckShare, 0, 0.6f);
+            bigTruckShare = Slider("Box trucks and semis among trucks", Mathf.RoundToInt(bigTruckShare * 100) + "%", bigTruckShare, 0, 1);
             bikeShare = Slider("Motorcycles among new vehicles", Mathf.RoundToInt(bikeShare * 100) + "%", bikeShare, 0, 0.6f);
+            camperShare = Slider("Left-lane campers among new drivers", Mathf.RoundToInt(camperShare * 100) + "%", camperShare, 0, 0.3f);
 
             GUILayout.Space(10);
             GUILayout.Label("SPECIAL DRIVERS", heading);
@@ -653,6 +660,7 @@ namespace Traffic.Lab
             GUILayout.Space(10);
             GUILayout.Label("RULES", heading);
             Sim.RightOnRed = GUILayout.Toggle(Sim.RightOnRed, " Right turn on red", toggle);
+            Sim.KeepRight = GUILayout.Toggle(Sim.KeepRight, " Slower traffic keeps right", toggle);
             Sim.CrashesEnabled = GUILayout.Toggle(Sim.CrashesEnabled, " Crashes wreck cars", toggle);
 
             GUILayout.Space(10);
@@ -668,6 +676,11 @@ namespace Traffic.Lab
                 if (GUILayout.Button("Traffic light with left arrows", mode == JunctionMode.ProtectedLeft ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.ProtectedLeft);
                 if (GUILayout.Button("All-way stop", mode == JunctionMode.AllWay ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.AllWay);
                 Junction chosen = Sim.Junctions[selectedNode];
+                // A light can go out: drivers then take it as stop signs all round until it is mended.
+                // (The button is always there, and only greyed where there is no light: the panel must not gain or lose a control between one pass of the GUI and the next.)
+                GUI.enabled = chosen.Failed || mode == JunctionMode.Signal || mode == JunctionMode.ProtectedLeft;
+                if (GUILayout.Button(chosen.Failed ? "The light is out. Mend it" : "Put the light out", chosen.Failed ? buttonOn : button)) Sim.FailSignal(selectedNode, !chosen.Failed);
+                GUI.enabled = true;
                 if (GUILayout.Button("Stop signs on the side street", chosen.IsSideStreet(Sign.Stop) ? buttonOn : button)) Sim.SetSigns(selectedNode, Sign.Stop);
                 if (GUILayout.Button("Yield signs on the side street", chosen.IsSideStreet(Sign.Yield) ? buttonOn : button)) Sim.SetSigns(selectedNode, Sign.Yield);
                 if (GUILayout.Button("No signs", chosen.IsSideStreet(Sign.None) ? buttonOn : button)) Sim.SetSigns(selectedNode, Sign.None);

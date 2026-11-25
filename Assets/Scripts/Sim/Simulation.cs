@@ -111,6 +111,8 @@ namespace Traffic.Sim
         public double GhostOff;
         public double LcCooldownUntil;
         public double NextLcCheck;
+        /// <summary>When this driver came up behind someone slower than they want to go, in the same lane; negative when nobody is in the way.</summary>
+        public double HeldUpSince = -1;
         /// <summary>Side the driver needs to move to (-1 left, 1 right), and how badly (0 to 1).</summary>
         public int WantSide;
         public double Urgency;
@@ -161,10 +163,22 @@ namespace Traffic.Sim
         public double Born, Ideal;
         /// <summary>Position on the lane centerline (ignores the sideways offset).</summary>
         public double Cx, Cy;
+        /// <summary>
+        /// For a vehicle pulling a trailer: where the tractor is and which way it faces, and
+        /// the same for the trailer. (X, Y and H are then the line from its tail to its nose,
+        /// which is what the rest of the simulation goes by.)
+        /// </summary>
+        public double CabX, CabY, CabH, TowX, TowY, TowH;
 
         // Readouts for the overlay and inspector.
         public CarState State;
         public int Blinker;
+        /// <summary>
+        /// Whether this driver uses turn signals at all. About one in eight careful drivers
+        /// does not, and nearly half of the pushiest. It goes by the car's number, not by a
+        /// throw of the dice, so that it changes nothing else about the traffic.
+        /// </summary>
+        public bool Signals => unchecked((uint)Id * 2654435761u >> 12) % 1000 >= 120 + 300 * Drv.Aggression;
         public double V0;
         public int LeaderId = -1;
         public double Gap = double.PositiveInfinity;
@@ -230,6 +244,13 @@ namespace Traffic.Sim
         public double ArrivalVariation = 0.3;
         public double ArrivalTrucks = 0.12;
         public double ArrivalMotorcycles = 0.06;
+        /// <summary>
+        /// Of the trucks that arrive, the share that are big ones: half of those box trucks and
+        /// half semis. None unless asked for, so that traffic without them is as it was.
+        /// </summary>
+        public double BigTrucks;
+        /// <summary>The share of arriving drivers who are left-lane campers (see SpecialDriver.Camper). None unless asked for.</summary>
+        public double ArrivalCampers;
         /// <summary>No new arrivals while this many vehicles are on the map.</summary>
         public int MaxCars = 320;
         /// <summary>
@@ -248,6 +269,12 @@ namespace Traffic.Sim
         public Routes Routes => routes ?? (routes = new Routes(World));
         /// <summary>Allow turning right at a red light after stopping.</summary>
         public bool RightOnRed = true;
+        /// <summary>
+        /// Slower traffic keeps right (Ohio Revised Code 4511.25(B)): a driver who is holding up
+        /// someone faster moves over to the right when there is room, and nobody sits in a left
+        /// lane without a reason: passing, or a turn that lane is for. Left-lane campers ignore it.
+        /// </summary>
+        public bool KeepRight = true;
         /// <summary>Cars that have made it through an intersection.</summary>
         public int Passes;
         /// <summary>Clear crashes after a while: wrecks are towed away and fender benders drive off.</summary>
@@ -400,7 +427,12 @@ namespace Traffic.Sim
                     Lane lane = Lanes[id];
                     VehicleKind kind = VehicleKind.Car;
                     double pick = Rng.Next();
-                    if (pick < ArrivalTrucks) kind = VehicleKind.Truck;
+                    if (pick < ArrivalTrucks)
+                    {
+                        // The same throw of the dice says which kind of truck: the low end of the trucks' share is the big ones.
+                        double within = pick / ArrivalTrucks;
+                        kind = within >= BigTrucks ? VehicleKind.Truck : within < BigTrucks / 2 ? VehicleKind.Semi : VehicleKind.BoxTruck;
+                    }
                     else if (pick < ArrivalTrucks + ArrivalMotorcycles) kind = VehicleKind.Motorcycle;
                     double length = VehicleSpec.Of(kind).Len;
                     // Wait for the mouth of the lane to clear.
@@ -436,6 +468,8 @@ namespace Traffic.Sim
                     }
                     Car arrival = AddCar(id, length / 2 + 0.5, speed, Vary(ArrivalDriver ?? DriverParams.Normal, ArrivalVariation), null, kind);
                     if (dest >= 0) SetDestination(arrival, dest);
+                    // Now and then, one of those drivers. (No dice are thrown unless some were asked for, so traffic without them is as it was.)
+                    if (ArrivalCampers > 0 && kind == VehicleKind.Car && Rng.Next() < ArrivalCampers) MakeSpecial(arrival, SpecialDriver.Camper);
 
                     // Faster roads carry more traffic per lane.
                     double perSecond = ArrivalsPerMinute / 60 * (lane.SpeedLimit / NetworkBuilder.CitySpeed);
@@ -452,10 +486,17 @@ namespace Traffic.Sim
         {
             Car car = Spawn(kind.Make(), 0, vehicle);
             if (car == null) return null;
+            MakeSpecial(car, kind);
+            return car;
+        }
+
+        /// <summary>Put one of the special drivers behind the wheel of a car that is already on the road.</summary>
+        public void MakeSpecial(Car car, SpecialDriver kind)
+        {
+            car.Drv = kind.Make();
             car.Special = kind.Name;
             car.Color = kind.Color;
             car.Flash = kind.Flash;
-            return car;
         }
 
         /// <summary>What this driver can do in this vehicle.</summary>
@@ -514,10 +555,28 @@ namespace Traffic.Sim
             }
         }
 
+        /// <summary>
+        /// Put the traffic light at an intersection out, or mend it. While it is out, drivers
+        /// treat the intersection as stop signs all round (Ohio Revised Code 4511.132).
+        /// </summary>
+        public void FailSignal(int node, bool failed)
+        {
+            Junction junction = Junctions[node];
+            if (junction.Failed == failed) return;
+            if (failed) junction.Fail(Time);
+            else junction.Mend(Time);
+            if (junction.Failed != failed) return;
+            foreach (var c in Cars)
+            {
+                Lane lane = Lanes[c.Lane];
+                if (lane.Node == node || lane.ApproachNode == node) c.Junc = new JunctionMemo();
+            }
+        }
+
         public void SetMode(int node, JunctionMode mode)
         {
             Junction junction = Junctions[node];
-            if (junction.Mode == mode || !World.Nodes[node].Controlled) return;
+            if ((junction.Mode == mode && !junction.Failed) || !World.Nodes[node].Controlled) return;
             junction.SetMode(mode, Time);
             foreach (var c in Cars)
             {
@@ -662,6 +721,19 @@ namespace Traffic.Sim
                 car.X = (nose.X + tail.X) / 2 + Math.Sin(h) * side;
                 car.Y = (nose.Y + tail.Y) / 2 - Math.Cos(h) * side;
                 car.H = h;
+                if (car.Vehicle.Trailer > 0)
+                {
+                    // With a trailer, the place where the two are joined keeps to the path as well:
+                    // the tractor lies from there to the nose and the trailer from the tail to there.
+                    double reach = half - (car.Len - car.Vehicle.Trailer);
+                    PathPose hitch = Ahead(car, reach, out ahead) ? ahead.Lane.Path.At(ahead.S) : Lanes[car.Lane].Path.At(car.S + reach);
+                    car.CabH = Math.Atan2(nose.Y - hitch.Y, nose.X - hitch.X);
+                    car.CabX = (nose.X + hitch.X) / 2 + Math.Sin(car.CabH) * side;
+                    car.CabY = (nose.Y + hitch.Y) / 2 - Math.Cos(car.CabH) * side;
+                    car.TowH = Math.Atan2(hitch.Y - tail.Y, hitch.X - tail.X);
+                    car.TowX = (hitch.X + tail.X) / 2 + Math.Sin(car.TowH) * side;
+                    car.TowY = (hitch.Y + tail.Y) / 2 - Math.Cos(car.TowH) * side;
+                }
                 return;
             }
             car.X = p.X + Math.Sin(p.H) * side;
@@ -1029,14 +1101,16 @@ namespace Traffic.Sim
             else if (binding == Binding.End) car.State = CarState.Merge;
             else car.State = gawking ? CarState.Gawking : CarState.Cruise;
 
-            // Turn signals.
-            if (car.ChangingLanes) car.Blinker = car.LcFrom > 0 ? -1 : 1;
+            // Turn signals: for a lane change, from when the driver wants it until it is done, and for a turn
+            // on the last stretch up to the intersection and through it. Not every driver bothers.
+            if (!car.Signals) car.Blinker = 0;
+            else if (car.ChangingLanes) car.Blinker = car.LcFrom > 0 ? -1 : 1;
             else if (car.WantSide != 0 && car.Urgency > 0.1) car.Blinker = car.WantSide;
             else
             {
                 Turn turn = Turn.Straight;
                 if (lane.Kind == LaneKind.Connector) turn = lane.Turn;
-                else if (lane.Connectors != null && lane.Length - car.S < 55) turn = PlannedConn(car, lane).Turn;
+                else if (lane.Connectors != null && lane.Length - car.S < 30) turn = PlannedConn(car, lane).Turn;
                 car.Blinker = turn == Turn.Left || turn == Turn.UTurn ? -1 : turn == Turn.Right ? 1 : 0;
             }
         }
@@ -1290,7 +1364,7 @@ namespace Traffic.Sim
                     j.Run = Rng.Next() >= car.Drv.Compliance;
                 }
                 ok = j.Run;
-                if (!ok && RightOnRed && (conn.Turn == Turn.Right || (conn.Turn == Turn.Left && OneWayToOneWay(conn))))
+                if (!ok && RightOnRed && !World.Nodes[conn.Node].Arms[conn.FromArm].NoTurnOnRed && (conn.Turn == Turn.Right || (conn.Turn == Turn.Left && OneWayToOneWay(conn))))
                 {
                     // Turn on red: right, or left from a one-way street into a one-way street (ORC 4511.13(C)(1)(b)).
                     // Come to a stop at the line first, then go when there is a gap.
@@ -1474,6 +1548,8 @@ namespace Traffic.Sim
         }
 
         private static readonly int[] Sides = { -1, 1 };
+        /// <summary>How long a driver waits behind someone slower for them to move over, before going round on the right. Seconds.</summary>
+        private const double PassingPatience = 3;
 
         private void LaneChanges()
         {
@@ -1531,6 +1607,24 @@ namespace Traffic.Sim
 
                 if (!blocked && lane.Connectors != null && World.Nodes[lane.Node].Controlled && remaining < NetworkBuilder.SolidLine) continue;
                 if (car.S < 12) continue;
+                // Keeping right: is this driver holding up someone who would go faster? A camper never asks.
+                bool free = need == 0 && !blocked, holdingUp = false, waiting = false;
+                if (free && KeepRight && car.Drv.Camp <= 0 && lane.Rights.Count > 0)
+                {
+                    Neighbor behind = FollowerIn(lane, car.S, car);
+                    holdingUp = behind != null && !behind.Car.Crashed && behind.Gap < Math.Max(12, behind.Car.V * 2.2) && behind.Car.V0 > car.V0 + 0.8;
+                }
+                // And is someone slower in this driver's way? The one in front is given a moment to move over
+                // before this driver goes round on the right, which is the wrong side to pass on.
+                if (free && KeepRight && lane.Rights.Count > 0)
+                {
+                    Neighbor ahead = LeaderIn(lane, car.S, car);
+                    bool heldUp = ahead != null && !ahead.Car.Crashed && Lanes[ahead.Car.Lane].Kind == LaneKind.Road && ahead.Gap < Math.Max(12, car.V * 2.5) && ahead.Car.V0 < car.V0 - 0.8;
+                    if (!heldUp) car.HeldUpSince = -1;
+                    else if (car.HeldUpSince < 0) car.HeldUpSince = Time;
+                    waiting = heldUp && Time - car.HeldUpSince < PassingPatience;
+                }
+                else car.HeldUpSince = -1;
                 if (lane.IsEntry && car.S < 60) continue; // settle in before changing lanes: traffic is still arriving behind
                 if (Time < car.LcCooldownUntil && urgency < 0.5) continue;
 
@@ -1542,6 +1636,7 @@ namespace Traffic.Sim
                 foreach (int side in Sides)
                 {
                     if (need != 0 && side != need && urgency > 0) continue;
+                    if (waiting && side > 0) continue;
                     Target tgt;
                     if (!TargetLane(car, side, out tgt)) continue;
                     Lane t = tgt.Lane;
@@ -1578,6 +1673,13 @@ namespace Traffic.Sim
                     bool folStopped = fol != null && fol.Car.V < 0.5;
                     if ((!folStopped && aFol < -bSafe) || (car.V >= 0.5 && aNew < -bSafe)) continue;
                     double bias = (side == need ? 0.3 + urgency * 3 : 0) + 0.25 * car.Drv.Weave + (blocked ? 2.5 : 0);
+                    // With no lane it has to be in, a driver leans toward the right, and strongly when someone faster is
+                    // waiting behind. A camper leans the other way and will not be moved. Either only into a lane that goes their way.
+                    if (free && (t.Connectors == null || t.Allows(car.Turn)))
+                    {
+                        if (car.Drv.Camp > 0) bias += (side < 0 ? 1.2 : -3) * car.Drv.Camp;
+                        else if (KeepRight && side > 0) bias += holdingUp ? 0.7 : 0.12;
+                    }
                     double score = aNew - car.ALead + car.Drv.Politeness * folCost + bias;
                     if (score > d.LcThreshold && (!have || score > bestScore))
                     {
@@ -1886,7 +1988,39 @@ namespace Traffic.Sim
         }
 
         /// <summary>Separating-axis test on the two car rectangles, shrunk a little so a near miss is not a crash.</summary>
+        /// <summary>One rigid piece of a vehicle, for telling whether two have touched: where it is, which way it lies, and half its length and width.</summary>
+        private struct Box
+        {
+            public double X, Y, H, HalfLen, HalfWid;
+        }
+
+        private static readonly Box[] boxesA = new Box[2], boxesB = new Box[2];
+
+        /// <summary>
+        /// The pieces of a vehicle: one, or for a tractor and trailer two. A trailer is counted a
+        /// little slimmer than it is: it cuts the inside of a corner, as a real one does, and
+        /// other drivers are taken to leave it the room.
+        /// </summary>
+        private static int Boxes(Car c, Box[] into)
+        {
+            if (c.Vehicle.Trailer <= 0)
+            {
+                into[0] = new Box { X = c.X, Y = c.Y, H = c.H, HalfLen = c.Len / 2 - 0.15, HalfWid = c.Wid / 2 - 0.1 };
+                return 1;
+            }
+            into[0] = new Box { X = c.CabX, Y = c.CabY, H = c.CabH, HalfLen = (c.Len - c.Vehicle.Trailer) / 2 - 0.15, HalfWid = c.Wid / 2 - 0.1 };
+            into[1] = new Box { X = c.TowX, Y = c.TowY, H = c.TowH, HalfLen = c.Vehicle.Trailer / 2 - 0.3, HalfWid = c.Wid / 2 - 0.45 };
+            return 2;
+        }
+
         private static bool BoxesOverlap(Car a, Car b)
+        {
+            int na = Boxes(a, boxesA), nb = Boxes(b, boxesB);
+            for (int i = 0; i < na; i++) for (int k = 0; k < nb; k++) if (Overlap(boxesA[i], boxesB[k])) return true;
+            return false;
+        }
+
+        private static bool Overlap(Box a, Box b)
         {
             for (int n = 0; n < 4; n++)
             {
@@ -1899,13 +2033,11 @@ namespace Traffic.Sim
             return true;
         }
 
-        private static double Extent(Car c, double ax, double ay)
+        private static double Extent(Box c, double ax, double ay)
         {
-            double hl = c.Len / 2 - 0.15;
-            double hw = c.Wid / 2 - 0.1;
             double fx = Math.Cos(c.H);
             double fy = Math.Sin(c.H);
-            return hl * Math.Abs(fx * ax + fy * ay) + hw * Math.Abs(-fy * ax + fx * ay);
+            return c.HalfLen * Math.Abs(fx * ax + fy * ay) + c.HalfWid * Math.Abs(-fy * ax + fx * ay);
         }
     }
 }

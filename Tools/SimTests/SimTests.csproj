@@ -13,6 +13,7 @@
     <Compile Include="../../Assets/Scripts/Art/**/*.cs" />
     <Compile Include="../../Assets/Scripts/Ui/**/*.cs" />
     <Compile Include="ArtFileTests.cs" />
+    <Compile Include="LiveryTests.cs" />
     <Compile Include="RoadPenTests.cs" />
   </ItemGroup>
   <ItemGroup>

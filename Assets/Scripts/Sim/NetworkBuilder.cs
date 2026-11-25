@@ -77,6 +77,8 @@ namespace Traffic.Sim
             public bool PavedMiddle;
             /// <summary>The sign its traffic faces on arriving at each end.</summary>
             public Sign SignA, SignB;
+            /// <summary>Its traffic may not turn on red on arriving at each end.</summary>
+            public bool NoRedA, NoRedB;
         }
 
         private readonly List<Vec> nodePos = new List<Vec>();
@@ -187,6 +189,13 @@ namespace Traffic.Sim
         {
             roads[roads.Count - 1].SignA = atFirst;
             roads[roads.Count - 1].SignB = atSecond;
+        }
+
+        /// <summary>Forbid the traffic of the road just added to turn on a red light, where it arrives at its first node and at its second.</summary>
+        public void NoTurnOnRed(bool atFirst, bool atSecond)
+        {
+            roads[roads.Count - 1].NoRedA = atFirst;
+            roads[roads.Count - 1].NoRedB = atSecond;
         }
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
@@ -371,6 +380,8 @@ namespace Traffic.Sim
                 armA.Road = armB.Road = roads.IndexOf(r);
                 armA.Sign = r.SignA;
                 armB.Sign = r.SignB;
+                armA.NoTurnOnRed = r.NoRedA;
+                armB.NoTurnOnRed = r.NoRedB;
                 armA.Shift = r.ShiftA;
                 armB.Shift = -r.ShiftB;
                 armA.Inner = armB.Inner = r.Inner;

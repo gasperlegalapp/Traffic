@@ -84,9 +84,34 @@ namespace Traffic.Sim
             SetMode(node.DefaultMode, 0);
         }
 
+        /// <summary>
+        /// The traffic light here has gone out. Until it is mended the intersection works as
+        /// stop signs all round: everyone stops, and whoever stopped first goes first (Ohio
+        /// Revised Code 4511.132).
+        /// </summary>
+        public bool Failed { get; private set; }
+        private JunctionMode working;
+
+        /// <summary>Put the light out. Nothing happens where there is no light.</summary>
+        public void Fail(double time)
+        {
+            if (Failed || (Mode != JunctionMode.Signal && Mode != JunctionMode.ProtectedLeft)) return;
+            JunctionMode was = Mode;
+            SetMode(JunctionMode.AllWay, time);
+            working = was;
+            Failed = true;
+        }
+
+        /// <summary>Mend a light that has gone out: it starts its cycle afresh.</summary>
+        public void Mend(double time)
+        {
+            if (Failed) SetMode(working, time);
+        }
+
         public void SetMode(JunctionMode mode, double time)
         {
             Mode = mode;
+            Failed = false;
             phases.Clear();
             if (mode == JunctionMode.Signal || mode == JunctionMode.ProtectedLeft)
             {

@@ -8,8 +8,11 @@ namespace Traffic.Lab
     /// <summary>
     /// Draws every vehicle, with its lights working: brake lights that come on as it slows,
     /// turn signals that flash before a turn or a lane change, hazard lights after a crash and,
-    /// after dark, headlights that light the road ahead and tail lights. Each light is a lamp
-    /// on the vehicle and a glow round it, so it shows by day and from far overhead.
+    /// after dark, headlights that light the road ahead and tail lights. The lights are a
+    /// small detail, not a show: each is a lamp set into the end of the vehicle that changes
+    /// color, hardly noticed by day, and only after dark does it have a faint glow round it.
+    /// (The first version had big bright glows by day, standing off the car and all flashing
+    /// in step. The player found that very annoying.)
     /// Cars and trucks use the modeled art when it is there (see ArtKit); otherwise, and for
     /// motorcycles, plain shapes.
     /// </summary>
@@ -20,20 +23,17 @@ namespace Traffic.Lab
             public GameObject Root;
             public Material Paint;
             public MeshRenderer[] Brakes, Left, Right, Heads;
-            public MeshRenderer BrakeGlow, LeftGlow, RightGlow, Beam;
+            public MeshRenderer BrakeGlow, Beam;
+            /// <summary>The trailer, for a vehicle that pulls one: it is placed by itself, behind the tractor.</summary>
+            public Transform Tow;
             /// <summary>True for a modeled vehicle. It has lamps of its own, so the added ones only show while lit.</summary>
             public bool Modeled;
             /// <summary>The brake lights are on. They stay on until the driver has all but stopped slowing, so they do not flicker.</summary>
             public bool Braking;
         }
 
-        /// <summary>The glows for a vehicle of one size: they are the same for every vehicle that size, so they are made once.</summary>
-        private sealed class Lights
-        {
-            public Mesh Brake, Left, Right, Beam;
-        }
-
-        private static readonly Dictionary<long, Lights> lightsBySize = new Dictionary<long, Lights>();
+        /// <summary>The glows of lamps so far along a vehicle, so far out and so high: the same for every vehicle that size, so they are made once.</summary>
+        private static readonly Dictionary<long, Mesh> glows = new Dictionary<long, Mesh>();
 
         private readonly Transform root;
         private readonly Dictionary<int, View> views = new Dictionary<int, View>();
@@ -48,33 +48,34 @@ namespace Traffic.Lab
         private readonly Mesh truckCab = MeshKit.Box(2.0f, 2.0f, 2.4f);
         private readonly Mesh truckBox = MeshKit.Box(6.1f, 2.7f, 2.5f);
         private readonly Mesh truckGlass = MeshKit.Box(0.5f, 0.7f, 2.2f);
-        private readonly Mesh bikeBody = MeshKit.Box(2.0f, 0.5f, 0.4f);
-        private readonly Mesh bikeRider = MeshKit.Box(0.6f, 0.8f, 0.6f);
-        private readonly Mesh bikeLamp = MeshKit.Box(0.2f, 0.2f, 0.26f);
+        private readonly Mesh bikeLamp = MeshKit.Box(0.08f, 0.12f, 0.16f);
+        private readonly Material tire = MeshKit.Lit(MeshKit.Hex(0x1c1e22), 0.15f);
+        private readonly Material metal = MeshKit.Lit(MeshKit.Hex(0xa3aab2), 0.6f);
+        private readonly Material pale = MeshKit.Lit(MeshKit.Hex(0xe9ecef), 0.25f);
         private readonly Material cargo = MeshKit.Lit(MeshKit.Hex(0xdfe3e8), 0.2f);
         private readonly Material leather = MeshKit.Lit(MeshKit.Hex(0x22262b), 0.3f);
-        private readonly Mesh lamp = MeshKit.Box(0.3f, 0.24f, 0.52f);
-        private readonly Mesh corner = MeshKit.Box(0.36f, 0.24f, 0.36f);
+        // Thin plates that lie against the end of the vehicle, where its own lamps are.
+        private readonly Mesh lamp = MeshKit.Box(0.08f, 0.16f, 0.4f);
+        private readonly Mesh corner = MeshKit.Box(0.1f, 0.14f, 0.2f);
         private readonly Material glass = MeshKit.Lit(MeshKit.Hex(0x161d26), 0.7f);
-        private readonly Material brakeOn = MeshKit.Unlit(MeshKit.Hex(0xff2d2d));
+        private readonly Material brakeOn = MeshKit.Unlit(MeshKit.Hex(0xe23a32));
         private readonly Material brakeOff = MeshKit.Unlit(MeshKit.Hex(0x5c1414));
-        private readonly Material tailOn = MeshKit.Unlit(MeshKit.Hex(0xb01c1c));
-        private readonly Material blinkOn = MeshKit.Unlit(MeshKit.Hex(0xffb020));
+        private readonly Material tailOn = MeshKit.Unlit(MeshKit.Hex(0x9a2020));
+        private readonly Material blinkOn = MeshKit.Unlit(MeshKit.Hex(0xf2a524));
         private readonly Material blinkOff = MeshKit.Unlit(MeshKit.Hex(0x4a3a18));
         private readonly Material headlight = MeshKit.Unlit(MeshKit.Hex(0xfff6d8));
         private readonly Material headlightOff = MeshKit.Unlit(MeshKit.Hex(0xc9cdc6));
         // The light each lamp gives off. Its color is here; how bright it is by day and after dark is set in Night.
         private readonly Material brakeGlow = MeshKit.Glow(MeshKit.Hex(0xff2a1e));
         private readonly Material tailGlow = MeshKit.Glow(MeshKit.Hex(0xff2a1e));
-        private readonly Material blinkGlow = MeshKit.Glow(MeshKit.Hex(0xffa514));
         private readonly Material beamGlow = MeshKit.Glow(MeshKit.Hex(0xfff0c8));
 
         private float night;
 
         /// <summary>
         /// How dark it is, from 0 in daylight to 1 at night. After dark every vehicle has its
-        /// headlights and tail lights on. By day a glow has the sun to compete with, so it is
-        /// kept a little weaker than it is at night, when it would otherwise seem dim.
+        /// headlights and tail lights on, and a lit lamp has a faint glow. By day there is no
+        /// glow at all: a lamp only changes color.
         /// </summary>
         public float Night
         {
@@ -82,10 +83,9 @@ namespace Traffic.Lab
             set
             {
                 night = Mathf.Clamp01(value);
-                SetStrength(brakeGlow, Mathf.Lerp(0.78f, 1, night));
-                SetStrength(blinkGlow, Mathf.Lerp(0.85f, 1, night));
-                SetStrength(tailGlow, 0.34f * night);
-                SetStrength(beamGlow, 0.5f * night);
+                SetStrength(brakeGlow, 0.45f * night);
+                SetStrength(tailGlow, 0.18f * night);
+                SetStrength(beamGlow, 0.42f * night);
             }
         }
 
@@ -118,34 +118,40 @@ namespace Traffic.Lab
         }
 
         /// <summary>
-        /// The glows for a vehicle whose lamps are so far forward, back and out to each side,
-        /// and so high. The vehicle faces +x; its left is +z.
+        /// The glow of a pair of lamps at one end of a vehicle, so far along it, so far out to
+        /// each side and so high. At the front it comes with the light the lamps throw on the road.
         /// </summary>
-        private static Lights LightsFor(float front, float back, float inset, float edge, float lampY)
+        private static Mesh GlowAt(float x, float out_, float y, bool front)
         {
-            long key = ((long)Mathf.RoundToInt(front * 20) << 36) ^ ((long)Mathf.RoundToInt(inset * 20) << 24) ^ ((long)Mathf.RoundToInt(edge * 20) << 12) ^ (long)Mathf.RoundToInt(lampY * 20);
-            Lights lights;
-            // Made in an earlier run and thrown away since: make them again.
-            if (lightsBySize.TryGetValue(key, out lights) && lights.Brake != null) return lights;
-            var brake = new GlowBuilder();
-            foreach (float z in new[] { inset, -inset }) brake.Ball(new Vector3(back - 0.22f, lampY, z), 1.05f, 1);
-            var left = new GlowBuilder();
-            var right = new GlowBuilder();
-            foreach (float x in new[] { front - 0.1f, back + 0.1f })
+            long key = ((long)Mathf.RoundToInt(x * 20 + 2000) << 36) ^ ((long)Mathf.RoundToInt(out_ * 20) << 24) ^ ((long)Mathf.RoundToInt(y * 20) << 12) ^ (front ? 1 : 0);
+            Mesh made;
+            // Made in an earlier run and thrown away since: make it again.
+            if (glows.TryGetValue(key, out made) && made != null) return made;
+            var b = new GlowBuilder();
+            foreach (float z in out_ > 0.05f ? new[] { out_, -out_ } : new[] { 0f })
             {
-                left.Ball(new Vector3(x, lampY, edge + 0.12f), 0.95f, 1);
-                right.Ball(new Vector3(x, lampY, -edge - 0.12f), 0.95f, 1);
+                // Small, and right at the lamp: seen after dark only.
+                if (!front) b.Ball(new Vector3(x - 0.05f, y, z), 0.5f, 1);
+                else
+                {
+                    b.Ball(new Vector3(x + 0.05f, y, z), 0.45f, 1);
+                    b.Beam(new Vector3(x + 0.3f, 0.16f, z), 17, 0.8f, 3.0f, 0.8f);
+                }
             }
-            // The headlights: a glow at each lamp, and the road ahead lit for a few car lengths.
-            var beam = new GlowBuilder();
-            foreach (float z in new[] { inset, -inset })
-            {
-                beam.Ball(new Vector3(front + 0.15f, lampY, z), 0.7f, 1);
-                beam.Beam(new Vector3(front + 0.3f, 0.16f, z), 19, 0.9f, 3.4f, 0.8f);
-            }
-            lights = new Lights { Brake = brake.Build(), Left = left.Build(), Right = right.Build(), Beam = beam.Build() };
-            lightsBySize[key] = lights;
-            return lights;
+            glows[key] = made = b.Build();
+            return made;
+        }
+
+        /// <summary>Put a built shape under a parent, each of its parts in what it is made of.</summary>
+        private void Dress(Transform parent, VehicleShape shape, Material paint, Material rider, Material livery)
+        {
+            if (shape.Paint != null) MeshKit.Spawn("Paint", shape.Paint, paint, parent);
+            if (shape.Dark != null) MeshKit.Spawn("Dark", shape.Dark, tire, parent);
+            if (shape.Metal != null) MeshKit.Spawn("Metal", shape.Metal, metal, parent);
+            if (shape.Glass != null) MeshKit.Spawn("Glass", shape.Glass, glass, parent);
+            if (shape.Pale != null) MeshKit.Spawn("Pale", shape.Pale, pale, parent);
+            if (shape.Rider != null) MeshKit.Spawn("Rider", shape.Rider, rider, parent);
+            if (shape.Panels != null && livery != null) MeshKit.Spawn("Name", shape.Panels, livery, parent, false);
         }
 
         private View Make(Car car)
@@ -159,6 +165,10 @@ namespace Traffic.Lab
             float halfWid = (float)car.Wid / 2;
             float lampY = 0.86f;
             Mesh lampMesh = lamp;
+            // Where the lamps go: on the front of the vehicle, and on its back, which for a tractor and trailer is another body.
+            Transform frontBody = go.transform, backBody = go.transform;
+            float front = halfLen - 0.01f, back = -halfLen + 0.01f, inset = halfWid * 0.5f, edge = halfWid - 0.14f, backLampY = -1;
+            VehicleKind kind = car.Vehicle.Kind;
             if (art != null)
             {
                 // The model faces +x and is centered. Its first part takes the paint.
@@ -168,8 +178,38 @@ namespace Traffic.Lab
                 halfLen = art.SizeX / 2;
                 halfWid = art.SizeZ / 2;
                 lampY = art.SizeY * 0.42f;
+                front = halfLen - 0.01f;
+                back = -halfLen + 0.01f;
+                inset = halfWid * 0.5f;
+                edge = halfWid - 0.14f;
             }
-            else if (car.Vehicle.Kind == VehicleKind.Truck)
+            else if (kind == VehicleKind.Motorcycle || kind == VehicleKind.BoxTruck || kind == VehicleKind.Semi)
+            {
+                // Built from boxes and drums (see VehicleShape). A truck carries the name of one of the made-up companies.
+                v.Modeled = true;
+                bool tanker = kind == VehicleKind.Semi && car.Id % 3 == 0;
+                List<Livery> names = Livery.Of(tanker);
+                Material name = kind == VehicleKind.Motorcycle ? null : VehicleShape.LiveryMaterial(names[(car.Id / 3) % names.Count]);
+                VehicleShape shape = kind == VehicleKind.Motorcycle ? VehicleShape.Motorcycle : kind == VehicleKind.BoxTruck ? VehicleShape.BoxTruck : VehicleShape.Tractor;
+                Dress(go.transform, shape, v.Paint, leather, name);
+                VehicleShape rear = shape;
+                if (kind == VehicleKind.Semi)
+                {
+                    rear = tanker ? VehicleShape.TankTrailer : VehicleShape.BoxTrailer;
+                    v.Tow = new GameObject("Trailer " + car.Id).transform;
+                    v.Tow.SetParent(root, false);
+                    Dress(v.Tow, rear, v.Paint, leather, name);
+                    backBody = v.Tow;
+                }
+                front = shape.Front - 0.01f;
+                back = rear.Back + 0.01f;
+                lampY = shape.LampY;
+                backLampY = rear.LampY;
+                inset = shape.LampOut;
+                edge = kind == VehicleKind.Motorcycle ? 0.16f : halfWid - 0.16f;
+                if (kind == VehicleKind.Motorcycle) lampMesh = bikeLamp;
+            }
+            else if (kind == VehicleKind.Truck)
             {
                 // A painted cab in front of a pale cargo box.
                 MeshKit.Spawn("Cab", truckCab, v.Paint, go.transform).transform.localPosition = new Vector3(halfLen - 1.0f, 1.25f, 0);
@@ -177,47 +217,43 @@ namespace Traffic.Lab
                 MeshKit.Spawn("Cargo", truckBox, cargo, go.transform).transform.localPosition = new Vector3(-1.15f, 1.65f, 0);
                 lampY = 0.7f;
             }
-            else if (car.Vehicle.Kind == VehicleKind.Motorcycle)
-            {
-                MeshKit.Spawn("Body", bikeBody, v.Paint, go.transform).transform.localPosition = new Vector3(0, 0.55f, 0);
-                MeshKit.Spawn("Rider", bikeRider, leather, go.transform).transform.localPosition = new Vector3(-0.15f, 1.15f, 0);
-                lampY = 0.75f;
-                lampMesh = bikeLamp;
-            }
             else
             {
                 MeshKit.Spawn("Body", body, v.Paint, go.transform).transform.localPosition = new Vector3(0, 0.6f, 0);
                 MeshKit.Spawn("Cabin", cabin, glass, go.transform).transform.localPosition = new Vector3(-0.3f, 1.15f, 0);
             }
+            if (backLampY < 0) backLampY = lampY;
 
             // The model faces +x, so the driver's left is +z.
-            MeshRenderer Lamp(Mesh mesh, Material mat, float x, float z)
+            MeshRenderer Lamp(Transform on, Mesh mesh, Material mat, float x, float y, float z)
             {
-                GameObject l = MeshKit.Spawn("Lamp", mesh, mat, go.transform, false);
-                l.transform.localPosition = new Vector3(x, lampY, z);
+                GameObject l = MeshKit.Spawn("Lamp", mesh, mat, on, false);
+                l.transform.localPosition = new Vector3(x, y, z);
                 return l.GetComponent<MeshRenderer>();
             }
-            MeshRenderer Light(Mesh mesh, Material mat)
+            MeshRenderer Light(Transform on, Mesh mesh, Material mat)
             {
-                MeshRenderer glow = MeshKit.Spawn("Light", mesh, mat, go.transform, false).GetComponent<MeshRenderer>();
+                MeshRenderer glow = MeshKit.Spawn("Light", mesh, mat, on, false).GetComponent<MeshRenderer>();
                 glow.receiveShadows = false;
                 glow.enabled = false;
                 return glow;
             }
-            // The lamps stand a little proud of the ends of the vehicle, so that they show from above.
-            float back = -halfLen - 0.04f;
-            float front = halfLen + 0.04f;
-            float inset = halfWid * 0.5f;
-            float edge = halfWid - 0.12f;
-            v.Brakes = new[] { Lamp(lampMesh, brakeOff, back, inset), Lamp(lampMesh, brakeOff, back, -inset) };
-            v.Left = new[] { Lamp(corner, blinkOff, front - 0.1f, edge), Lamp(corner, blinkOff, back + 0.1f, edge) };
-            v.Right = new[] { Lamp(corner, blinkOff, front - 0.1f, -edge), Lamp(corner, blinkOff, back + 0.1f, -edge) };
-            v.Heads = new[] { Lamp(lampMesh, headlightOff, front, inset), Lamp(lampMesh, headlightOff, front, -inset) };
-            Lights lights = LightsFor(front, back, inset, edge, lampY);
-            v.BrakeGlow = Light(lights.Brake, brakeGlow);
-            v.LeftGlow = Light(lights.Left, blinkGlow);
-            v.RightGlow = Light(lights.Right, blinkGlow);
-            v.Beam = Light(lights.Beam, beamGlow);
+            // The lamps lie against the ends of the vehicle, where its own are: a plate a few centimeters proud of the bodywork.
+            // A motorcycle has one of each, in the middle.
+            if (inset > 0.05f)
+            {
+                v.Brakes = new[] { Lamp(backBody, lampMesh, brakeOff, back, backLampY, inset), Lamp(backBody, lampMesh, brakeOff, back, backLampY, -inset) };
+                v.Heads = new[] { Lamp(frontBody, lampMesh, headlightOff, front, lampY, inset), Lamp(frontBody, lampMesh, headlightOff, front, lampY, -inset) };
+            }
+            else
+            {
+                v.Brakes = new[] { Lamp(backBody, lampMesh, brakeOff, back, backLampY, 0) };
+                v.Heads = new[] { Lamp(frontBody, lampMesh, headlightOff, front, lampY + 0.1f, 0) };
+            }
+            v.Left = new[] { Lamp(frontBody, corner, blinkOff, front, lampY, edge), Lamp(backBody, corner, blinkOff, back, backLampY, edge) };
+            v.Right = new[] { Lamp(frontBody, corner, blinkOff, front, lampY, -edge), Lamp(backBody, corner, blinkOff, back, backLampY, -edge) };
+            v.BrakeGlow = Light(backBody, GlowAt(back, inset, backLampY, false), brakeGlow);
+            v.Beam = Light(frontBody, GlowAt(front, inset, lampY, true), beamGlow);
             return v;
         }
 
@@ -239,15 +275,14 @@ namespace Traffic.Lab
             foreach (View v in views.Values) Object.Destroy(v.Paint);
             views.Clear();
             Object.Destroy(root.gameObject);
-            // The lamps and their light belong to this view alone; the glow shapes are shared and kept.
-            foreach (Material m in new[] { cargo, leather, glass, brakeOn, brakeOff, tailOn, blinkOn, blinkOff, headlight, headlightOff, brakeGlow, tailGlow, blinkGlow, beamGlow }) Object.Destroy(m);
-            foreach (Mesh m in new[] { body, cabin, truckCab, truckBox, truckGlass, bikeBody, bikeRider, bikeLamp, lamp, corner }) Object.Destroy(m);
+            // The lamps and their light belong to this view alone; the glow shapes and the built vehicles are shared and kept.
+            foreach (Material m in new[] { cargo, leather, glass, tire, metal, pale, brakeOn, brakeOff, tailOn, blinkOn, blinkOff, headlight, headlightOff, brakeGlow, tailGlow, beamGlow }) Object.Destroy(m);
+            foreach (Mesh m in new[] { body, cabin, truckCab, truckBox, truckGlass, bikeLamp, lamp, corner }) Object.Destroy(m);
         }
 
         public void Sync(List<Car> cars, double time, int selectedId)
         {
             seen.Clear();
-            bool blink = time * 1.6 % 1 < 0.5;
             bool dark = night > 0.5f;
             ring.gameObject.SetActive(false);
             foreach (Car car in cars)
@@ -262,22 +297,32 @@ namespace Traffic.Lab
                 // In a tunnel a car stays in view on the way down, then is out of sight until it comes back up.
                 bool hidden = car.Height < -RoadView.Covered;
                 if (v.Root.activeSelf == hidden) v.Root.SetActive(!hidden);
-                v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.X, car.Y, Mathf.Max(0, (float)car.Height)), MeshKit.Heading(car.H));
+                float high = Mathf.Max(0, (float)car.Height);
+                if (v.Tow == null) v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.X, car.Y, high), MeshKit.Heading(car.H));
+                else
+                {
+                    // A tractor and its trailer each lie along their own stretch of the road, joined where they meet.
+                    if (v.Tow.gameObject.activeSelf == hidden) v.Tow.gameObject.SetActive(!hidden);
+                    v.Root.transform.SetPositionAndRotation(MeshKit.ToWorld(car.CabX, car.CabY, high), MeshKit.Heading(car.CabH));
+                    v.Tow.SetPositionAndRotation(MeshKit.ToWorld(car.TowX, car.TowY, high), MeshKit.Heading(car.TowH));
+                }
 
+                // No two cars' signals flash in step: each has its own beat, up to a tenth faster or slower than the next car's.
+                uint mix = unchecked((uint)car.Id * 2246822519u);
+                double beat = 1.45 * (0.9 + 0.2 * ((mix >> 8) % 1000) / 1000.0), offset = ((mix >> 18) % 1000) / 1000.0;
+                bool blink = (time * beat + offset) % 1 < 0.5;
                 // Brake lights: on while the driver is slowing down or standing still, and they stay on
                 // through the moments when the foot only eases, as a real driver's do.
                 bool stopped = car.V < 0.2 && !car.Crashed;
                 v.Braking = stopped || car.A < -0.5 || (v.Braking && car.A < -0.12);
                 SetLamps(v, v.Brakes, v.Braking || dark, v.Braking ? brakeOn : tailOn, brakeOff);
-                Show(v.BrakeGlow, v.Braking || dark, v.Braking ? brakeGlow : tailGlow);
+                Show(v.BrakeGlow, dark, v.Braking ? brakeGlow : tailGlow);
 
                 // Turn signals, by day and by night; after a crash, both sides flash.
                 bool hazard = car.Crashed && blink;
                 bool left = hazard || (car.Blinker < 0 && blink), right = hazard || (car.Blinker > 0 && blink);
                 SetLamps(v, v.Left, left, blinkOn, blinkOff);
                 SetLamps(v, v.Right, right, blinkOn, blinkOff);
-                Show(v.LeftGlow, left, blinkGlow);
-                Show(v.RightGlow, right, blinkGlow);
 
                 // Headlights after dark. A wreck's are out.
                 bool lit = dark && !(car.Crashed && car.CrashMajor);
@@ -300,6 +345,7 @@ namespace Traffic.Lab
             foreach (int id in gone)
             {
                 Object.Destroy(views[id].Paint);
+                if (views[id].Tow != null) Object.Destroy(views[id].Tow.gameObject);
                 Object.Destroy(views[id].Root);
                 views.Remove(id);
             }

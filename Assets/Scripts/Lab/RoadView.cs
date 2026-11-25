@@ -884,6 +884,14 @@ namespace Traffic.Lab
                 head.Halo.localScale = new Vector3(1.7f, 1.7f, 1.7f);
                 view.Lanes.Add(head);
             }
+            // A no-turn-on-red sign: a white plate with a red ball, on the pole where the driver at the line looks for the light.
+            if (arm.NoTurnOnRed)
+            {
+                MeshKit.Spawn("No turn on red", MeshKit.Box(0.06f, 1.0f, 0.8f), signWhite, view.Heads.transform, false).transform.localPosition = new Vector3(-0.19f, 4.3f, 0);
+                Transform ball = MeshKit.Spawn("Red ball", Octagon(0.2f), signRed, view.Heads.transform, false).transform;
+                ball.localPosition = new Vector3(-0.23f, 4.5f, 0);
+                ball.localRotation = Quaternion.LookRotation(Vector3.up, Vector3.left);
+            }
             // The arm reaches out over the farthest lane, and the heads hang from it.
             MeshKit.Spawn("Arm", MeshKit.Box(0.18f, 0.18f, reach + 0.5f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 6.49f, (reach + 0.5f) / 2);
 
@@ -1117,17 +1125,29 @@ namespace Traffic.Lab
             {
                 Junction jn = junctions[s.Arm.Node];
                 // A light, or a sign for this road, or (on the through street of an intersection run by signs) nothing.
-                bool lit = jn.Mode == JunctionMode.Signal || jn.Mode == JunctionMode.ProtectedLeft;
+                // A light that has gone out still hangs there, dark; drivers treat it as a stop sign, and the bars at the stop lines say so.
+                bool lit = jn.Mode == JunctionMode.Signal || jn.Mode == JunctionMode.ProtectedLeft || jn.Failed;
                 s.Heads.SetActive(lit);
-                s.StopSign.SetActive(jn.Mode == JunctionMode.AllWay || jn.SignAt(s.Arm.Arm) == Sign.Stop);
+                s.StopSign.SetActive((jn.Mode == JunctionMode.AllWay && !jn.Failed) || jn.SignAt(s.Arm.Arm) == Sign.Stop);
                 s.YieldSign.SetActive(jn.SignAt(s.Arm.Arm) == Sign.Yield);
                 if (!lit) continue;
                 foreach (LaneHead head in s.Lanes)
                 {
                     SignalLight st = LaneLight(jn, head.Lane);
                     Color lamp = LampColor(st);
-                    lamp.a = glow;
+                    lamp.a = jn.Failed ? 0 : glow;
                     head.HaloGlow.color = lamp;
+                    if (jn.Failed)
+                    {
+                        if (head.Arrow != null) head.Arrow.color = DimRed;
+                        else
+                        {
+                            head.Lamps[0].color = DimRed;
+                            head.Lamps[1].color = DimYellow;
+                            head.Lamps[2].color = DimGreen;
+                        }
+                        continue;
+                    }
                     if (head.Arrow != null)
                     {
                         head.Arrow.color = LampColor(st);

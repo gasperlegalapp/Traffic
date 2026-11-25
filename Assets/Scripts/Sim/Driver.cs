@@ -27,14 +27,20 @@ namespace Traffic.Sim
         public double Swerve;
         /// <summary>0 to 1: how much of the time the driver is not looking at the road (on the phone).</summary>
         public double Distraction;
+        /// <summary>
+        /// 0 to 1: sits in the left lane whoever is behind. Such a driver makes for the leftmost
+        /// lane that goes their way and stays in it, where anyone else would move over for
+        /// faster traffic (see Simulation.KeepRight).
+        /// </summary>
+        public double Camp;
 
         /// <summary>The six main dials.</summary>
         public const int Count = 6;
         /// <summary>Main dials plus quirks.</summary>
-        public const int Total = 9;
+        public const int Total = 10;
 
         /// <summary>Lowest and highest value of each dial, in the order used by Get and Set.</summary>
-        public static readonly double[,] Ranges = { { 0.1, 1.6 }, { 0.5, 1.6 }, { 0.3, 2.6 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 } };
+        public static readonly double[,] Ranges = { { 0.1, 1.6 }, { 0.5, 1.6 }, { 0.3, 2.6 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 }, { 0, 1 } };
 
         public DriverParams()
         {
@@ -67,7 +73,8 @@ namespace Traffic.Sim
                 case 5: return Compliance;
                 case 6: return Weave;
                 case 7: return Swerve;
-                default: return Distraction;
+                case 8: return Distraction;
+                default: return Camp;
             }
         }
 
@@ -83,7 +90,8 @@ namespace Traffic.Sim
                 case 5: Compliance = v; break;
                 case 6: Weave = v; break;
                 case 7: Swerve = v; break;
-                default: Distraction = v; break;
+                case 8: Distraction = v; break;
+                default: Camp = v; break;
             }
         }
 
@@ -133,7 +141,16 @@ namespace Traffic.Sim
                 Name = "DRUNK", Blurb = "Cannot hold a lane or a speed, slow to react, careless about lights", Color = 0xff5a00, Flash = true,
                 Make = () => new DriverParams(1.4, 0.9, 1.0, 0.6, 0.3, 0.5) { Swerve = 1, Distraction = 0.2 },
             },
+            new SpecialDriver
+            {
+                // About 5 mph under on a street, 7 on an avenue and 12 on a highway, and in nobody's way as far as they can tell.
+                Name = "LEFT-LANE CAMPER", Blurb = "Sits in the left lane a few mph under the limit, so everyone else has to go round", Color = 0xff66c4,
+                Make = () => new DriverParams(0.7, 0.82, 1.8, 0.2, 0, 1) { Camp = 1 },
+            },
         };
+
+        /// <summary>The driver who sits in the left lane under the speed limit.</summary>
+        public static SpecialDriver Camper => All[4];
     }
 
     /// <summary>Values worked out from a driver's dials.</summary>
