@@ -14,13 +14,52 @@ namespace Traffic.Ui
     public sealed class Ghost
     {
         // Colors are 0xAARRGGBB, as on the toolbar.
-        public const uint GoodFill = 0x8C3D9BFF, GoodEdge = 0xF5FFFFFF, GoodInk = 0xFF1F7FE0;
+        public const uint GoodFill = 0x8C35D6B4, GoodEdge = 0xF5FFFFFF, GoodInk = 0xFF12A88A;
         public const uint BadFill = 0x8CFF4A3A, BadEdge = 0xF5FFD0C8, BadInk = 0xFFE5392B;
         public const uint Faint = 0x99FFFFFF, White = 0xFFFFFFFF;
+        /// <summary>The road about to be built: its surface, the light along its edges, and the line down its middle.</summary>
+        public const uint Tar = 0xEB2C2F34, TarBad = 0xE04A2623, Lit = 0xFF8DF7E2, LitBad = 0xFFFF8E7E, Paint = 0xF0EFBD2E;
 
         public readonly List<Vec> Points = new List<Vec>();
         public readonly List<uint> Colors = new List<uint>();
         public readonly List<int> Tris = new List<int>();
+
+        /// <summary>
+        /// The arrows that run along the road about to be built, the way its traffic will go.
+        /// They move, so they are kept apart from the rest: Run fills them in for a moment in time.
+        /// </summary>
+        public readonly List<Vec> RunPoints = new List<Vec>();
+        public readonly List<uint> RunColors = new List<uint>();
+        public readonly List<int> RunTris = new List<int>();
+
+        /// <summary>A marker standing up at an end of the road being drawn, so the ends show from any distance.</summary>
+        public struct Post
+        {
+            public Vec At;
+            public bool Good;
+            /// <summary>True for the end in the player's hand, which carries the price.</summary>
+            public bool Held;
+        }
+
+        /// <summary>A few words to show at a place on the map, such as "New intersection".</summary>
+        public struct Label
+        {
+            public Vec At;
+            public string Text;
+            public bool Good;
+        }
+
+        public readonly List<Post> Posts = new List<Post>();
+        public readonly List<Label> Labels = new List<Label>();
+
+        /// <summary>One line of traffic on the road about to be built: where it runs and how big its arrows are.</summary>
+        private struct Flow
+        {
+            public Vec[] Line;
+            public double Size;
+        }
+
+        private readonly List<Flow> flows = new List<Flow>();
 
         /// <summary>
         /// How many meters of ground one pixel of screen covers. Outlines, pins and handles
@@ -33,6 +72,12 @@ namespace Traffic.Ui
             Points.Clear();
             Colors.Clear();
             Tris.Clear();
+            RunPoints.Clear();
+            RunColors.Clear();
+            RunTris.Clear();
+            Posts.Clear();
+            Labels.Clear();
+            flows.Clear();
         }
 
         /// <summary>A size in meters, or that many pixels if that is larger.</summary>
@@ -65,6 +110,25 @@ namespace Traffic.Ui
             {
                 Add(a[i], color);
                 Add(b[i], color);
+            }
+            for (int i = 0; i + 1 < line.Count; i++)
+            {
+                int k = first + i * 2;
+                Tris.Add(k); Tris.Add(k + 1); Tris.Add(k + 2);
+                Tris.Add(k + 1); Tris.Add(k + 3); Tris.Add(k + 2);
+            }
+        }
+
+        /// <summary>A band along a line that fades from one color at one side to another at the other.</summary>
+        public void Fade(IReadOnlyList<Vec> line, double from, double to, uint colorFrom, uint colorTo)
+        {
+            if (line.Count < 2) return;
+            Vec[] a = Geo.Offset(line, from), b = Geo.Offset(line, to);
+            int first = Points.Count;
+            for (int i = 0; i < line.Count; i++)
+            {
+                Add(a[i], colorFrom);
+                Add(b[i], colorTo);
             }
             for (int i = 0; i + 1 < line.Count; i++)
             {
@@ -157,6 +221,49 @@ namespace Traffic.Ui
             }
         }
 
+        /// <summary>A round patch of light: solid out to one radius, then fading away to nothing at another.</summary>
+        public void Glow(Vec at, double solid, double radius, uint color)
+        {
+            const int sides = 32;
+            uint clear = color & 0x00FFFFFF;
+            int center = Add(at, color), first = Points.Count;
+            for (int i = 0; i < sides; i++)
+            {
+                double a = i * 2 * Math.PI / sides;
+                Add(new Vec(at.X + Math.Cos(a) * solid, at.Y + Math.Sin(a) * solid), color);
+                Add(new Vec(at.X + Math.Cos(a) * radius, at.Y + Math.Sin(a) * radius), clear);
+            }
+            for (int i = 0; i < sides; i++)
+            {
+                int k = first + i * 2, n = first + (i + 1) % sides * 2;
+                Tris.Add(center); Tris.Add(k); Tris.Add(n);
+                Tris.Add(k); Tris.Add(k + 1); Tris.Add(n);
+                Tris.Add(k + 1); Tris.Add(n + 1); Tris.Add(n);
+            }
+        }
+
+        /// <summary>
+        /// The place where the road being drawn will meet another: a pad of light on the ground
+        /// there with a firm ring round it, since an intersection will be made.
+        /// </summary>
+        public void Pad(Vec at, double radius, bool good)
+        {
+            uint lit = good ? Lit : LitBad;
+            Glow(at, radius * 0.5, radius * 1.45, (lit & 0x00FFFFFF) | 0xA6000000);
+            Ring(at, radius, AtLeast(0.5, 2.4), good ? GoodEdge : BadEdge);
+        }
+
+        /// <summary>Stand a marker up at an end of the road being drawn.</summary>
+        public void Stand(Vec at, bool good, bool held)
+        {
+            Posts.Add(new Post { At = at, Good = good, Held = held });
+        }
+
+        public void Say(Vec at, string text, bool good)
+        {
+            Labels.Add(new Label { At = at, Text = text, Good = good });
+        }
+
         /// <summary>An arrowhead with its point at a spot, heading a given way.</summary>
         public void Arrowhead(Vec tip, double heading, double size, uint color)
         {
@@ -169,35 +276,89 @@ namespace Traffic.Ui
         }
 
         /// <summary>
-        /// A road that is not there yet: its full width tinted, a firm line down each edge, and
-        /// down the middle either a broken line or, on a one-way road, arrows showing which way
-        /// traffic will run. Blue when it can be built and red when it cannot.
+        /// A road that is not there yet, shown as itself: dark pavement at its full width with
+        /// a line of light along each edge and a soft glow beyond, a yellow line down the middle
+        /// of a two-way road, and arrows running along it the way its traffic will (see Run).
+        /// Red, and still, when it cannot be built.
         /// </summary>
         public void Road(IReadOnlyList<Vec> line, double width, bool oneWay, bool good)
         {
             if (line.Count < 2 || Length(line) < 0.5) return;
-            uint fill = good ? GoodFill : BadFill, edge = good ? GoodEdge : BadEdge;
-            double rim = AtLeast(0.4, 2.2);
-            Band(line, -width / 2, width / 2, fill);
-            Band(line, -width / 2 - rim / 2, -width / 2 + rim / 2, edge);
-            Band(line, width / 2 - rim / 2, width / 2 + rim / 2, edge);
-            double total = Length(line);
+            uint lit = good ? Lit : LitBad, soft = (lit & 0x00FFFFFF) | 0x66000000, clear = lit & 0x00FFFFFF;
+            double half = width / 2, rim = AtLeast(0.55, 2.6), halo = AtLeast(2.4, 8);
+            Fade(line, half, half + halo, soft, clear);
+            Fade(line, -half, -half - halo, soft, clear);
+            Band(line, -half, half, good ? Tar : TarBad);
+            if (!oneWay) Stroke(line, AtLeast(0.3, 1.3), good ? Paint : BadEdge);
+            Band(line, -half - rim / 2, -half + rim / 2, lit);
+            Band(line, half - rim / 2, half + rim / 2, lit);
+            if (!good) return;
             if (oneWay)
             {
-                double size = Math.Max(Math.Min(width * 0.36, 3.2), AtLeast(1.4, 7));
-                double gap = AtLeast(26, 70);
-                int count = Math.Max(1, (int)(total / gap));
-                for (int i = 0; i < count; i++)
+                flows.Add(new Flow { Line = Copy(line, false), Size = Math.Max(Math.Min(width * 0.3, 3.4), AtLeast(1.5, 7)) });
+                return;
+            }
+            // From far out the road is only a few pixels wide, and arrows going both ways along it would lie on top of each other.
+            if (width < Pixel * 14) return;
+            // Traffic keeps to the right: one line of arrows each way, each in its own half of the road.
+            double size = Math.Max(Math.Min(width * 0.17, 3), AtLeast(1.2, 5.5));
+            Vec[] back = Copy(line, true);
+            flows.Add(new Flow { Line = Geo.Offset(line, width / 4), Size = size });
+            flows.Add(new Flow { Line = Geo.Offset(back, width / 4), Size = size });
+        }
+
+        private static Vec[] Copy(IReadOnlyList<Vec> line, bool reversed)
+        {
+            var copy = new Vec[line.Count];
+            for (int i = 0; i < copy.Length; i++) copy[i] = line[reversed ? copy.Length - 1 - i : i];
+            return copy;
+        }
+
+        /// <summary>
+        /// Put the running arrows where they are after so many seconds. Called every frame while
+        /// a road is being drawn; the rest of the picture is left alone.
+        /// </summary>
+        public void Run(double seconds)
+        {
+            RunPoints.Clear();
+            RunColors.Clear();
+            RunTris.Clear();
+            double gap = AtLeast(15, 46), speed = AtLeast(11, 30), fade = AtLeast(6, 18);
+            double shift = seconds * speed % gap;
+            foreach (Flow flow in flows)
+            {
+                double total = Length(flow.Line);
+                if (total < flow.Size * 2) continue;
+                for (double s = shift; s < total; s += gap)
                 {
+                    // Each arrow comes in and goes out gently at the ends of the road.
+                    double shown = Math.Min(1, Math.Min(s, total - s) / fade);
+                    if (shown <= 0.02) continue;
                     double heading;
-                    Vec at = Along(line, (i + 0.5) * total / count + size / 2, out heading);
-                    Arrowhead(at, heading, size, edge);
+                    Vec tip = Along(flow.Line, s, out heading);
+                    Chevron(tip, heading, flow.Size, ((uint)(shown * 235) << 24) | 0x00FFFFFF);
                 }
             }
-            else
+        }
+
+        /// <summary>An open arrowhead, like the ones painted on a road to say which way to go.</summary>
+        private void Chevron(Vec tip, double heading, double size, uint color)
+        {
+            double cx = Math.Cos(heading), cy = Math.Sin(heading);
+            double span = size * 0.62, thick = size * 0.42, back = size * 0.62;
+            int At(double along, double across)
             {
-                Dashes(line, AtLeast(0.3, 1.6), AtLeast(3, 9), AtLeast(4.5, 12), edge);
+                RunPoints.Add(new Vec(tip.X - cx * along - cy * across, tip.Y - cy * along + cx * across));
+                RunColors.Add(color);
+                return RunPoints.Count - 1;
             }
+            int a = At(0, 0), d = At(thick, 0);
+            int b = At(back, span), c = At(back + thick, span);
+            int e = At(back, -span), f = At(back + thick, -span);
+            RunTris.Add(a); RunTris.Add(b); RunTris.Add(c);
+            RunTris.Add(a); RunTris.Add(c); RunTris.Add(d);
+            RunTris.Add(a); RunTris.Add(d); RunTris.Add(f);
+            RunTris.Add(a); RunTris.Add(f); RunTris.Add(e);
         }
 
         /// <summary>

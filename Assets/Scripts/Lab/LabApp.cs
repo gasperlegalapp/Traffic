@@ -100,6 +100,7 @@ namespace Traffic.Lab
             };
             roads = new RoadView(world, transform);
             carViews = new CarViews(transform);
+            roads.Night = carViews.Night = Mathf.SmoothStep(0, 1, dusk);
         }
 
         // ------------------------------------------------------------ drawing roads
@@ -365,25 +366,112 @@ namespace Traffic.Lab
             if (changed) DrawingChanged(before);
         }
 
-        /// <summary>True after dark.</summary>
+        /// <summary>True after dark, or on the way there.</summary>
         private bool night;
+        /// <summary>How dark it is now, from 0 in daylight to 1 at night. It follows the switch over a second or two.</summary>
+        private float dusk;
+        private UnityEngine.Light sun;
 
-        /// <summary>Switch between daylight and night.</summary>
+        /// <summary>Switch between daylight and night. The light changes over a moment, like a lamp being turned down.</summary>
         private void SetNight(bool dark)
         {
             night = dark;
         }
 
-        private Mesh ghostMesh;
-        private GameObject ghostObject;
+        // Sun and sky light together are set so that flat ground in the open shows a color at about the
+        // brightness it was given: the textures are made to the colors meant for the screen. With the sun
+        // 35 degrees up, flat ground takes 0.57 of it; 1.08 of this sun and this sky add up to 1.02, 1.01, 1.01.
+        // (Measured from a screenshot: brighter settings than that showed every color half as bright again,
+        // which washed out the cars.) The sun is low and warm and the sky light cool, so that shadows are long
+        // and a little blue. By night the same light is the moon's, about a third as strong.
+        private static readonly Color SunColor = MeshKit.Hex(0xffecc4), MoonColor = MeshKit.Hex(0xccdbff);
+        private static readonly Color SkyByDay = MeshKit.Hex(0x667087), SkyByNight = MeshKit.Hex(0x384566);
+        private static readonly Color SkyByDayBuiltIn = MeshKit.Hex(0x454d5c), SkyByNightBuiltIn = MeshKit.Hex(0x1f2738);
+        private static readonly Color GrassByDay = MeshKit.Hex(0x659d48), GrassByNight = MeshKit.Hex(0x244229);
+
+        /// <summary>Set the sun, the sky light and everything that gives off light for how dark it is.</summary>
+        private void ApplyLight()
+        {
+            float t = Mathf.SmoothStep(0, 1, dusk);
+            bool scriptable = MeshKit.Scriptable;
+            sun.color = Color.Lerp(SunColor, MoonColor, t);
+            sun.intensity = Mathf.Lerp(scriptable ? 1.08f : 1.14f, scriptable ? 0.3f : 0.32f, t);
+            sun.shadowStrength = Mathf.Lerp(0.6f, 0.45f, t);
+            RenderSettings.ambientLight = scriptable ? Color.Lerp(SkyByDay, SkyByNight, t) : Color.Lerp(SkyByDayBuiltIn, SkyByNightBuiltIn, t);
+            cam.backgroundColor = Color.Lerp(GrassByDay, GrassByNight, t);
+            if (roads != null) roads.Night = t;
+            if (carViews != null) carViews.Night = t;
+        }
+
+        private float shadowReach = -1;
+        private System.Reflection.PropertyInfo pipelineShadows;
+
+        /// <summary>
+        /// Shadows are drawn as far as the camera can see and no further. The pipeline spreads
+        /// its shadow picture over that distance, so the closer in the view, the sharper they are.
+        /// </summary>
+        private void FitShadows()
+        {
+            float toTop = Mathf.Min(tilt + cam.fieldOfView * 0.5f * Mathf.Deg2Rad, 1.4f);
+            float want = Mathf.Clamp(dist * Mathf.Cos(tilt) / Mathf.Cos(toTop) * 1.25f, 120, 3000);
+            if (shadowReach > 0 && Mathf.Abs(want - shadowReach) < shadowReach * 0.08f) return;
+            shadowReach = want;
+            QualitySettings.shadowDistance = want;
+            UnityEngine.Rendering.RenderPipelineAsset pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            if (pipeline == null) return;
+            // The Universal Render Pipeline keeps the distance on its own asset; set it by name so this
+            // script still compiles in a project that does not have that package.
+            if (pipelineShadows == null) pipelineShadows = pipeline.GetType().GetProperty("shadowDistance");
+            if (pipelineShadows != null && pipelineShadows.CanWrite) pipelineShadows.SetValue(pipeline, want, null);
+        }
+
+        private Mesh ghostMesh, runMesh;
+        private GameObject ghostObject, runObject;
         private int ghostVersion = -1;
         private readonly List<Vector3> ghostPoints = new List<Vector3>();
         private readonly List<Color32> ghostColors = new List<Color32>();
+
+        /// <summary>A marker standing at an end of the road being drawn: a thin post with a ball of light on top.</summary>
+        private sealed class Marker
+        {
+            public GameObject Root;
+            public Transform Pole, Ball, Halo;
+            public MeshRenderer BallView, HaloView;
+        }
+
+        private readonly List<Marker> markers = new List<Marker>();
+        private Material markerPole, markerGood, markerBad, markerGlowGood, markerGlowBad;
+
+        /// <summary>How tall the marker at an end of the road being drawn stands, in meters: taller from further out, so it always shows.</summary>
+        private float MarkerHeight(bool held)
+        {
+            return (float)pen.Ghost.AtLeast(6, 34) * (held ? 1.25f : 1);
+        }
+
+        private static void Upload(Mesh mesh, List<Vec> points, List<uint> colors, List<int> tris, List<Vector3> scratch, List<Color32> scratchColors, float height)
+        {
+            scratch.Clear();
+            scratchColors.Clear();
+            for (int i = 0; i < points.Count; i++)
+            {
+                uint c = colors[i];
+                scratch.Add(MeshKit.ToWorld(points[i].X, points[i].Y, height));
+                scratchColors.Add(new Color32((byte)(c >> 16), (byte)(c >> 8), (byte)c, (byte)(c >> 24)));
+            }
+            mesh.Clear();
+            mesh.SetVertices(scratch);
+            mesh.SetColors(scratchColors);
+            mesh.SetTriangles(tris, 0);
+            // Never cull it: it can be anywhere on the map.
+            mesh.bounds = new Bounds(Vector3.zero, new Vector3(1e5f, 1e5f, 1e5f));
+        }
 
         /// <summary>
         /// While building, lay the pen's picture of what the next click would do on the ground:
         /// the road about to be placed at its real width, the points it joins, the handles
         /// that can be dragged. It is rebuilt only when the pen says the picture has changed.
+        /// The arrows running along the new road, and the markers standing at its ends, move
+        /// or keep their size on screen, so those are seen to every frame.
         /// </summary>
         private void ShowGhost()
         {
@@ -394,30 +482,77 @@ namespace Traffic.Lab
                 ghostMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
                 ghostObject = MeshKit.Spawn("Build guide", ghostMesh, lineMaterial, transform, false);
                 ghostObject.GetComponent<MeshRenderer>().receiveShadows = false;
+                runMesh = new Mesh();
+                runMesh.MarkDynamic();
+                runObject = MeshKit.Spawn("Build guide arrows", runMesh, lineMaterial, transform, false);
+                runObject.GetComponent<MeshRenderer>().receiveShadows = false;
             }
             ghostObject.SetActive(building);
-            if (!building) return;
+            runObject.SetActive(building);
+            if (!building)
+            {
+                foreach (Marker m in markers) m.Root.SetActive(false);
+                return;
+            }
             Vec hover;
             double pixel = MetersPerPixel;
             if (!pointerOverUi && GroundAt(hoverPixel, out hover)) pen.Hover(hover, pixel);
             else pen.Away(pixel);
+            Ghost ghost = pen.Ghost;
+            ghost.Run(Time.unscaledTime);
+            Upload(runMesh, ghost.RunPoints, ghost.RunColors, ghost.RunTris, ghostPoints, ghostColors, 0.37f);
+            StandMarkers(ghost);
             if (pen.Version == ghostVersion) return;
             ghostVersion = pen.Version;
-            Ghost ghost = pen.Ghost;
-            ghostPoints.Clear();
-            ghostColors.Clear();
-            for (int i = 0; i < ghost.Points.Count; i++)
+            Upload(ghostMesh, ghost.Points, ghost.Colors, ghost.Tris, ghostPoints, ghostColors, 0.35f);
+        }
+
+        /// <summary>Stand a marker at each end of the road being drawn. They are made once and moved about.</summary>
+        private void StandMarkers(Ghost ghost)
+        {
+            if (markerPole == null)
             {
-                uint c = ghost.Colors[i];
-                ghostPoints.Add(MeshKit.ToWorld(ghost.Points[i].X, ghost.Points[i].Y, 0.35f));
-                ghostColors.Add(new Color32((byte)(c >> 16), (byte)(c >> 8), (byte)c, (byte)(c >> 24)));
+                // Drawn after the picture on the ground and over it, so the road being drawn never hides its own markers.
+                markerPole = MeshKit.Overlay(MeshKit.Hex(0xf4f8f8), 4001);
+                markerGood = MeshKit.Overlay(MeshKit.Hex(0x8df7e2), 4002);
+                markerBad = MeshKit.Overlay(MeshKit.Hex(0xff8e7e), 4002);
+                markerGlowGood = MeshKit.Glow(MeshKit.Hex(0x5ee0c0, 0.8f));
+                markerGlowBad = MeshKit.Glow(MeshKit.Hex(0xff5d4d, 0.8f));
+                foreach (Material glow in new[] { markerGlowGood, markerGlowBad })
+                {
+                    glow.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+                    glow.renderQueue = 4003;
+                }
             }
-            ghostMesh.Clear();
-            ghostMesh.SetVertices(ghostPoints);
-            ghostMesh.SetColors(ghostColors);
-            ghostMesh.SetTriangles(ghost.Tris, 0);
-            // Never cull it: it can be anywhere on the map.
-            ghostMesh.bounds = new Bounds(Vector3.zero, new Vector3(1e5f, 1e5f, 1e5f));
+            for (int i = 0; i < ghost.Posts.Count; i++)
+            {
+                if (i == markers.Count)
+                {
+                    var m = new Marker { Root = new GameObject("End marker") };
+                    m.Root.transform.SetParent(transform, false);
+                    m.Pole = MeshKit.Spawn("Post", MeshKit.Cube, markerPole, m.Root.transform, false).transform;
+                    GameObject ball = MeshKit.Spawn("Ball", MeshKit.Ball, markerGood, m.Root.transform, false);
+                    m.Ball = ball.transform;
+                    m.BallView = ball.GetComponent<MeshRenderer>();
+                    GameObject halo = MeshKit.Spawn("Glow", MeshKit.GlowBall, markerGlowGood, m.Root.transform, false);
+                    m.Halo = halo.transform;
+                    m.HaloView = halo.GetComponent<MeshRenderer>();
+                    markers.Add(m);
+                }
+                Ghost.Post post = ghost.Posts[i];
+                Marker marker = markers[i];
+                float tall = MarkerHeight(post.Held), round = (float)ghost.AtLeast(1.0, 5.5) * (post.Held ? 1.25f : 1), thin = (float)ghost.AtLeast(0.2, 1.3);
+                marker.Root.SetActive(true);
+                marker.Root.transform.position = MeshKit.ToWorld(post.At.X, post.At.Y);
+                marker.Pole.localPosition = new Vector3(0, tall / 2, 0);
+                marker.Pole.localScale = new Vector3(thin, tall, thin);
+                marker.Ball.localPosition = marker.Halo.localPosition = new Vector3(0, tall, 0);
+                marker.Ball.localScale = new Vector3(round, round, round);
+                marker.Halo.localScale = new Vector3(round, round, round) * 2.8f;
+                marker.BallView.sharedMaterial = post.Good ? markerGood : markerBad;
+                marker.HaloView.sharedMaterial = post.Good ? markerGlowGood : markerGlowBad;
+            }
+            for (int i = ghost.Posts.Count; i < markers.Count; i++) markers[i].Root.SetActive(false);
         }
 
         private static string Money(double dollars)
@@ -488,33 +623,16 @@ namespace Traffic.Lab
             {
                 if (existing.gameObject.scene.IsValid()) existing.enabled = false;
             }
-            var sun = new GameObject("Sun").AddComponent<UnityEngine.Light>();
+            sun = new GameObject("Sun").AddComponent<UnityEngine.Light>();
             sun.transform.SetParent(transform, false);
             sun.type = LightType.Directional;
-            sun.color = MeshKit.Hex(0xfff1d6);
-            // Sun and sky light together are set so that flat ground in the open shows a color at
-            // about the brightness it was given: the textures are made to the colors meant for the
-            // screen. (Measured from a screenshot: the brighter settings before this showed every
-            // color half as bright again, which washed out the cars and burned the sidewalks white.)
-            sun.intensity = MeshKit.Scriptable ? 0.85f : 0.9f;
             sun.shadows = LightShadows.Soft;
-            sun.shadowStrength = 0.55f;
-            // A fairly low sun, so trees and trucks throw long shadows across the ground.
-            sun.transform.rotation = Quaternion.LookRotation(new Vector3(150, -190, 110));
+            // A low sun, 35 degrees up, so trees, lamp posts and trucks throw long shadows across the ground.
+            sun.transform.rotation = Quaternion.LookRotation(new Vector3(150, -130, 110));
 
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = MeshKit.Scriptable ? MeshKit.Hex(0x737d8c) : MeshKit.Hex(0x4a5258);
             RenderSettings.fog = false;
-            // Shadows should reach across the whole map. The setting lives in a different place under each pipeline.
-            QualitySettings.shadowDistance = 3000;
-            UnityEngine.Rendering.RenderPipelineAsset pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
-            if (pipeline != null)
-            {
-                // The Universal Render Pipeline keeps it on its own asset; set it by name so this
-                // script still compiles in a project that does not have that package.
-                System.Reflection.PropertyInfo distance = pipeline.GetType().GetProperty("shadowDistance");
-                if (distance != null && distance.CanWrite) distance.SetValue(pipeline, 3000f, null);
-            }
+            ApplyLight();
         }
 
         /// <summary>Pull back far enough to see the whole track.</summary>
@@ -633,6 +751,14 @@ namespace Traffic.Lab
             if (car == null && selected >= 0) Select(-1);
             if (follow && car != null) target = Vector3.Lerp(target, MeshKit.ToWorld(car.X, car.Y), 0.12f);
 
+            // Night comes on, or lifts, over a moment.
+            float toward = night ? 1 : 0;
+            if (dusk != toward)
+            {
+                dusk = Mathf.MoveTowards(dusk, toward, Mathf.Min(Time.unscaledDeltaTime, 0.1f) / 1.5f);
+                ApplyLight();
+            }
+
             roads.Update(Sim.Junctions, Sim.Time);
             carViews.Sync(Sim.Cars, Sim.Time, selected);
             UpdateSensorLines();
@@ -640,6 +766,7 @@ namespace Traffic.Lab
 
             MoveView(Mathf.Min(Time.unscaledDeltaTime, 0.1f));
             PlaceCamera();
+            FitShadows();
         }
 
         // ------------------------------------------------------------ camera and clicks

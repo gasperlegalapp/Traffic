@@ -19,6 +19,8 @@ namespace Traffic.Lab
         {
             public Lane Lane;
             public Material Material;
+            /// <summary>The light the bar throws on the road round it, in the same color.</summary>
+            public Material Glow;
         }
 
         /// <summary>One signal head, hung over the lane it controls.</summary>
@@ -28,6 +30,10 @@ namespace Traffic.Lab
             /// <summary>Red, yellow, green; or a single arrow lamp for a lane that only turns left.</summary>
             public Material[] Lamps;
             public Material Arrow;
+            /// <summary>The glow round whichever lamp is lit, which is what shows the light from far overhead.</summary>
+            public Transform Halo;
+            public Material HaloGlow;
+            public float Across;
         }
 
         private sealed class SignalView
@@ -44,6 +50,10 @@ namespace Traffic.Lab
         private readonly List<SignalView> signals = new List<SignalView>();
         private readonly Transform nodeRing;
         private readonly GameObject rootObject;
+        // What changes between day and night: the street lamps and the light they throw, and the signs, which give no light of their own.
+        private Material lampLens, lampLight, signWhite, signRed;
+        private GameObject lampPools;
+        private float night;
 
         public RoadView(World world, Transform parent)
         {
@@ -62,6 +72,10 @@ namespace Traffic.Lab
             var walks = new SurfaceBuilder(1);
             var shoulders = new SurfaceBuilder(12);
             var lawn = new SurfaceBuilder(GroundTile);
+            var verge = new GlowBuilder();
+            var lampPosts = new SolidBuilder();
+            var lampHeads = new SolidBuilder();
+            var pools = new GlowBuilder();
             var skirt = new FlatBuilder();
             var buried = new FlatBuilder();
             var mouths = new FlatBuilder();
@@ -94,8 +108,14 @@ namespace Traffic.Lab
                 }
                 return false;
             }
-            // The roadside along one edge of the pavement: a gravel shoulder on a highway and, when
-            // sidewalks are on, a raised sidewalk with a curb on a street. Side is 1 for the right of the line, -1 for the left.
+            // The grass beside a road is mown: a strip a little lighter than the rest, fading out away from the road.
+            void Verge(IList<Vec> from, int side)
+            {
+                verge.Band(from, Outward(from, side * VergeWidth), 0.012f, VergeTint, Color.black);
+            }
+            // The roadside along one edge of the pavement: a gravel shoulder on a highway, and on slower
+            // roads a low concrete curb (or, when sidewalks are on, a raised sidewalk behind a full one).
+            // Side is 1 for the right of the line, -1 for the left.
             void Roadside(IList<Vec> edge, int side, bool fast)
             {
                 if (edge.Count < 2) return;
@@ -104,9 +124,19 @@ namespace Traffic.Lab
                     Vec[] outer = Geo.Offset(new List<Vec>(edge), side * ShoulderWidth);
                     if (side > 0) shoulders.Strip(edge, outer, 0.022f);
                     else shoulders.Strip(outer, edge, 0.022f);
+                    Verge(outer, side);
                     return;
                 }
-                if (!Sidewalks) return;
+                if (!Sidewalks)
+                {
+                    // Only a lip of concrete along the edge of the pavement: enough to finish the road, not a curb to step up.
+                    Vec[] lip = Geo.Offset(new List<Vec>(edge), side * CurbWidth);
+                    walks.Ribbon(edge, lip, CurbLip, 1.6f);
+                    walks.Wall(edge, 0.02f, CurbLip, 1.6f, -side);
+                    walks.Wall(lip, 0, CurbLip, 1.6f, side);
+                    Verge(lip, side);
+                    return;
+                }
                 var list = new List<Vec>(edge);
                 Vec[] full = Geo.Offset(list, side * WalkWidth), slim = Geo.Offset(list, side * 0.35);
                 var far = new Vec[edge.Count];
@@ -116,6 +146,7 @@ namespace Traffic.Lab
             }
 
             bool anyBridge = false, anyTunnel = false;
+            int lamps = 0;
             foreach (Strip s in world.Surfaces)
             {
                 bool fast = s.Speed >= FastRoad;
@@ -124,6 +155,7 @@ namespace Traffic.Lab
                     asphalt.Strip(s.Left, s.Right, 0.03f);
                     Roadside(s.Right, 1, fast);
                     if (s.LeftIsEdge) Roadside(s.Left, -1, fast);
+                    if (s.Speed >= LampRoad && !fast) StreetLamps(s.Right, lamps++ % 2 == 0 ? LampSpacing * 0.25 : LampSpacing * 0.75, lampPosts, lampHeads, pools);
                     continue;
                 }
                 if (s.Peak > 0)
@@ -169,6 +201,18 @@ namespace Traffic.Lab
             Material asphaltMaterial = MeshKit.Textured(asphaltPhoto, asphaltPhoto != null ? Color.white : MeshKit.Hex(0x3c3e42), 0.1f);
             MeshKit.Spawn("Asphalt", asphalt.Build(), asphaltMaterial, root, false);
             if (!shoulders.Empty) MeshKit.Spawn("Shoulders", shoulders.Build(), MeshKit.Textured(gravelPhoto, gravelPhoto != null ? Color.white : MeshKit.Hex(0x89816f), 0), root, false);
+            if (!verge.Empty) MeshKit.Spawn("Verges", verge.Build(), MeshKit.Brighten, root, false).GetComponent<MeshRenderer>().receiveShadows = false;
+            if (!lampPosts.Empty)
+            {
+                // Street lamps along the avenues. By day the lamp is a pale lens; after dark it is lit, with a pool of light under it.
+                lampLens = MeshKit.Unlit(LensByDay);
+                lampLight = MeshKit.Glow(MeshKit.Hex(0xffd591, 0));
+                MeshKit.Spawn("Lamp posts", lampPosts.Build(), MeshKit.Lit(MeshKit.Hex(0x2a2e33), 0.25f), root, true);
+                MeshKit.Spawn("Lamps", lampHeads.Build(), lampLens, root, false);
+                lampPools = MeshKit.Spawn("Lamp light", pools.Build(), lampLight, root, false);
+                lampPools.GetComponent<MeshRenderer>().receiveShadows = false;
+                lampPools.SetActive(false);
+            }
             if (anyBridge)
             {
                 MeshKit.Spawn("Bridge deck", deck.Build(), asphaltMaterial, root, true);
@@ -224,8 +268,8 @@ namespace Traffic.Lab
                 if (m.Heights != null && m.Peak > 0)
                 {
                     // On a bridge the paint follows the deck up and over.
-                    if (m.DashOn > 0) b.Dashed(m.Pts, m.Heights, m.Width, m.DashOn, m.DashOff, 0.07f);
-                    else b.Line(m.Pts, m.Heights, m.Width, 0.07f);
+                    if (m.DashOn > 0) b.Dashed(m.Pts, m.Heights, m.Width * PaintWidth, m.DashOn, m.DashOff, 0.07f);
+                    else b.Line(m.Pts, m.Heights, m.Width * PaintWidth, 0.07f);
                     continue;
                 }
                 // In a tunnel only the open ends are painted.
@@ -234,8 +278,8 @@ namespace Traffic.Lab
                 foreach (int[] run in runs)
                 {
                     Vec[] pts = Part(m.Pts, run);
-                    if (m.DashOn > 0) b.Dashed(pts, m.Width, m.DashOn, m.DashOff, 0.07f);
-                    else b.Line(pts, m.Width, 0.07f);
+                    if (m.DashOn > 0) b.Dashed(pts, m.Width * PaintWidth, m.DashOn, m.DashOff, 0.07f);
+                    else b.Line(pts, m.Width * PaintWidth, 0.07f);
                 }
             }
             foreach (ArrowMark arrow in world.Arrows) PaintArrows(arrow, white, red);
@@ -260,8 +304,8 @@ namespace Traffic.Lab
                     }
                 }
             }
-            // Fresh paint: clean white, and a warm yellow.
-            MeshKit.Spawn("White paint", white.Build(), MeshKit.Lit(MeshKit.Hex(0xf1f1ec), 0), root, false);
+            // Fresh paint: clean white with a little warmth in it, and a warm yellow.
+            MeshKit.Spawn("White paint", white.Build(), MeshKit.Lit(MeshKit.Hex(0xf4f1e6), 0), root, false);
             MeshKit.Spawn("Yellow paint", yellow.Build(), MeshKit.Lit(MeshKit.Hex(0xefbd2e), 0), root, false);
             MeshKit.Spawn("Red paint", red.Build(), MeshKit.Lit(MeshKit.Hex(0xe5383b), 0), root, false);
 
@@ -270,8 +314,17 @@ namespace Traffic.Lab
                 var back = new Vec(-System.Math.Cos(sl.H) * 0.55, -System.Math.Sin(sl.H) * 0.55);
                 var b = new FlatBuilder();
                 b.Strip(new[] { sl.A, sl.B }, new[] { new Vec(sl.A.X + back.X, sl.A.Y + back.Y), new Vec(sl.B.X + back.X, sl.B.Y + back.Y) }, 0.09f);
-                var view = new LineView { Lane = world.Lanes[sl.Lane], Material = MeshKit.Unlit(Color.white) };
+                var view = new LineView { Lane = world.Lanes[sl.Lane], Material = MeshKit.Unlit(Color.white), Glow = MeshKit.Glow(Color.white) };
                 MeshKit.Spawn("Stop line", b.Build(), view.Material, root, false);
+                // The bar is a light, and lights the road a little way to each side of it.
+                var glow = new GlowBuilder();
+                Vec[] middle = { new Vec(sl.A.X + back.X / 2, sl.A.Y + back.Y / 2), new Vec(sl.B.X + back.X / 2, sl.B.Y + back.Y / 2) };
+                foreach (double reach in new[] { 1.5, -1.5 })
+                {
+                    var far = new Vec(back.X / 0.55 * reach, back.Y / 0.55 * reach);
+                    glow.Band(middle, new[] { new Vec(middle[0].X + far.X, middle[0].Y + far.Y), new Vec(middle[1].X + far.X, middle[1].Y + far.Y) }, 0.1f, new Color(1, 1, 1, 0.7f), new Color(1, 1, 1, 0));
+                }
+                MeshKit.Spawn("Stop line light", glow.Build(), view.Glow, root, false).GetComponent<MeshRenderer>().receiveShadows = false;
                 lines.Add(view);
             }
 
@@ -302,6 +355,8 @@ namespace Traffic.Lab
             }
 
             Material dark = MeshKit.Lit(MeshKit.Hex(0x15181c), 0.3f);
+            signWhite = MeshKit.Unlit(Color.white);
+            signRed = MeshKit.Unlit(SignRed);
             foreach (Node node in world.Nodes)
             {
                 if (!node.Controlled) continue;
@@ -335,6 +390,82 @@ namespace Traffic.Lab
         private static readonly bool Sidewalks = false;
         private const double WalkWidth = 2.2, ShoulderWidth = 2.6, LaneReach = 2.1;
         private const float CurbHeight = 0.16f;
+        /// <summary>The lip of concrete along the edge of a road: how wide it is, and how far its top stands above the ground.</summary>
+        private const double CurbWidth = 0.22;
+        private const float CurbLip = 0.075f;
+        /// <summary>How far the mown grass beside a road reaches, and how much lighter it is at the road's edge (as red, green, blue).</summary>
+        private const double VergeWidth = 2.4;
+        private static readonly Color VergeTint = new Color(0.15f, 0.11f, 0.01f, 1);
+        /// <summary>
+        /// Paint is drawn this much wider than the simulation's lines, which are the true width
+        /// of a painted line. At the true width they come out a pixel wide from the usual distance and look like a plan.
+        /// </summary>
+        private const double PaintWidth = 1.4;
+        /// <summary>Roads at least this fast (meters per second) that are not highways have street lamps: avenues, not side streets.</summary>
+        private const double LampRoad = 14;
+        private const double LampSpacing = 46;
+        private const float LampHeight = 8;
+        private static readonly Color LensByDay = MeshKit.Hex(0xd9ddd6), LensByNight = MeshKit.Hex(0xffe9b8), SignRed = MeshKit.Hex(0xe5383b);
+
+        /// <summary>
+        /// The line so far to one side of another (to its right, or to its left if negative).
+        /// Where that would fold back over itself, on the inside of a tight corner, the fold is gathered to a point.
+        /// </summary>
+        private static Vec[] Outward(IList<Vec> line, double offset)
+        {
+            Vec[] outer = Geo.Offset(new List<Vec>(line), offset);
+            bool Folded(int i)
+            {
+                return (outer[i + 1].X - outer[i].X) * (line[i + 1].X - line[i].X) + (outer[i + 1].Y - outer[i].Y) * (line[i + 1].Y - line[i].Y) < 0;
+            }
+            for (int i = 0; i + 1 < outer.Length; i++)
+            {
+                if (!Folded(i)) continue;
+                int last = i + 1;
+                while (last + 1 < outer.Length && Folded(last)) last++;
+                double x = 0, y = 0;
+                for (int k = i; k <= last; k++)
+                {
+                    x += outer[k].X;
+                    y += outer[k].Y;
+                }
+                var mean = new Vec(x / (last - i + 1), y / (last - i + 1));
+                for (int k = i; k <= last; k++) outer[k] = mean;
+                i = last;
+            }
+            return outer;
+        }
+
+        /// <summary>
+        /// Street lamps along one edge of a road: a post every so often just behind the curb,
+        /// with an arm reaching out over the pavement and a lamp at the end of it. The first
+        /// stands so far along, so that the two sides of a road can be set out of step.
+        /// </summary>
+        private static void StreetLamps(Vec[] edge, double first, SolidBuilder posts, SolidBuilder heads, GlowBuilder pools)
+        {
+            var path = new LanePath(edge);
+            // Keep clear of the intersection at each end. A short road gets one lamp, in the middle.
+            const double clear = 14;
+            if (path.Length < 2 * clear + 6) return;
+            if (path.Length < 2 * clear + LampSpacing) first = path.Length / 2;
+            for (double s = System.Math.Max(first, clear); s <= path.Length - clear; s += LampSpacing)
+            {
+                PathPose at = path.At(s);
+                // Out from the road is to the right of the way the edge runs.
+                double ox = System.Math.Sin(at.H), oy = -System.Math.Cos(at.H);
+                Quaternion turn = MeshKit.Heading(System.Math.Atan2(oy, ox));
+                Vector3 foot = MeshKit.ToWorld(at.X + ox * 0.9, at.Y + oy * 0.9);
+                Vector3 reach = MeshKit.ToWorld(-ox, -oy);
+                posts.Box(foot + Vector3.up * (LampHeight / 2), new Vector3(0.2f, LampHeight, 0.2f), turn);
+                posts.Box(foot + Vector3.up * (LampHeight - 0.08f) + reach * 1.3f, new Vector3(2.8f, 0.14f, 0.14f), turn);
+                Vector3 head = foot + Vector3.up * (LampHeight - 0.2f) + reach * 2.5f;
+                posts.Box(head + Vector3.up * 0.07f, new Vector3(1.0f, 0.12f, 0.46f), turn);
+                heads.Box(head - Vector3.up * 0.03f, new Vector3(0.8f, 0.08f, 0.34f), turn);
+                // After dark: light on the road beneath, and a glow at the lamp itself.
+                pools.Pool(new Vector3(head.x, 0.12f, head.z), 16, 0.5f);
+                pools.Ball(head - Vector3.up * 0.1f, 2.2f, 0.9f);
+            }
+        }
 
         /// <summary>How far below the ground a tunnel is before it is covered over and out of sight.</summary>
         public const double Covered = 2.4;
@@ -461,8 +592,65 @@ namespace Traffic.Lab
         private sealed class Patch
         {
             public int Signature;
-            /// <summary>The tree tops and bushes, the rocks, and the shade on the ground under the trees. Any may be null.</summary>
-            public Mesh Leaves, Rocks, Shade;
+            /// <summary>The tree tops and bushes, the rocks, the shade on the ground under the trees, and the wild flowers. Any may be null.</summary>
+            public Mesh Leaves, Rocks, Shade, Flowers;
+        }
+
+        /// <summary>One wild flower: where it is, how big, and which of the flower colors.</summary>
+        private struct Bloom
+        {
+            public double X, Y;
+            public float Size;
+            public int Color;
+        }
+
+        private static readonly int[] FlowerColors = { 0xf7f5ea, 0xf6d24a, 0xe98fb4, 0xb9a1e6 };
+        private static Material flowerMaterial;
+
+        /// <summary>One material for every flower: a strip of the flower colors, and each flower is mapped to its own.</summary>
+        private static Material FlowerMaterial()
+        {
+            if (flowerMaterial != null && flowerMaterial.mainTexture != null) return flowerMaterial;
+            var strip = new Texture2D(FlowerColors.Length, 1, TextureFormat.RGBA32, false);
+            for (int i = 0; i < FlowerColors.Length; i++) strip.SetPixel(i, 0, MeshKit.Hex(FlowerColors[i]));
+            strip.filterMode = FilterMode.Point;
+            strip.wrapMode = TextureWrapMode.Clamp;
+            strip.Apply();
+            flowerMaterial = MeshKit.Textured(strip, Color.white, 0);
+            return flowerMaterial;
+        }
+
+        /// <summary>The flowers of one patch as a mesh: each a small flat shape just above the grass, seen from above as a dot of color.</summary>
+        private static Mesh FlowerMesh(List<Bloom> blooms)
+        {
+            var verts = new List<Vector3>();
+            var normals = new List<Vector3>();
+            var uvs = new List<Vector2>();
+            var tris = new List<int>();
+            foreach (Bloom b in blooms)
+            {
+                int k = verts.Count;
+                float x = (float)b.X, z = (float)b.Y, y = 0.16f + b.Size * 0.4f;
+                verts.Add(new Vector3(x - b.Size, y, z));
+                verts.Add(new Vector3(x, y, z + b.Size));
+                verts.Add(new Vector3(x + b.Size, y, z));
+                verts.Add(new Vector3(x, y, z - b.Size));
+                for (int i = 0; i < 4; i++)
+                {
+                    normals.Add(Vector3.up);
+                    uvs.Add(new Vector2((b.Color + 0.5f) / FlowerColors.Length, 0.5f));
+                }
+                // Both ways round, so they show from above whichever way the pipeline counts a face.
+                tris.AddRange(new[] { k, k + 1, k + 2, k, k + 2, k + 3, k, k + 2, k + 1, k, k + 3, k + 2 });
+            }
+            var mesh = new Mesh();
+            if (verts.Count > 65000) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.SetVertices(verts);
+            mesh.SetNormals(normals);
+            mesh.SetUVs(0, uvs);
+            mesh.SetTriangles(tris, 0);
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
         /// <summary>
@@ -523,6 +711,7 @@ namespace Traffic.Lab
                 {
                     // First work out what stands in this patch; build its mesh only if that has changed.
                     var plants = new List<Plant>();
+                    var blooms = new List<Bloom>();
                     int signature = 17;
                     for (int i = px * PatchPlots; i < (px + 1) * PatchPlots; i++)
                     {
@@ -550,14 +739,33 @@ namespace Traffic.Lab
                                 plants.Add(new Plant { Kind = bush ? 2 : 3, Model = bush ? null : rocks[(int)(Rand(i, j, 16) * rocks.Count)], X = bx, Y = by, Turn = Rand(i, j, 17) * 6.2832f, Scale = 0.9f + 0.7f * Rand(i, j, 18), Leaf = (int)(Rand(i, j, 19) * ArtKit.SummerLeaves), Seed = i * 104729 + j });
                                 signature = signature * 31 + (i * 7919 + j) * 2;
                             }
+                            // Wild flowers, out in the open and in drifts: here a scatter of them, there none for a long way.
+                            float drift = Hills((float)(i * Plot) / 110, (float)(j * Plot) / 110, 21);
+                            if (Rand(i, j, 22) < Mathf.Clamp01((drift - 0.52f) * 2.4f) * 0.55f + 0.015f && wood < 0.6f)
+                            {
+                                double fx = (i + Rand(i, j, 23)) * Plot, fy = (j + Rand(i, j, 24)) * Plot;
+                                int count = 9 + (int)(Rand(i, j, 25) * 14), shown = 0, mostly = (int)(Rand(i, j, 26) * FlowerColors.Length);
+                                float spread = 2.5f + 4 * Rand(i, j, 27);
+                                for (int k = 0; k < count; k++)
+                                {
+                                    float turn = Rand(i * 131 + k, j, 28) * 6.2832f, away = Mathf.Sqrt(Rand(i, j * 131 + k, 29)) * spread;
+                                    double x1 = fx + Mathf.Cos(turn) * away, y1 = fy + Mathf.Sin(turn) * away;
+                                    if (!Open(x1, y1)) continue;
+                                    // Most of a scatter is one color, with a few of the others among it.
+                                    int color = Rand(i + k, j - k, 30) < 0.75f ? mostly : (int)(Rand(i - k, j + k, 31) * FlowerColors.Length);
+                                    blooms.Add(new Bloom { X = x1, Y = y1, Size = 0.2f + 0.14f * Rand(i + k * 17, j, 32), Color = color });
+                                    shown++;
+                                }
+                                signature = signature * 31 + (i * 7919 + j) * 5 + shown;
+                            }
                         }
                     }
-                    if (plants.Count == 0) continue;
+                    if (plants.Count == 0 && blooms.Count == 0) continue;
                     Patch patch;
                     long key = Key(px, py);
-                    if (!patches.TryGetValue(key, out patch) || patch.Signature != signature || (patch.Leaves == null && patch.Rocks == null))
+                    if (!patches.TryGetValue(key, out patch) || patch.Signature != signature || (patch.Leaves == null && patch.Rocks == null && patch.Flowers == null))
                     {
-                        if (patch != null) foreach (Mesh old in new[] { patch.Leaves, patch.Rocks, patch.Shade }) if (old != null) Object.Destroy(old);
+                        if (patch != null) foreach (Mesh old in new[] { patch.Leaves, patch.Rocks, patch.Shade, patch.Flowers }) if (old != null) Object.Destroy(old);
                         var leaves = new CanopyBuilder();
                         var stones = new SceneryBuilder();
                         var shade = new ShadeBuilder();
@@ -574,12 +782,13 @@ namespace Traffic.Lab
                                 shade.Disc(p.X, p.Y, spread * 1.3, 0.05f, 0.34f);
                             }
                         }
-                        patch = new Patch { Signature = signature, Leaves = leaves.Empty ? null : leaves.Build(), Rocks = stones.Count == 0 ? null : stones.Build(), Shade = shade.Empty ? null : shade.Build() };
+                        patch = new Patch { Signature = signature, Leaves = leaves.Empty ? null : leaves.Build(), Rocks = stones.Count == 0 ? null : stones.Build(), Shade = shade.Empty ? null : shade.Build(), Flowers = blooms.Count == 0 ? null : FlowerMesh(blooms) };
                         patches[key] = patch;
                     }
                     if (patch.Leaves != null) MeshKit.Spawn("Leaves", patch.Leaves, ArtKit.Canopy, holder, true);
                     if (patch.Rocks != null) MeshKit.Spawn("Rocks", patch.Rocks, ArtKit.Shared, holder, true);
                     if (patch.Shade != null) MeshKit.Spawn("Shade", patch.Shade, MeshKit.Shade, holder, false).GetComponent<MeshRenderer>().receiveShadows = false;
+                    if (patch.Flowers != null) MeshKit.Spawn("Flowers", patch.Flowers, FlowerMaterial(), holder, false);
                 }
             }
         }
@@ -644,6 +853,7 @@ namespace Traffic.Lab
                     // A lane that only turns left gets a single arrow.
                     MeshKit.Spawn("Housing", MeshKit.Box(0.42f, 1.5f, 1.5f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 5.65f, across);
                     head.Arrow = MeshKit.Unlit(DimRed);
+                    head.Across = across;
                     var arrow = new FlatBuilder();
                     arrow.Fan(new Vec(0, 0), new[] { new Vec(-0.5, 0), new Vec(0.2, 0.55), new Vec(0.2, 0.2), new Vec(0.5, 0.2), new Vec(0.5, -0.2), new Vec(0.2, -0.2), new Vec(0.2, -0.55) }, 0);
                     // The arrow is drawn flat, pointing along -x. Stand it up on the face of the housing, pointing to the driver's left (+z).
@@ -656,12 +866,19 @@ namespace Traffic.Lab
                 {
                     MeshKit.Spawn("Housing", MeshKit.Box(0.42f, 2.7f, 1.0f), dark, view.Heads.transform).transform.localPosition = new Vector3(0, 5.05f, across);
                     head.Lamps = new Material[3];
+                    head.Across = across;
                     for (int i = 0; i < 3; i++)
                     {
                         head.Lamps[i] = MeshKit.Unlit(DimRed);
                         MeshKit.Spawn("Lamp", MeshKit.Box(0.1f, 0.72f, 0.72f), head.Lamps[i], view.Heads.transform, false).transform.localPosition = new Vector3(-0.24f, 5.91f - i * 0.86f, across);
                     }
                 }
+                // The glow of the lamp that is lit. It stands a little out from the face of the head, toward the traffic.
+                head.HaloGlow = MeshKit.Glow(Color.white);
+                GameObject halo = MeshKit.Spawn("Glow", MeshKit.GlowBall, head.HaloGlow, view.Heads.transform, false);
+                halo.GetComponent<MeshRenderer>().receiveShadows = false;
+                head.Halo = halo.transform;
+                head.Halo.localScale = new Vector3(1.7f, 1.7f, 1.7f);
                 view.Lanes.Add(head);
             }
             // The arm reaches out over the farthest lane, and the heads hang from it.
@@ -675,10 +892,10 @@ namespace Traffic.Lab
             // They are drawn flat, so they are stood up with their faces that way; the plate sits a little in front of its rim.
             Quaternion upright = Quaternion.LookRotation(Vector3.up, Vector3.left);
             MeshKit.Spawn("Pole", MeshKit.Box(0.22f, 2.6f, 0.22f), dark, view.StopSign.transform).transform.localPosition = new Vector3(0, 1.3f, 0);
-            Transform rim = MeshKit.Spawn("Rim", Octagon(1.15f), MeshKit.Unlit(Color.white), view.StopSign.transform, false).transform;
+            Transform rim = MeshKit.Spawn("Rim", Octagon(1.15f), signWhite, view.StopSign.transform, false).transform;
             rim.localPosition = new Vector3(-0.13f, 3.2f, 0);
             rim.localRotation = upright;
-            Transform plate = MeshKit.Spawn("Plate", Octagon(1.0f), MeshKit.Unlit(MeshKit.Hex(0xe5383b)), view.StopSign.transform, false).transform;
+            Transform plate = MeshKit.Spawn("Plate", Octagon(1.0f), signRed, view.StopSign.transform, false).transform;
             plate.localPosition = new Vector3(-0.17f, 3.2f, 0);
             plate.localRotation = upright;
             view.StopSign.SetActive(false);
@@ -689,10 +906,10 @@ namespace Traffic.Lab
             view.YieldSign.transform.position = MeshKit.ToWorld(arm.Post.X, arm.Post.Y);
             view.YieldSign.transform.rotation = MeshKit.Heading(arm.H);
             MeshKit.Spawn("Pole", MeshKit.Box(0.22f, 2.6f, 0.22f), dark, view.YieldSign.transform).transform.localPosition = new Vector3(0, 1.3f, 0);
-            rim = MeshKit.Spawn("Rim", PointDown(1.45f), MeshKit.Unlit(MeshKit.Hex(0xe5383b)), view.YieldSign.transform, false).transform;
+            rim = MeshKit.Spawn("Rim", PointDown(1.45f), signRed, view.YieldSign.transform, false).transform;
             rim.localPosition = new Vector3(-0.13f, 3.3f, 0);
             rim.localRotation = upright;
-            plate = MeshKit.Spawn("Plate", PointDown(0.8f), MeshKit.Unlit(Color.white), view.YieldSign.transform, false).transform;
+            plate = MeshKit.Spawn("Plate", PointDown(0.8f), signWhite, view.YieldSign.transform, false).transform;
             plate.localPosition = new Vector3(-0.17f, 3.3f, 0);
             plate.localRotation = upright;
             view.YieldSign.SetActive(false);
@@ -813,7 +1030,9 @@ namespace Traffic.Lab
             // Meshes made for these roads would otherwise pile up, one set for every change to the map.
             // The scenery patches are kept, because the next set of roads reuses them.
             var kept = new HashSet<Mesh>();
-            foreach (Patch patch in patches.Values) foreach (Mesh mesh in new[] { patch.Leaves, patch.Rocks, patch.Shade }) if (mesh != null) kept.Add(mesh);
+            foreach (Patch patch in patches.Values) foreach (Mesh mesh in new[] { patch.Leaves, patch.Rocks, patch.Shade, patch.Flowers }) if (mesh != null) kept.Add(mesh);
+            // So are the shapes every view shares.
+            foreach (Mesh mesh in new[] { MeshKit.GlowBall, MeshKit.Ball, MeshKit.Cube }) kept.Add(mesh);
             foreach (MeshFilter filter in rootObject.GetComponentsInChildren<MeshFilter>(true))
             {
                 Mesh mesh = filter.sharedMesh;
@@ -852,10 +1071,35 @@ namespace Traffic.Lab
             return best;
         }
 
+        /// <summary>
+        /// How dark it is, from 0 in daylight to 1 at night. After dark the street lamps are lit
+        /// and throw their light on the road, the lights glow more strongly, and the signs,
+        /// which give no light of their own, are dimmer.
+        /// </summary>
+        public float Night
+        {
+            get { return night; }
+            set
+            {
+                night = Mathf.Clamp01(value);
+                float signs = Mathf.Lerp(1, 0.5f, night);
+                signWhite.color = new Color(signs, signs, signs, 1);
+                signRed.color = new Color(SignRed.r * signs, SignRed.g * signs, SignRed.b * signs, 1);
+                if (lampPools == null) return;
+                lampLens.color = Color.Lerp(LensByDay, LensByNight, night);
+                Color light = lampLight.color;
+                light.a = night;
+                lampLight.color = light;
+                lampPools.SetActive(night > 0.01f);
+            }
+        }
+
         /// <summary>Show the current lights.</summary>
         public void Update(List<Junction> junctions, double time)
         {
             bool flash = time % 1 < 0.5;
+            // A light has the sun to compete with by day, so its glow is kept gentler then.
+            float glow = Mathf.Lerp(0.5f, 0.95f, night);
             foreach (LineView line in lines)
             {
                 SignalLight light = LaneLight(junctions[line.Lane.Node], line.Lane);
@@ -863,6 +1107,8 @@ namespace Traffic.Lab
                 // A stop sign shows at the stop line as flashing red, and a yield sign as flashing yellow.
                 if ((light == SignalLight.Stop || light == SignalLight.Yield) && !flash) c *= 0.45f;
                 line.Material.color = c;
+                c.a = glow * 0.8f;
+                line.Glow.color = c;
             }
             foreach (SignalView s in signals)
             {
@@ -876,11 +1122,18 @@ namespace Traffic.Lab
                 foreach (LaneHead head in s.Lanes)
                 {
                     SignalLight st = LaneLight(jn, head.Lane);
+                    Color lamp = LampColor(st);
+                    lamp.a = glow;
+                    head.HaloGlow.color = lamp;
                     if (head.Arrow != null)
                     {
                         head.Arrow.color = LampColor(st);
+                        head.Halo.localPosition = new Vector3(-0.55f, 5.65f, head.Across);
                         continue;
                     }
+                    // Red is the top lamp, yellow the middle, green the bottom.
+                    int which = st == SignalLight.Green ? 2 : st == SignalLight.Yellow ? 1 : 0;
+                    head.Halo.localPosition = new Vector3(-0.55f, 5.91f - which * 0.86f, head.Across);
                     head.Lamps[0].color = st == SignalLight.Red ? Red : DimRed;
                     head.Lamps[1].color = st == SignalLight.Yellow ? Yellow : DimYellow;
                     head.Lamps[2].color = st == SignalLight.Green ? Green : DimGreen;

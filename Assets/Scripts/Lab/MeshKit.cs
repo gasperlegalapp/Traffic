@@ -88,6 +88,120 @@ namespace Traffic.Lab
             }
         }
 
+        private static Material Blended(UnityEngine.Rendering.BlendMode source, UnityEngine.Rendering.BlendMode onto, int queue)
+        {
+            var m = new Material(Find("Hidden/Internal-Colored", "Sprites/Default"));
+            m.SetInt("_SrcBlend", (int)source);
+            m.SetInt("_DstBlend", (int)onto);
+            m.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+            m.SetInt("_ZWrite", 0);
+            m.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.LessEqual);
+            m.renderQueue = queue;
+            return m;
+        }
+
+        /// <summary>
+        /// A material for light itself: the glow round a lamp, the pool under a street lamp, a
+        /// headlight's beam on the road. It only ever adds light to what is behind it. The mesh
+        /// says how strong the light is at each corner (see GlowBuilder) and the tint its color;
+        /// the tint's alpha turns the whole light up and down.
+        /// </summary>
+        public static Material Glow(Color tint)
+        {
+            Material m = Blended(UnityEngine.Rendering.BlendMode.SrcAlpha, UnityEngine.Rendering.BlendMode.One, 3100);
+            m.color = tint;
+            return m;
+        }
+
+        /// <summary>
+        /// A flat color drawn over everything else, whatever is in front of it: for the markers
+        /// that stand on the road being drawn, which must show through the picture of the road.
+        /// </summary>
+        public static Material Overlay(Color color, int queue)
+        {
+            Material m = Blended(UnityEngine.Rendering.BlendMode.SrcAlpha, UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha, queue);
+            m.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+            m.color = color;
+            return m;
+        }
+
+        private static Material brighten;
+
+        /// <summary>
+        /// The material for ground that is a little lighter than the ground around it, such as
+        /// the mown grass beside a road. Each corner of the mesh says how much lighter, as a color
+        /// (0.1 is a tenth lighter), and what is beneath is lightened in proportion, so it stays
+        /// right in shadow and at night.
+        /// </summary>
+        public static Material Brighten
+        {
+            get
+            {
+                if (brighten == null) brighten = Blended(UnityEngine.Rendering.BlendMode.DstColor, UnityEngine.Rendering.BlendMode.One, 2890);
+                return brighten;
+            }
+        }
+
+        private static Mesh glowBall, ball, cube;
+
+        /// <summary>A glow one meter in radius that reads as a soft ball of light from any side. Scale it to size.</summary>
+        public static Mesh GlowBall
+        {
+            get
+            {
+                if (glowBall != null) return glowBall;
+                var b = new GlowBuilder();
+                b.Ball(Vector3.zero, 1, 1);
+                return glowBall = b.Build();
+            }
+        }
+
+        /// <summary>A cube one meter on a side, centered. Scale it to size.</summary>
+        public static Mesh Cube
+        {
+            get
+            {
+                if (cube == null) cube = Box(1, 1, 1);
+                return cube;
+            }
+        }
+
+        /// <summary>A ball one meter in radius. Scale it to size.</summary>
+        public static Mesh Ball
+        {
+            get
+            {
+                if (ball != null) return ball;
+                const int rings = 8, sides = 14;
+                var verts = new List<Vector3>();
+                var tris = new List<int>();
+                for (int i = 0; i <= rings; i++)
+                {
+                    float lat = Mathf.PI * i / rings;
+                    for (int j = 0; j <= sides; j++)
+                    {
+                        float lon = Mathf.PI * 2 * j / sides;
+                        verts.Add(new Vector3(Mathf.Sin(lat) * Mathf.Cos(lon), Mathf.Cos(lat), Mathf.Sin(lat) * Mathf.Sin(lon)));
+                    }
+                }
+                for (int i = 0; i < rings; i++)
+                {
+                    for (int j = 0; j < sides; j++)
+                    {
+                        int a = i * (sides + 1) + j, b = a + sides + 1;
+                        tris.AddRange(new[] { a, a + 1, b, a + 1, b + 1, b });
+                    }
+                }
+                ball = new Mesh();
+                ball.SetVertices(verts);
+                ball.SetTriangles(tris, 0);
+                // On a ball of this size, each point is its own normal.
+                ball.SetNormals(verts);
+                ball.RecalculateBounds();
+                return ball;
+            }
+        }
+
         /// <summary>A material that reacts to light and shadow and is covered with a texture.</summary>
         public static Material Textured(Texture texture, Color tint, float smoothness = 0.08f)
         {
@@ -342,6 +456,161 @@ namespace Traffic.Lab
             mesh.SetVertices(verts);
             mesh.SetColors(colors);
             mesh.SetTriangles(tris, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+    }
+
+    /// <summary>
+    /// Collects light: glows, pools of light on the ground, headlight beams, and bands of
+    /// lighter ground. Each corner carries a color and a strength, and the strength fades
+    /// smoothly between corners. Draw it with MeshKit.Glow or MeshKit.Brighten.
+    /// </summary>
+    public sealed class GlowBuilder
+    {
+        private readonly List<Vector3> verts = new List<Vector3>();
+        private readonly List<Color> colors = new List<Color>();
+        private readonly List<int> tris = new List<int>();
+
+        public bool Empty => verts.Count == 0;
+
+        private int Point(Vector3 at, float strength)
+        {
+            verts.Add(at);
+            colors.Add(new Color(1, 1, 1, strength));
+            return verts.Count - 1;
+        }
+
+        /// <summary>A round patch of light lying in the plane of two directions: brightest in the middle, gone at its rim.</summary>
+        public void Disc(Vector3 center, Vector3 across, Vector3 up, float radius, float strength)
+        {
+            const int sides = 16;
+            int middle = Point(center, strength), first = verts.Count;
+            for (int ring = 0; ring < 2; ring++)
+            {
+                for (int i = 0; i < sides; i++)
+                {
+                    float a = Mathf.PI * 2 * i / sides;
+                    Vector3 way = across * Mathf.Cos(a) + up * Mathf.Sin(a);
+                    Point(center + way * (ring == 0 ? radius * 0.4f : radius), ring == 0 ? strength * 0.42f : 0);
+                }
+            }
+            for (int i = 0; i < sides; i++)
+            {
+                int j = (i + 1) % sides;
+                tris.Add(middle); tris.Add(first + j); tris.Add(first + i);
+                tris.Add(first + i); tris.Add(first + j); tris.Add(first + sides + i);
+                tris.Add(first + j); tris.Add(first + sides + j); tris.Add(first + sides + i);
+            }
+        }
+
+        /// <summary>A pool of light lying flat.</summary>
+        public void Pool(Vector3 center, float radius, float strength)
+        {
+            Disc(center, Vector3.right, Vector3.forward, radius, strength);
+        }
+
+        /// <summary>A glow that looks round from every side: three patches of light at right angles.</summary>
+        public void Ball(Vector3 center, float radius, float strength)
+        {
+            Disc(center, Vector3.right, Vector3.forward, radius, strength);
+            Disc(center, Vector3.right, Vector3.up, radius, strength);
+            Disc(center, Vector3.forward, Vector3.up, radius, strength);
+        }
+
+        /// <summary>
+        /// The light a headlamp throws on the road: it starts at a point, heads along +x,
+        /// spreads from one half-width to another, and fades out with distance and to each side.
+        /// </summary>
+        public void Beam(Vector3 from, float length, float nearHalf, float farHalf, float strength)
+        {
+            float[] along = { 0, 0.1f, 0.3f, 0.62f, 1 }, bright = { 0.25f, 1, 0.8f, 0.36f, 0 };
+            int before = -1;
+            for (int i = 0; i < along.Length; i++)
+            {
+                float x = from.x + length * along[i], half = Mathf.Lerp(nearHalf, farHalf, along[i]);
+                int left = Point(new Vector3(x, from.y, from.z + half), 0);
+                Point(new Vector3(x, from.y, from.z), strength * bright[i]);
+                Point(new Vector3(x, from.y, from.z - half), 0);
+                if (before >= 0)
+                {
+                    for (int k = 0; k < 2; k++)
+                    {
+                        tris.Add(before + k); tris.Add(before + k + 1); tris.Add(left + k);
+                        tris.Add(before + k + 1); tris.Add(left + k + 1); tris.Add(left + k);
+                    }
+                }
+                before = left;
+            }
+        }
+
+        /// <summary>A band on the ground between two lines, with one strength along the first and another along the second.</summary>
+        public void Band(IList<Vec> inner, IList<Vec> outer, float height, Color innerColor, Color outerColor)
+        {
+            int first = verts.Count;
+            for (int i = 0; i < inner.Count; i++)
+            {
+                verts.Add(MeshKit.ToWorld(inner[i].X, inner[i].Y, height));
+                colors.Add(innerColor);
+                verts.Add(MeshKit.ToWorld(outer[i].X, outer[i].Y, height));
+                colors.Add(outerColor);
+            }
+            for (int i = 0; i + 1 < inner.Count; i++)
+            {
+                int k = first + i * 2;
+                tris.Add(k); tris.Add(k + 1); tris.Add(k + 2);
+                tris.Add(k + 1); tris.Add(k + 3); tris.Add(k + 2);
+            }
+        }
+
+        public Mesh Build()
+        {
+            var mesh = new Mesh();
+            if (verts.Count > 65000) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.SetVertices(verts);
+            mesh.SetColors(colors);
+            mesh.SetTriangles(tris, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+    }
+
+    /// <summary>Collects boxes, each anywhere and turned any way, into one mesh: lamp posts, for one.</summary>
+    public sealed class SolidBuilder
+    {
+        private readonly List<Vector3> verts = new List<Vector3>();
+        private readonly List<int> tris = new List<int>();
+        private static readonly int[][] Faces =
+        {
+            new[] { 0, 3, 2, 1 }, new[] { 5, 6, 7, 4 }, new[] { 4, 7, 3, 0 },
+            new[] { 1, 2, 6, 5 }, new[] { 3, 7, 6, 2 }, new[] { 4, 0, 1, 5 },
+        };
+
+        public bool Empty => verts.Count == 0;
+
+        public void Box(Vector3 center, Vector3 size, Quaternion turn)
+        {
+            float x = size.x / 2, y = size.y / 2, z = size.z / 2;
+            Vector3[] c =
+            {
+                new Vector3(-x, -y, -z), new Vector3(x, -y, -z), new Vector3(x, y, -z), new Vector3(-x, y, -z),
+                new Vector3(-x, -y, z), new Vector3(x, -y, z), new Vector3(x, y, z), new Vector3(-x, y, z),
+            };
+            foreach (int[] f in Faces)
+            {
+                int b = verts.Count;
+                foreach (int i in f) verts.Add(center + turn * c[i]);
+                tris.AddRange(new[] { b, b + 1, b + 2, b, b + 2, b + 3 });
+            }
+        }
+
+        public Mesh Build()
+        {
+            var mesh = new Mesh();
+            if (verts.Count > 65000) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.SetVertices(verts);
+            mesh.SetTriangles(tris, 0);
+            mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             return mesh;
         }

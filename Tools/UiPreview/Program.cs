@@ -252,13 +252,51 @@ internal sealed class PenScene
             svg.Append("<polyline points='" + pts + "' fill='none' stroke='" + (road.Type.OneWay ? "#f1f1ec" : "#efbd2e") + "' stroke-width='1' stroke-dasharray='" + (road.Type.OneWay ? "6 8" : "none") + "'/>");
         }
         Ghost g = Pen.Ghost;
-        for (int i = 0; i + 2 < g.Tris.Count; i += 3)
+        // Each triangle in one flat color: where its corners differ (a glow fading out) it takes their average, which is close enough here.
+        Action<List<Vec>, List<uint>, List<int>> triangles = (points, colors, tris) =>
         {
-            uint c = g.Colors[g.Tris[i]];
-            svg.Append("<polygon points='" + at(g.Points[g.Tris[i]]) + " " + at(g.Points[g.Tris[i + 1]]) + " " + at(g.Points[g.Tris[i + 2]]) + "' fill='rgb(" + ((c >> 16) & 255) + "," + ((c >> 8) & 255) + "," + (c & 255) + ")' fill-opacity='" + ((c >> 24) / 255.0).ToString("0.##", CultureInfo.InvariantCulture) + "'/>");
+            for (int i = 0; i + 2 < tris.Count; i += 3)
+            {
+                uint c = colors[tris[i]];
+                double alpha = ((colors[tris[i]] >> 24) + (colors[tris[i + 1]] >> 24) + (colors[tris[i + 2]] >> 24)) / 3.0 / 255;
+                svg.Append("<polygon points='" + at(points[tris[i]]) + " " + at(points[tris[i + 1]]) + " " + at(points[tris[i + 2]]) + "' fill='rgb(" + ((c >> 16) & 255) + "," + ((c >> 8) & 255) + "," + (c & 255) + ")' fill-opacity='" + alpha.ToString("0.##", CultureInfo.InvariantCulture) + "'/>");
+            }
+        };
+        triangles(g.Points, g.Colors, g.Tris);
+        // The arrows that run along the road, caught at one moment.
+        g.Run(0.7);
+        triangles(g.RunPoints, g.RunColors, g.RunTris);
+        // The markers standing at the ends: in the game they are posts with a ball of light on top, seen here from straight above the ground they stand on.
+        Func<Vec, double[]> spot = p => new[] { w / 2 + (p.X - Center.X) * Zoom, h / 2 - (p.Y - Center.Y) * Zoom };
+        foreach (Ghost.Post post in g.Posts)
+        {
+            double[] at0 = spot(post.At);
+            double tall = (post.Held ? 1.25 : 1) * 34, round = (post.Held ? 1.25 : 1) * 5.5;
+            string ink = post.Good ? "#8df7e2" : "#ff8e7e";
+            svg.Append("<line x1='" + N(at0[0]) + "' y1='" + N(at0[1]) + "' x2='" + N(at0[0]) + "' y2='" + N(at0[1] - tall) + "' stroke='#f4f8f8' stroke-width='1.4'/>");
+            svg.Append("<circle cx='" + N(at0[0]) + "' cy='" + N(at0[1] - tall) + "' r='" + N(round * 2.4) + "' fill='" + ink + "' fill-opacity='.28'/>");
+            svg.Append("<circle cx='" + N(at0[0]) + "' cy='" + N(at0[1] - tall) + "' r='" + N(round) + "' fill='" + ink + "'/>");
         }
         svg.Append("</svg>");
-        if (Pen.Note.Length > 0)
+        foreach (Ghost.Label say in g.Labels)
+        {
+            double[] at0 = spot(say.At);
+            svg.Append("<div style='left:" + N(at0[0]) + "px;top:" + N(at0[1] - 44) + "px;transform:translateX(-50%);height:22px;padding:0 9px;border-radius:11px;border:1.2px solid rgba(94,224,192,.8);display:flex;align-items:center;white-space:nowrap;font-size:11px;font-weight:bold;color:#5ee0c0;background:rgba(20,26,30,.92)'>" + System.Net.WebUtility.HtmlEncode(say.Text) + "</div>");
+        }
+        if (Pen.Price.Length > 0)
+        {
+            // The price tag: on the end in hand when there is one, otherwise in the corner (in the game, beside the pointer).
+            string where = "left:10px;top:" + (h - 58) + "px;";
+            if (Pen.TagPlaced)
+            {
+                double[] at0 = spot(Pen.TagAt);
+                where = "left:" + N(Math.Max(60, Math.Min(w - 60, at0[0]))) + "px;top:" + N(Math.Max(4, at0[1] - 34 * 1.25 - 5.5 * 1.25 * 1.7 - 54)) + "px;transform:translateX(-50%);";
+            }
+            svg.Append("<div style='" + where + "height:48px;padding:5px 13px;border-radius:12px;white-space:nowrap;color:#10161a;background:#fff;box-shadow:0 2px 0 rgba(0,0,0,.25)'>"
+                + "<div style='position:static;font-size:18px;font-weight:bold;line-height:22px'>" + System.Net.WebUtility.HtmlEncode(Pen.Price) + "</div>"
+                + "<div style='position:static;font-size:11px;line-height:16px;color:#4b5861'>" + System.Net.WebUtility.HtmlEncode(Pen.Detail) + "</div></div>");
+        }
+        else if (Pen.Note.Length > 0)
         {
             svg.Append("<div style='left:10px;top:" + (h - 36) + "px;height:26px;padding:0 10px;border-radius:9px;display:flex;align-items:center;white-space:nowrap;font-size:12px;color:#e7edf0;background:" + (Pen.NoteBad ? "rgba(163,41,32,.95)" : "rgba(20,26,30,.95)") + "'>" + System.Net.WebUtility.HtmlEncode(Pen.Note) + "</div>");
         }

@@ -27,7 +27,7 @@ namespace Traffic.Lab
         private readonly SignCard signCard = new SignCard();
         private GuiSurface surface;
         private Texture2D white;
-        private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint;
+        private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint, tagPrice, tagDetail, tagJoin;
         private Vector2 labScroll;
         /// <summary>The right button is down, to drag the view; the middle button is down, to turn it.</summary>
         private bool panning, turning;
@@ -85,6 +85,13 @@ namespace Traffic.Lab
             buttonOn.normal.textColor = buttonOn.hover.textColor = buttonOn.active.textColor = buttonOn.focused.textColor = Accent;
             hint = new GUIStyle(label) { wordWrap = true, fontSize = 12 };
             hint.normal.textColor = Dim;
+            // The price tag on the road being drawn is white, so its words are dark.
+            tagPrice = new GUIStyle(label) { fontSize = 18, fontStyle = FontStyle.Bold };
+            tagPrice.normal.textColor = MeshKit.Hex(0x10161a);
+            tagDetail = new GUIStyle(label) { fontSize = 11 };
+            tagDetail.normal.textColor = MeshKit.Hex(0x4b5861);
+            tagJoin = new GUIStyle(tagDetail) { fontStyle = FontStyle.Bold };
+            tagJoin.normal.textColor = Accent;
         }
 
         private void OnGUI()
@@ -96,6 +103,15 @@ namespace Traffic.Lab
             GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1));
             float w = Screen.width / scale;
             float h = Screen.height / scale;
+
+            // First of all, under everything else on screen: the corners of the picture a little darker than its middle.
+            if (e.type == EventType.Repaint)
+            {
+                if (vignette == null) vignette = Vignette();
+                GUI.color = new Color(1, 1, 1, Mathf.Lerp(0.3f, 0.5f, dusk));
+                GUI.DrawTexture(new Rect(0, 0, w, h), vignette);
+                GUI.color = Color.white;
+            }
 
             if (showLabels && !building && e.type == EventType.Repaint) DrawTags(scale);
 
@@ -191,9 +207,47 @@ namespace Traffic.Lab
             if (e.type == EventType.Repaint) DrawPlaceNames(scale);
             if (level != null && stars > 0 && !resultShown) DrawResult(w, h);
 
-            // Beside the pointer while a road is being drawn: how long it is and what it costs,
-            // or, in red, why it cannot be built there.
-            if (building && !overDock && !overCard && pen.Note.Length > 0)
+            // On the ground while a road is being drawn: a few words at each place it will make an intersection.
+            if (building && e.type == EventType.Repaint)
+            {
+                foreach (Ghost.Label say in pen.Ghost.Labels)
+                {
+                    Vector3 p = cam.WorldToScreenPoint(MeshKit.ToWorld(say.At.X, say.At.Y, 1));
+                    if (p.z <= 0) continue;
+                    Vector2 size = tagDetail.CalcSize(new GUIContent(say.Text));
+                    float reach = (float)(pen.Ghost.AtLeast(8, 14) / MetersPerPixel) / scale;
+                    var r = new Rect(p.x / scale - size.x / 2 - 9, (Screen.height - p.y) / scale - reach - 30, size.x + 18, 22);
+                    surface.Fill(r.x, r.y, r.width, r.height, 11, 0xEB141A1E);
+                    surface.Stroke(r.x, r.y, r.width, r.height, 11, 1.2, 0xCC5EE0C0);
+                    GUI.Label(new Rect(r.x + 9, r.y + 3, size.x + 4, 16), say.Text, tagJoin);
+                }
+            }
+
+            // While a road is being drawn: its price on a tag, riding on the end in hand, with what the
+            // money buys under it. Where there is no price, a note beside the pointer: in red, why it cannot be built.
+            if (building && !overDock && !overCard && pen.Price.Length > 0)
+            {
+                Vector2 price = tagPrice.CalcSize(new GUIContent(pen.Price)), detail = tagDetail.CalcSize(new GUIContent(pen.Detail));
+                float wide = Mathf.Max(price.x, detail.x) + 26, tall = pen.Detail.Length > 0 ? 48 : 32;
+                var r = new Rect(mouse.x + 18, mouse.y + 16, wide, tall);
+                if (pen.TagPlaced)
+                {
+                    // Just above the ball on top of the marker at that end.
+                    float above = MarkerHeight(true) + (float)pen.Ghost.AtLeast(1.0, 5.5) * 1.7f;
+                    Vector3 p = cam.WorldToScreenPoint(MeshKit.ToWorld(pen.TagAt.X, pen.TagAt.Y, above));
+                    if (p.z > 0) r = new Rect(p.x / scale - wide / 2, (Screen.height - p.y) / scale - tall - 6, wide, tall);
+                }
+                r.x = Mathf.Clamp(r.x, 8, w - wide - 8);
+                r.y = Mathf.Clamp(r.y, 8, (float)dock.Top - tall - 8);
+                if (e.type == EventType.Repaint)
+                {
+                    surface.Fill(r.x, r.y + 2, r.width, r.height, 12, 0x40000000);
+                    surface.Fill(r.x, r.y, r.width, r.height, 12, 0xFFFFFFFF);
+                }
+                GUI.Label(new Rect(r.x + 13, r.y + 5, wide - 20, 24), pen.Price, tagPrice);
+                if (pen.Detail.Length > 0) GUI.Label(new Rect(r.x + 13, r.y + 27, wide - 20, 16), pen.Detail, tagDetail);
+            }
+            else if (building && !overDock && !overCard && pen.Note.Length > 0)
             {
                 Vector2 size = label.CalcSize(new GUIContent(pen.Note));
                 var r = new Rect(Mathf.Max(8, Mathf.Min(mouse.x + 18, w - size.x - 28)), mouse.y + 16, size.x + 20, 26);
@@ -220,6 +274,35 @@ namespace Traffic.Lab
 
             bool overUi = overDock || overCard || top.Contains(mouse) || lab.Contains(mouse) || (car != null && inspector.Contains(mouse));
             HandleSceneInput(e, overUi, scale);
+        }
+
+        private Texture2D vignette;
+
+        /// <summary>
+        /// A picture that is clear in the middle and darkens toward its corners. Laid over the
+        /// view it draws the eye to the middle of the screen, as a camera lens does.
+        /// </summary>
+        private static Texture2D Vignette()
+        {
+            const int n = 128;
+            var pixels = new Color32[n * n];
+            for (int y = 0; y < n; y++)
+            {
+                for (int x = 0; x < n; x++)
+                {
+                    float dx = (x + 0.5f) / n * 2 - 1, dy = (y + 0.5f) / n * 2 - 1;
+                    // 0 in the middle, 1 in the corners; nothing at all until over halfway out.
+                    float r = Mathf.Sqrt(dx * dx + dy * dy) / 1.4142f;
+                    float dark = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(0.52f, 1.02f, r));
+                    pixels[y * n + x] = new Color32(6, 12, 18, (byte)(dark * dark * 255));
+                }
+            }
+            var t = new Texture2D(n, n, TextureFormat.RGBA32, false);
+            t.SetPixels32(pixels);
+            t.wrapMode = TextureWrapMode.Clamp;
+            t.filterMode = FilterMode.Bilinear;
+            t.Apply();
+            return t;
         }
 
         /// <summary>Something on the toolbar was clicked.</summary>
@@ -869,6 +952,7 @@ namespace Traffic.Lab
                         else if (e.keyCode == KeyCode.G) pen.Grid = RoadPen.GridFeet[(System.Array.IndexOf(RoadPen.GridFeet, pen.Grid) + 1) % RoadPen.GridFeet.Length];
                     }
                     else if (e.keyCode == KeyCode.Space) paused = !paused;
+                    else if (e.keyCode == KeyCode.K) SetNight(!night);
                     else if (e.keyCode == KeyCode.Period)
                     {
                         paused = true;

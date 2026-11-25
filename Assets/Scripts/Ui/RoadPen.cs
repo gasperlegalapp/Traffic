@@ -136,6 +136,14 @@ namespace Traffic.Ui
         /// <summary>A few words to show beside the pointer: the length and price of the road, or why it cannot be built.</summary>
         public string Note = "";
         public bool NoteBad;
+        /// <summary>
+        /// When what the next click would do has a price: the price, and a few words on what it
+        /// buys ("545 ft of street"). They go on a tag, in place of the note. Price is empty otherwise.
+        /// </summary>
+        public string Price = "", Detail = "";
+        /// <summary>Where on the map the tag belongs (the end of the road in hand), when TagPlaced; otherwise it goes beside the pointer.</summary>
+        public Vec TagAt;
+        public bool TagPlaced;
         /// <summary>Goes up each time the picture changes.</summary>
         public int Version { get; private set; }
 
@@ -777,13 +785,20 @@ namespace Traffic.Ui
             Ghost.Clear();
             Note = "";
             NoteBad = false;
+            Price = "";
+            Detail = "";
+            TagPlaced = false;
             if (map == null) return;
             GridPicture();
             Marks();
             if (!hasPointer)
             {
                 // Over the toolbar or a panel: only where the half-drawn road starts.
-                if (hasStart && tool == Road) Ghost.Pin(start, true, false);
+                if (hasStart && tool == Road)
+                {
+                    Ghost.Pin(start, true, false);
+                    Ghost.Stand(start, true, false);
+                }
                 if (Picking) LanePicture();
                 return;
             }
@@ -891,6 +906,20 @@ namespace Traffic.Ui
             double change = (type.CostPerMeter - s.Type.CostPerMeter) * Ghost.Length(line) * EditableMap.CostTimes(s.Level);
             Note = problem ?? (change >= 0 ? "+" : "−") + Money(Math.Abs(change));
             NoteBad = problem != null;
+            if (problem == null) Tag(Note, type.Name);
+        }
+
+        /// <summary>Put a price on the tag, with a few words on what it buys.</summary>
+        private void Tag(string price, string detail)
+        {
+            Price = price;
+            Detail = detail;
+        }
+
+        /// <summary>A name as it reads in the middle of a sentence.</summary>
+        private static string Lower(string name)
+        {
+            return name.Length == 0 ? name : char.ToLowerInvariant(name[0]) + name.Substring(1);
         }
 
         /// <summary>How near a road the pointer has to be to work on its lanes.</summary>
@@ -923,6 +952,7 @@ namespace Traffic.Ui
                 int road = map.NearestSegment(laneFrom, LaneReach, out on);
                 Note = problem ?? Ft(length) + "   " + Money(length * EditableMap.LanePrice(map.Segments[road].Type));
                 NoteBad = problem != null;
+                if (problem == null) Tag(Money(length * EditableMap.LanePrice(map.Segments[road].Type)), Ft(length) + " of extra lane");
                 return;
             }
             Vec[] held = picked ? map.LaneUnder(pickedAt) : null;
@@ -976,6 +1006,7 @@ namespace Traffic.Ui
             double change = moved.Cost() - map.Cost();
             Note = problem ?? (change >= 0 ? "+" : "−") + Money(Math.Abs(change));
             NoteBad = problem != null;
+            if (problem == null) Tag(Note, change >= 0 ? "more road" : "less road");
         }
 
         /// <summary>The roundabout about to be placed: its ring at its real width, with arrows going the way traffic will.</summary>
@@ -985,6 +1016,7 @@ namespace Traffic.Ui
             if (!hasStart)
             {
                 Ghost.Pin(at, true, false);
+                Ghost.Stand(at, true, true);
                 return;
             }
             double radius = Dist(at, start);
@@ -998,8 +1030,10 @@ namespace Traffic.Ui
                 Ghost.Road(circle, ring.Width, true, problem == null);
             }
             Ghost.Pin(start, problem == null, false);
+            Ghost.Stand(start, problem == null, false);
             Note = problem ?? Ft(radius * 2) + " across   " + Money(2 * Math.PI * radius * ring.CostPerMeter);
             NoteBad = problem != null;
+            if (problem == null) Tag(Money(2 * Math.PI * radius * ring.CostPerMeter), "Roundabout, " + Ft(radius * 2) + " across");
         }
 
         /// <summary>The road about to be placed: straight to the pointer, or swept round to it.</summary>
@@ -1013,6 +1047,7 @@ namespace Traffic.Ui
             if (!hasStart)
             {
                 Ghost.Pin(end, true, caught);
+                Ghost.Stand(end, true, true);
                 return;
             }
             double heading = 0;
@@ -1041,6 +1076,7 @@ namespace Traffic.Ui
                     Ghost.Arrowhead(end, way, head, Ghost.GoodEdge);
                 }
                 Ghost.Pin(start, true, false);
+                Ghost.Stand(start, true, false);
                 return;
             }
 
@@ -1085,11 +1121,18 @@ namespace Traffic.Ui
                         caught = true;
                     }
                 }
-                // A ring wherever it meets a road on the way: an intersection will be made there.
+                // A pad of light wherever it meets a road on the way: an intersection will be made there.
+                // It says so too, unless there are so many that the words would crowd the picture.
+                var pads = new List<Vec>();
                 foreach (Vec place in laid ? checkedMeets : map.WouldCross(path, level))
                 {
                     if (Dist(place, start) < EditableMap.SnapNode || Dist(place, end) < EditableMap.SnapNode) continue;
-                    Ghost.Ring(place, Ghost.AtLeast(type.Width * 0.5 + 1.2, 8), Ghost.AtLeast(0.5, 2.4), good ? Ghost.GoodEdge : Ghost.BadEdge);
+                    pads.Add(place);
+                }
+                foreach (Vec place in pads)
+                {
+                    Ghost.Pad(place, Ghost.AtLeast(type.Width * 0.5 + 1.2, 8), good);
+                    if (good && pads.Count <= 3) Ghost.Say(place, "New intersection", true);
                 }
                 if (good)
                 {
@@ -1097,6 +1140,10 @@ namespace Traffic.Ui
                     if (curved && EditableMap.IsCurve(start, via, end)) Note += "   radius " + Ft(EditableMap.CurveRadius(start, via, end));
                     Note += "   " + Money(cost);
                     if (map.OnEdge(end) && !caught) Note += "   to the edge of the map";
+                    string what = Ft(length) + " of " + Lower(RoadType.GroupNames[type.Group]) + (level > 0 ? " on a bridge" : level < 0 ? " in a tunnel" : "");
+                    if (curved && EditableMap.IsCurve(start, via, end)) what += "  ·  radius " + Ft(EditableMap.CurveRadius(start, via, end));
+                    if (map.OnEdge(end) && !caught) what += "  ·  to the edge of the map";
+                    Tag(Money(cost), what);
                 }
             }
             if (!good && reach > 1)
@@ -1106,6 +1153,11 @@ namespace Traffic.Ui
             }
             Ghost.Pin(from, good || reach <= 1, false);
             Ghost.Pin(end, good || reach <= 1, caught);
+            Ghost.Stand(from, good || reach <= 1, false);
+            Ghost.Stand(end, good || reach <= 1, true);
+            // The price rides on the end in hand.
+            TagAt = end;
+            TagPlaced = Price.Length > 0;
         }
     }
 }
