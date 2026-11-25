@@ -193,8 +193,9 @@ internal static class Program
         {
             var card = new SignCard { Intersection = i < 2, Now = i == 0 ? Control.Light : Control.Stop, Automatic = i == 0, Mph = i == 1 ? 35 : i == 2 ? 55 : 40, Posted = i >= 1 };
             s.OffsetY = (states.Length - 3) * h;
-            card.Layout(190 + i * 400, 330, w, 300);
-            card.Draw(s, i == 0 ? 120 : i == 1 ? 520 : 870, i == 0 ? 20 : i == 1 ? 110 : 155);
+            // The two tall ones either side of the toolbar, the short one above it.
+            card.Layout(i == 0 ? 174 : i == 1 ? 1098 : 640, i == 2 ? 270 : 372, w, h);
+            card.Draw(s, i == 0 ? 100 : i == 1 ? 1020 : 560, i == 0 ? 82 : i == 1 ? 168 : 150);
         }
         // Every icon, large, to check the drawing.
         s.OffsetY = states.Length * h;
