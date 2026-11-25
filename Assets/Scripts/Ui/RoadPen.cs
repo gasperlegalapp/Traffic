@@ -226,8 +226,9 @@ namespace Traffic.Ui
                 if (shape == Roundabout) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
                 if (!hasStart)
                 {
-                    return map == null || map.Segments.Count == 0 ? "Click where the road starts. An open road end is where traffic comes in."
-                        : "Click where the road starts. Touch or cross another road to make an intersection.";
+                    if (map != null && map.Segments.Count > 0) return "Click where the road starts. Touch or cross another road to make an intersection.";
+                    return map != null && map.Bound > 0 ? "Click where the road starts. Run a road to the edge of the map, the broken line, to bring traffic in."
+                        : "Click where the road starts. An open road end is where traffic comes in.";
                 }
                 if (shape == Straight) return "Click where the road ends. Right-click to stop.";
                 double heading;
@@ -427,6 +428,17 @@ namespace Traffic.Ui
 
         // ---------------------------------------------------------------- snapping
 
+        /// <summary>
+        /// On a map with an edge, a point at the edge or beyond it lands exactly on it: that is
+        /// how a road is run off the map, to bring traffic in.
+        /// </summary>
+        private Vec ToEdge(Vec p)
+        {
+            if (map.Bound <= 0) return p;
+            double near = map.Bound - Math.Max(6, Ghost.Pixel * 10);
+            return new Vec(Math.Abs(p.X) > near ? Math.Sign(p.X) * map.Bound : p.X, Math.Abs(p.Y) > near ? Math.Sign(p.Y) * map.Bound : p.Y);
+        }
+
         private Vec OnGrid(Vec p)
         {
             return snapGrid ? new Vec(Math.Round(p.X / GridStep) * GridStep, Math.Round(p.Y / GridStep) * GridStep) : p;
@@ -442,6 +454,7 @@ namespace Traffic.Ui
         {
             lined = false;
             heading = 0;
+            p = ToEdge(p);
             // From far out a road is only a few pixels wide, so reach for it by what the eye sees as near.
             int node = map.NodeAt(p, NodeReach);
             if (node >= 0) return map.Nodes[node];
@@ -622,8 +635,13 @@ namespace Traffic.Ui
                 {
                     LaneBand(there, false);
                     Note = "Click to remove this lane.";
+                    return;
                 }
-                else if (map.NearestSegment(pointer, LaneReach, out on) >= 0) Ghost.Pin(on, true, true);
+                // The lane the pointer is on, lit up for its whole length: the new lane will go outside the lanes on that side.
+                Vec[] under = map.LaneUnder(pointer);
+                if (under == null) return;
+                LaneBand(under, true);
+                Note = "Click where a new lane should start, on this side of the road.";
                 return;
             }
             string problem = Checked(pointer, () => map.TryAddLane(start, pointer, false));
@@ -771,6 +789,7 @@ namespace Traffic.Ui
                     Note = (level > 0 ? "Bridge   " : level < 0 ? "Tunnel   " : "") + Ft(length);
                     if (curved && EditableMap.IsCurve(start, via, end)) Note += "   radius " + Ft(EditableMap.CurveRadius(start, via, end));
                     Note += "   " + Money(cost);
+                    if (map.OnEdge(end) && !caught) Note += "   to the edge of the map";
                 }
             }
             if (!good && reach > 1)

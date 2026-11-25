@@ -105,6 +105,8 @@ namespace Traffic.Lab
         // ------------------------------------------------------------ drawing roads
 
         private const string SaveKey = "traffic.drawing";
+        /// <summary>How far the player's own map reaches from its middle, each way, meters.</summary>
+        private const double OwnMapHalf = 600;
         /// <summary>The puzzle being played, or null in the lab or on the player's own map.</summary>
         private Level level;
         /// <summary>How many of the level's journeys the roads so far make possible, and one that is still missing.</summary>
@@ -171,6 +173,11 @@ namespace Traffic.Lab
             undo.Clear();
             redo.Clear();
             drawing = EditableMap.Parse(PlayerPrefs.GetString(SaveKey, ""));
+            // The map has an edge: roads run to it bring traffic in, and roads that stop short are dead ends.
+            // It is set out beyond anything drawn before there was one.
+            double reach = OwnMapHalf;
+            foreach (Vec n in drawing.Nodes) reach = System.Math.Max(reach, System.Math.Ceiling(System.Math.Max(System.Math.Abs(n.X), System.Math.Abs(n.Y)) / 100) * 100);
+            drawing.Bound = reach;
             building = true;
             StopDrawing();
             RebuildDrawing(false);
@@ -255,7 +262,11 @@ namespace Traffic.Lab
         {
             if (!building || from.Count == 0) return;
             to.Add(drawing.Serialize());
-            drawing = EditableMap.Parse(from[from.Count - 1]);
+            // The saved copy holds the roads only: the edge of the map and a level's named places carry over.
+            EditableMap earlier = EditableMap.Parse(from[from.Count - 1]);
+            earlier.Ends = drawing.Ends;
+            earlier.Bound = drawing.Bound;
+            drawing = earlier;
             from.RemoveAt(from.Count - 1);
             StopDrawing();
             SaveDrawing();
@@ -277,7 +288,7 @@ namespace Traffic.Lab
             if (on) return;
             if (level != null && routesJoined < level.RouteCount) Toast("Not every route is joined up yet: nothing can get from " + routeMissing + ".");
             else if (level != null && drawing.Cost() > level.Budget + 0.5) Toast("These roads cost more than the budget, so the level will not count as solved.");
-            else if (world.Entries.Count == 0 && drawing.Segments.Count > 0) Toast("No road runs off the map, so no traffic will arrive. Leave a road end open.");
+            else if (world.Entries.Count == 0 && drawing.Segments.Count > 0) Toast("No road reaches the edge of the map, the broken line, so no traffic will arrive.");
             else if (drawing.Faults().Count > 0) Toast("Traffic cannot get through everywhere. The trouble spots are ringed in red when you build.");
         }
 

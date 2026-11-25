@@ -18,9 +18,9 @@ namespace Traffic.Lab
         private const int Side = 64;
         private const int PaintStart = 32 * Side, PaintSteps = 32, LeafStart = 48 * Side;
 
-        /// <summary>Leaf colors: summer greens, close enough together that the trees read as one color.</summary>
-        private static readonly int[] LeafColors = { 0x467d3a, 0x427737, 0x4b843e };
-        public const int SummerLeaves = 3;
+        /// <summary>Leaf colors: summer greens, close enough together that the trees read as one color. After them, the brown of a trunk.</summary>
+        private static readonly int[] LeafColors = { 0x467d3a, 0x427737, 0x4b843e, 0x5e4630 };
+        public const int SummerLeaves = 3, Bark = 3;
 
         private static ArtFile file;
         private static bool tried;
@@ -333,11 +333,40 @@ namespace Traffic.Lab
             foreach (int i in triangles) tris.Add(first + i);
         }
 
-        /// <summary>A tree: a crown of leaves of a given spread, its top a given height above the ground.</summary>
+        /// <summary>A trunk: a round post, wider at the foot, from the ground up into the leaves.</summary>
+        private void Trunk(Vector3 at, float radius, float height, int seed)
+        {
+            const int sides = 7;
+            float[] up = { 0, 0.07f, 1 }, wide = { 1.55f, 1f, 0.6f };
+            float turn = Rand(seed, 9, 0) * 6.2832f;
+            int first = verts.Count;
+            for (int ring = 0; ring < up.Length; ring++)
+            {
+                for (int k = 0; k <= sides; k++)
+                {
+                    float a = turn + k * 6.2832f / sides, r = radius * wide[ring];
+                    verts.Add(new Vector3(at.x + Mathf.Cos(a) * r, at.y + height * up[ring], at.z + Mathf.Sin(a) * r));
+                    normals.Add(new Vector3(Mathf.Cos(a), 0.15f, Mathf.Sin(a)).normalized);
+                    uvs.Add(new Vector2((ArtKit.Bark + 0.1f + 0.8f * k / sides) / ArtKit.LeafCount, 0.1f + 0.8f * up[ring]));
+                }
+            }
+            for (int ring = 0; ring + 1 < up.Length; ring++)
+            {
+                for (int k = 0; k < sides; k++)
+                {
+                    int low = first + ring * (sides + 1) + k, high = low + sides + 1;
+                    tris.Add(low); tris.Add(high); tris.Add(low + 1);
+                    tris.Add(low + 1); tris.Add(high); tris.Add(high + 1);
+                }
+            }
+        }
+
+        /// <summary>A tree: a trunk, and a crown of leaves of a given spread, its top a given height above the ground.</summary>
         public void Tree(Vector3 at, float spread, float height, int leaf, int seed)
         {
             float span = spread * 2.7f, turn = Rand(seed, 1, 0) * 6.2832f;
             var middle = new Vector3(at.x, at.y + height - spread * 0.62f, at.z);
+            Trunk(at, 0.14f + spread * 0.075f, middle.y - at.y, seed);
             Lobe(middle, spread * 0.82f, 0.8f, 1, seed, at, span, turn, leaf);
             int lobes = 3 + (int)(Rand(seed, 2, 0) * 3);
             for (int k = 0; k < lobes; k++)

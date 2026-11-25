@@ -746,7 +746,7 @@ namespace Traffic.Lab
                     }
                     else if (turning && e.button == 2)
                     {
-                        Swing((pixel.x - lastMouse.x) * 0.006f, (lastMouse.y - pixel.y) * 0.004f);
+                        Swing((pixel.x - lastMouse.x) * 0.0036f, (lastMouse.y - pixel.y) * 0.0024f);
                         lastMouse = pixel;
                     }
                     break;

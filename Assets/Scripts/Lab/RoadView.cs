@@ -580,9 +580,22 @@ namespace Traffic.Lab
             var view = new SignalView { Arm = arm };
 
             // Both poles stand on the right of the road: local +x is the direction of travel
-            // and local +z points left, across the road. The signal pole is across the
-            // intersection from the stop line; the stop sign is beside the stop line.
-            double far = 2 * world.Nodes[arm.Node].Radius;
+            // and local +z points left, across the road. Where a road carries straight on across
+            // the intersection, the signal hangs over the mouth of that road, facing the drivers
+            // it controls, as American signals do. Where none does (the stem of a T, an arm of a
+            // Y) there is nothing over there to hang it on, so it stands at the end of its own
+            // road, just past the stop line. The stop sign is always beside the stop line.
+            Node junction = world.Nodes[arm.Node];
+            double far = 2.2;
+            foreach (Approach other in junction.Arms)
+            {
+                if (other == arm) continue;
+                double off = other.Angle - arm.H;
+                if (System.Math.Abs(System.Math.Atan2(System.Math.Sin(off), System.Math.Cos(off))) > 0.45) continue;
+                // As far along as the middle of that road's mouth.
+                double mx = junction.Pos.X + System.Math.Cos(other.Angle) * junction.Radius - arm.Post.X, my = junction.Pos.Y + System.Math.Sin(other.Angle) * junction.Radius - arm.Post.Y;
+                far = System.Math.Max(far, mx * System.Math.Cos(arm.H) + my * System.Math.Sin(arm.H));
+            }
             view.Heads = new GameObject("Signal");
             view.Heads.transform.SetParent(root, false);
             view.Heads.transform.position = MeshKit.ToWorld(arm.Post.X + System.Math.Cos(arm.H) * far, arm.Post.Y + System.Math.Sin(arm.H) * far);

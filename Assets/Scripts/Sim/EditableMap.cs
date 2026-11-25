@@ -169,8 +169,30 @@ namespace Traffic.Sim
         public List<EditSegment> Segments = new List<EditSegment>();
         /// <summary>Named places at the edge of the map, in a level: where its roads come in.</summary>
         public List<MapEnd> Ends = new List<MapEnd>();
-        /// <summary>In a level: roads may only be built within this distance of the middle, east-west and north-south. 0 for anywhere.</summary>
+        /// <summary>
+        /// Roads may only be built within this distance of the middle, east-west and north-south:
+        /// the edge of the map. A road that runs to the edge brings traffic in and lets it out; a
+        /// road that stops short of it is a dead end, where traffic turns round. 0 for a map with
+        /// no edge, on which any open road end is where traffic comes and goes.
+        /// </summary>
         public double Bound;
+
+        /// <summary>Whether a point is on the edge of the map.</summary>
+        public bool OnEdge(Vec p)
+        {
+            return Bound > 0 && (Math.Abs(p.X) > Bound - 1 || Math.Abs(p.Y) > Bound - 1);
+        }
+
+        /// <summary>
+        /// Whether a point where a single road ends is a dead end: on a map with an edge, any
+        /// road end that is not on the edge and is not one of a level's named ways in.
+        /// </summary>
+        private bool DeadEndAt(int node)
+        {
+            if (Bound <= 0 || OnEdge(Nodes[node])) return false;
+            foreach (MapEnd end in Ends) if (Dist(end.At, Nodes[node]) < 2) return false;
+            return true;
+        }
 
         public EditableMap Clone()
         {
@@ -536,7 +558,9 @@ namespace Traffic.Sim
 
         /// <summary>
         /// Where a point lies on the roads, for work on their lanes: the piece, how far along it
-        /// (0 to 1), and whether it is on the side of the traffic running from A to B.
+        /// (0 to 1), whether it is on the side of the traffic running from A to B, and how far
+        /// out it is from the line the road is drawn along, to the right of the traffic on that
+        /// side (on a one-way road, which lies across its line, that is negative on the left half).
         /// </summary>
         private bool OnRoad(Vec p, out int segment, out double t, out bool forward, out double across)
         {
@@ -548,9 +572,42 @@ namespace Traffic.Sim
             EditSegment s = Segments[segment];
             Vec a = PointAt(s, Math.Max(t - 0.01, 0)), b = PointAt(s, Math.Min(t + 0.01, 1));
             // To the right of the way from A to B is the side of the traffic going that way.
-            forward = s.Type.OneWay || (b.X - a.X) * (p.Y - on.Y) - (b.Y - a.Y) * (p.X - on.X) <= 0;
-            across = Dist(p, on);
+            bool right = (b.X - a.X) * (p.Y - on.Y) - (b.Y - a.Y) * (p.X - on.X) <= 0;
+            forward = s.Type.OneWay || right;
+            across = Dist(p, on) * (s.Type.OneWay && !right ? -1 : 1);
             return true;
+        }
+
+        /// <summary>
+        /// The lane of a road that is under a point, as the line down its middle: the whole of
+        /// it, from one junction or road end to the next, or for an added lane its own length.
+        /// Null if the point is not on a road.
+        /// </summary>
+        public Vec[] LaneUnder(Vec p)
+        {
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return null;
+            EditSegment s = Segments[seg];
+            int lanes = s.Type.OneWay || forward ? s.Type.Forward : s.Type.Backward;
+            if (across > LaneEdge(s.Type, forward))
+            {
+                // Out beyond the ordinary lanes: an added lane, if there is one here, or else the outside lane.
+                List<KeyValuePair<EditSegment, ExtraLane>> added = ExtraParts(p);
+                if (added != null) return LaneLine(added);
+            }
+            int slot = (int)Geo.Clamp(Math.Floor((across - s.Type.Inner) / NetworkBuilder.LaneW), 0, lanes - 1);
+            foreach (Run run in Runs())
+            {
+                int index = run.Pieces.IndexOf(s);
+                if (index < 0) continue;
+                bool withRun = forward != run.Turned[index];
+                var parts = new List<KeyValuePair<EditSegment, ExtraLane>>();
+                for (int i = 0; i < run.Pieces.Count; i++) parts.Add(new KeyValuePair<EditSegment, ExtraLane>(run.Pieces[i], new ExtraLane { Forward = withRun != run.Turned[i], From = 0, To = 1 }));
+                return LaneLine(parts, slot);
+            }
+            return null;
         }
 
         /// <summary>How far from the line a road is drawn along the outside edge of its ordinary lanes is, on one side.</summary>
@@ -647,7 +704,8 @@ namespace Traffic.Sim
             return parts == null || parts.Count == 0 ? null : LaneLine(parts);
         }
 
-        private Vec[] LaneLine(List<KeyValuePair<EditSegment, ExtraLane>> parts)
+        /// <summary>The line down the middle of a lane along parts of a road's pieces: one of its ordinary lanes (0 nearest the middle), or, with no lane given, the place outside them where an added lane goes.</summary>
+        private Vec[] LaneLine(List<KeyValuePair<EditSegment, ExtraLane>> parts, int slot = -1)
         {
             // Each part, run the way its own traffic goes; then the parts in whatever order joins them up.
             var lines = new List<Vec[]>();
@@ -659,7 +717,7 @@ namespace Traffic.Sim
                 var middle = new Vec[steps + 1];
                 for (int k = 0; k <= steps; k++) middle[k] = PointAt(s, x.From + (x.To - x.From) * k / steps);
                 if (!x.Forward) Array.Reverse(middle);
-                lines.Add(Geo.Offset(middle, LaneEdge(s.Type, x.Forward) + NetworkBuilder.LaneW / 2));
+                lines.Add(Geo.Offset(middle, slot < 0 ? LaneEdge(s.Type, x.Forward) + NetworkBuilder.LaneW / 2 : s.Type.Inner + (slot + 0.5) * NetworkBuilder.LaneW));
             }
             var line = new List<Vec>(lines[0]);
             for (int i = 1; i < lines.Count; i++)
@@ -761,8 +819,17 @@ namespace Traffic.Sim
             {
                 foreach (int node in new[] { s.A, s.B })
                 {
-                    // A road end with nothing joined to it is the edge of the map, where traffic comes and goes.
-                    if (roads[node] < 2 || found[node]) continue;
+                    if (found[node]) continue;
+                    if (roads[node] < 2)
+                    {
+                        // A road end with nothing joined to it is the edge of the map, where traffic comes and goes, or a
+                        // dead end, where it turns round: which a one-way road gives it no way to do.
+                        if (!s.Type.OneWay || !DeadEndAt(node)) continue;
+                        faults.Add(new Fault { At = Nodes[node], What = s.B == node ? "A one-way road stops here, so its traffic has nowhere to go. Carry it on to another road, or to the edge of the map."
+                            : "A one-way road starts here from nothing, so no traffic can use it. Start it from another road, or from the edge of the map." });
+                        found[node] = true;
+                        continue;
+                    }
                     bool brings = !s.Type.OneWay || s.B == node, takes = !s.Type.OneWay || s.A == node;
                     if (brings && leave[node] - (takes ? 1 : 0) == 0)
                     {
@@ -1643,8 +1710,9 @@ namespace Traffic.Sim
             }
             foreach (Run run in runs)
             {
-                run.JunctionAtFrom = at[run.From].Count > 1;
-                run.JunctionAtTo = at[run.To].Count > 1;
+                // A dead end's turning place takes up the end of the road as a junction does.
+                run.JunctionAtFrom = at[run.From].Count > 1 || DeadEndAt(run.From);
+                run.JunctionAtTo = at[run.To].Count > 1 || DeadEndAt(run.To);
                 Lay(run, run.JunctionAtFrom, run.JunctionAtTo);
             }
             // In the order their first pieces were drawn, so that the network comes out the same however the walk went.
@@ -1834,6 +1902,7 @@ namespace Traffic.Sim
                 foreach (EditSegment s in Segments) if (s.Ring && (s.A == i || s.B == i)) onRing = true;
                 JunctionMode mode = arms <= 2 || joins[i] != null || onRing ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
                 built[i] = b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
+                if (arms == 1 && DeadEndAt(i)) b.DeadEnd(built[i]);
             }
             foreach (Run run in runs)
             {

@@ -1018,6 +1018,35 @@ namespace Traffic.Tests
         }
 
         [Test]
+        public void ThePointerPicksOutTheLaneItIsOver()
+        {
+            // An avenue with two lanes each way and a median, drawn as two pieces.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(0, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), T("a4"), true));
+            Vec[] inner = map.LaneUnder(P(50, -3)), outer = map.LaneUnder(P(50, -7)), other = map.LaneUnder(P(50, 7));
+            Assert.AreEqual(-(1.5 + 0.5 * NetworkBuilder.LaneW), inner[inner.Length / 2].Y, 0.01, "the eastbound lane next to the median");
+            Assert.AreEqual(-(1.5 + 1.5 * NetworkBuilder.LaneW), outer[outer.Length / 2].Y, 0.01, "the eastbound outside lane");
+            Assert.AreEqual(1.5 + 1.5 * NetworkBuilder.LaneW, other[other.Length / 2].Y, 0.01, "the westbound outside lane");
+            Assert.Less(inner[0].X, -190, "the whole road, not just the piece the pointer is on");
+            Assert.Greater(inner[inner.Length - 1].X, 190);
+            Assert.Greater(other[0].X, 190, "and each runs the way its traffic does");
+            Assert.IsNull(map.LaneUnder(P(50, 80)));
+
+            // A one-way road lies across its line: the left lane is left of it.
+            var oneWay = new EditableMap();
+            Assert.IsNull(oneWay.TryAdd(P(-200, 0), P(200, 0), T("h2"), true));
+            Assert.AreEqual(NetworkBuilder.LaneW / 2, oneWay.LaneUnder(P(0, 2))[5].Y, 0.01);
+            Assert.AreEqual(-NetworkBuilder.LaneW / 2, oneWay.LaneUnder(P(0, -2))[5].Y, 0.01);
+            // An added lane is picked out by itself.
+            Assert.IsNull(oneWay.TryAddLane(P(-50, -3), P(50, -3), true));
+            Vec[] added = oneWay.LaneUnder(P(0, -5.5));
+            Assert.AreEqual(-1.5 * NetworkBuilder.LaneW, added[2].Y, 0.01);
+            Assert.AreEqual(100, added[added.Length - 1].X - added[0].X, 1);
+            Assert.IsNull(oneWay.ExtraLaneAt(P(0, 5.5)), "the far side of a one-way road is not the added lane");
+        }
+
+        [Test]
         public void ALaneRunningToAJunctionBecomesALaneOfIt()
         {
             EditableMap map = Cross(2, 40);
@@ -1151,6 +1180,80 @@ namespace Traffic.Tests
             Grid.Run(sim, 420);
             Assert.AreEqual(0, sim.Crashes);
             Assert.Greater(sim.Left, 80);
+        }
+
+        // ---------------------------------------------------------------- the edge of the map, and dead ends
+
+        [Test]
+        public void ARoadThatStopsShortOfTheEdgeIsADeadEndWhereTrafficTurnsRound()
+        {
+            var map = new EditableMap { Bound = 300 };
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(120, 0), T("s2"), true));
+            Assert.IsNotNull(map.TryAdd(P(0, 0), P(0, 400), T("s2"), false), "nothing can be built beyond the edge");
+            World world = map.ToWorld();
+            Assert.AreEqual(1, world.Entries.Count, "traffic comes in only where the road reaches the edge");
+            Node end = world.Nodes.Single(n => n.DeadEnd);
+            Assert.IsFalse(end.Terminal);
+            Assert.AreEqual(120, end.Pos.X, 0.01);
+            Lane arriving = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Node == end.Id);
+            Assert.IsTrue(arriving.Allows(Turn.Straight), "the way on is round the turning place");
+            Lane round = world.Lanes[arriving.Connectors[(int)Turn.Straight]];
+            Assert.Greater(round.Length, 25, "a proper loop, not a turn on the spot");
+            double tightest = double.PositiveInfinity;
+            for (double d = 2; d + 2 <= round.Length; d += 1) tightest = Math.Min(tightest, Geo.Circumradius(round.Path.At(d - 2).Point, round.Path.At(d).Point, round.Path.At(d + 2).Point));
+            Assert.Greater(tightest, 5, "nowhere tighter than a car can turn");
+            Assert.Greater(end.Box.Count, 10, "with pavement under it");
+
+            var sim = new Simulation(world, 3);
+            sim.ArrivalsPerMinute = 8;
+            int roundIt = 0;
+            Grid.Run(sim, 300, () =>
+            {
+                foreach (Car c in sim.Cars) if (c.Lane == round.Id) roundIt++;
+            });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(roundIt, 0, "cars go round");
+            Assert.Greater(sim.Left, 10, "and leave the way they came");
+
+            // With no edge to the map, an open road end is still where traffic comes and goes.
+            map.Bound = 0;
+            World open = map.ToWorld();
+            Assert.AreEqual(2, open.Entries.Count);
+            Assert.AreEqual(0, open.Nodes.Count(n => n.DeadEnd));
+        }
+
+        [Test]
+        public void AWideRoadAndAShortStubCanBothEndInATurningPlace()
+        {
+            var map = new EditableMap { Bound = 300 };
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(150, 0), T("a4"), true));
+            // A stub too short to give up any room: its turning place goes beyond its end.
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 40), T("s2"), true));
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count(n => n.DeadEnd));
+            Node wide = world.Nodes.Single(n => n.DeadEnd && n.Pos.X > 100);
+            Assert.AreEqual(2, world.Lanes.Count(l => l.Kind == LaneKind.Connector && l.Node == wide.Id), "each lane has its own way round");
+            var sim = new Simulation(world, 5);
+            sim.ArrivalsPerMinute = 14;
+            Grid.Run(sim, 400);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 20);
+        }
+
+        [Test]
+        public void AOneWayRoadCannotEndInADeadEnd()
+        {
+            var map = new EditableMap { Bound = 300 };
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(100, 0), T("s1"), true));
+            Assert.AreEqual(1, map.Faults().Count);
+            StringAssert.Contains("nowhere to go", map.Faults()[0].What);
+            map.ToWorld();
+            // Run on to the edge it is a through road, and nothing is wrong.
+            Assert.IsNull(map.TryAdd(P(100, 0), P(300, 40), T("s1"), true));
+            Assert.AreEqual(0, map.Faults().Count);
+            // A two-way dead end is no fault at all.
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 150), T("s2"), true));
+            Assert.AreEqual(0, map.Faults().Count);
         }
 
         // ---------------------------------------------------------------- levels

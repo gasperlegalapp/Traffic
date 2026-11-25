@@ -169,7 +169,9 @@ namespace Traffic.Sim
         public bool Controlled => Arms.Count > 2 && DefaultMode != JunctionMode.Free;
 
         /// <summary>The edge of the map: vehicles leave here and new ones arrive.</summary>
-        public bool Terminal => Arms.Count == 1;
+        public bool Terminal => Arms.Count == 1 && !DeadEnd;
+        /// <summary>A road that simply stops, with a place to turn round: traffic that drives in comes back out.</summary>
+        public bool DeadEnd;
     }
 
     public sealed class Strip
