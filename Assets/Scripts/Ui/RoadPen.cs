@@ -41,6 +41,7 @@ namespace Traffic.Ui
             set
             {
                 map = value;
+                mapChanges++;
                 Cancel();
             }
         }
@@ -164,7 +165,9 @@ namespace Traffic.Ui
         /// <summary>Whether the picked lane is one added along part of its road, which Remove takes away by itself.</summary>
         public bool PickedIsAdded => picked && map.ExtraLaneAt(pickedAt) != null;
 
-        private int turnsStamp = -1;
+        private string turnsFor;
+        /// <summary>Goes up each time this pen changes the map, or is given another.</summary>
+        private int mapChanges;
         private bool turnsThere;
         private bool[] turnsExist = new bool[3], turnsMay = new bool[3];
 
@@ -174,10 +177,11 @@ namespace Traffic.Ui
         /// </summary>
         public bool PickedTurns(out bool[] exist, out bool[] may)
         {
-            if (turnsStamp != stamp)
+            // Finding this out means building the network, so it is done once and kept until the map or the pick changes.
+            string now = picked ? pickedAt.X + "," + pickedAt.Y + "," + map.Segments.Count + "," + mapChanges : "";
+            if (turnsFor != now)
             {
-                // Finding this out means building the network, so it is done once and kept until something changes.
-                turnsStamp = stamp;
+                turnsFor = now;
                 turnsThere = picked && map.LaneTurns(pickedAt, out turnsExist, out turnsMay);
             }
             exist = turnsExist;
@@ -191,6 +195,7 @@ namespace Traffic.Ui
             bool[] exist, may;
             refused = !PickedTurns(out exist, out may) ? "That lane does not lead to an intersection." : map.TrySetTurn(pickedAt, (Turn)way, !may[way], true);
             stamp++;
+            mapChanges++;
             return refused == null;
         }
 
@@ -199,6 +204,7 @@ namespace Traffic.Ui
         {
             refused = !picked ? "Pick a lane first." : PickedIsMiddle ? "Pick a lane on the side you want another lane on." : map.TryChangeLanes(pickedAt, 1, true);
             stamp++;
+            mapChanges++;
             return refused == null;
         }
 
@@ -212,6 +218,7 @@ namespace Traffic.Ui
         {
             refused = picked ? map.TrySetMiddleLane(pickedAt, true, true) : "Pick a lane first.";
             stamp++;
+            mapChanges++;
             return refused == null;
         }
 
@@ -538,6 +545,7 @@ namespace Traffic.Ui
                 if (grabMoved)
                 {
                     refused = map.TryAddLane(laneFrom, laneTo, true);
+                    mapChanges++;
                     return refused == null;
                 }
                 // A click: pick the lane there. A click off the road lets go of the one picked.
