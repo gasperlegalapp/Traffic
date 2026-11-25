@@ -142,6 +142,7 @@ internal static class Program
         road("Avenue", 2, 2, true, "40 mph.  $6 a meter.  58 ft wide.\nA grass median divides the two directions.\nWhere it meets another road it gets a traffic light.\nCurves no tighter than 100 ft.");
         road("Avenue", 1, 0, false, "40 mph.  $2 a meter.");
         road("Avenue", 2, 0, false, "40 mph.  $4 a meter.");
+        roads.Add(new DockRoad { Group = "Avenue", Forward = 2, Backward = 2, Turn = true, Title = "Avenue, 2 lanes each way, with a turning lane in the middle", Body = "40 mph.  $7.50 a meter.  60 ft wide.\nA turning lane runs down the middle: traffic about to turn left waits there, out of the way of the rest." });
         road("Highway", 1, 0, false, "65 mph.  $3 a meter.");
         road("Highway", 2, 0, false, "65 mph.  $6 a meter.");
         road("Highway", 3, 0, false, "65 mph.  $9 a meter.  36 ft wide.\nTraffic runs the way you draw it, from the first click to the last.\nWhere it meets another road it gets a traffic light.\nCurves no tighter than 200 ft.");
@@ -176,14 +177,14 @@ internal static class Program
             dock.Draw(s, mx, my);
         }
         // The lane tool's card, with the pointer on each button in turn.
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < 4; i++)
         {
-            var card = new LaneCard { Added = i == 1, Turns = i == 2 };
+            var card = new LaneCard { Added = i == 1, Turns = i >= 2, CanMiddle = i == 3 };
             card.TurnThere[0] = card.TurnThere[1] = card.TurnThere[2] = true;
             card.TurnMay[0] = true;
             s.OffsetY = (states.Length - 1) * h;
-            card.Layout(170 + i * 300, i == 2 ? 215 : 150, w, h);
-            card.Draw(s, 80 + i * 430, i == 2 ? 130 : 80);
+            card.Layout(170 + i * 300, i == 2 ? 215 : i == 3 ? 265 : 150, w, h);
+            card.Draw(s, 80 + i * 430, i >= 2 ? 130 : 80);
         }
         // Every icon, large, to check the drawing.
         s.OffsetY = states.Length * h;

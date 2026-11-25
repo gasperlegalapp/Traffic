@@ -1346,6 +1346,96 @@ namespace Traffic.Tests
             Assert.Greater(sim.Left, 40);
         }
 
+        // ---------------------------------------------------------------- a turning lane down the middle
+
+        [Test]
+        public void ARoadCanHaveATurningLaneDownItsMiddle()
+        {
+            // Two lanes each way and a lane between them: five lanes across. A street crosses it.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-250, 0), P(250, 0), T("a4t"), true));
+            Assert.IsNull(map.TryAdd(P(0, -200), P(0, 200), T("s2"), true));
+            Assert.AreEqual(5 * NetworkBuilder.LaneW, T("a4t").Width, 1e-9);
+            StringAssert.Contains("turning lane", T("a4t").Name);
+            World world = map.ToWorld();
+            Assert.AreEqual(0, world.Medians.Count, "the middle is pavement, not grass");
+            Node light = world.Nodes.Single(n => n.Arms.Count == 4);
+
+            // Arriving from the west: two lanes that go on, and between the directions a lane that only turns left.
+            var arriving = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Node == light.Id && l.Path.At(0).X < -20).OrderByDescending(l => l.Path.At(l.Length).Y).ToList();
+            Assert.AreEqual(3, arriving.Count);
+            Lane turning = arriving[0];
+            Assert.AreEqual(0, turning.Path.At(turning.Length).Y, 0.05, "it lies along the middle of the road");
+            Assert.IsTrue(turning.Allows(Turn.Left) && !turning.Allows(Turn.Straight) && !turning.Allows(Turn.Right));
+            Assert.Less(turning.Length, 90, "and it is only there on the way up to the light");
+            Assert.IsNull(turning.Preds.Count > 0 ? "fed" : null, "nothing leads into it but the lane beside it");
+            Assert.IsTrue(arriving.Skip(1).All(l => !l.Allows(Turn.Left)), "the other lanes no longer turn left");
+            Assert.IsTrue(arriving.Skip(1).Any(l => l.Allows(Turn.Straight)));
+            // The same from the east, in the same lane down the middle: the two do not overlap.
+            Lane fromEast = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Node == light.Id && l.Path.At(0).X > 20 && Math.Abs(l.Path.At(l.Length).Y) < 0.05);
+            Assert.Greater(fromEast.Path.At(0).X, turning.Path.At(turning.Length).X);
+
+            var sim = new Simulation(world, 6);
+            sim.ArrivalsPerMinute = 18;
+            int used = 0;
+            Grid.Run(sim, 420, () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    c.Drv.Compliance = 1;
+                    if (c.Lane == turning.Id) used++;
+                }
+            });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(used, 0, "traffic turning left waits in it");
+            Assert.Greater(sim.Left, 60);
+
+            // It saves and loads, and on a road with no junction to turn at there is simply nothing in it.
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            var alone = new EditableMap();
+            Assert.IsNull(alone.TryAdd(P(-250, 0), P(250, 0), T("a4t"), true));
+            Assert.AreEqual(4, alone.ToWorld().Lanes.Count(l => l.Kind == LaneKind.Road));
+        }
+
+        [Test]
+        public void ATurningLaneCanBePutInAndTakenOut()
+        {
+            // A plain two-lane street meeting a side street.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-250, 0), P(250, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 200), T("s2"), true));
+            Assert.IsTrue(map.CouldHaveMiddleLane(P(-100, 1)));
+            Assert.IsFalse(map.MiddleLaneAt(P(-100, 0.2)));
+            Assert.IsNull(map.TrySetMiddleLane(P(-100, 1), true, false), "trying it changes nothing");
+            Assert.AreEqual("s2", map.Segments[0].Type.Id);
+            Assert.IsNull(map.TrySetMiddleLane(P(-100, 1), true, true));
+            EditSegment west = map.Segments.Single(s => map.Nodes[s.A].X < -200 || map.Nodes[s.B].X < -200);
+            Assert.IsTrue(west.Type.CenterLane);
+            Assert.AreEqual("G0-1-1-t", west.Type.Id);
+            Assert.IsFalse(map.Segments.Single(s => map.Nodes[s.A].X > 200 || map.Nodes[s.B].X > 200).Type.CenterLane, "only as far as the junction: the far side is another road");
+            // Eastbound traffic turns left into the side street from it; westbound traffic on this stretch has no left to take.
+            World world = map.ToWorld();
+            Assert.AreEqual(1, world.Lanes.Count(l => l.Kind == LaneKind.Road && l.Slot == -1));
+
+            // The pointer over the middle finds that lane, as a lane of its own.
+            Assert.IsTrue(map.MiddleLaneAt(P(-100, 0.5)));
+            Assert.IsFalse(map.MiddleLaneAt(P(-100, 3)));
+            Vec[] lane = map.LaneUnder(P(-100, 0.5));
+            Assert.AreEqual(0, lane[lane.Length / 2].Y, 0.01);
+            // Adding a lane to one side keeps it; taking it out leaves the lanes either side.
+            Assert.IsNull(map.TryChangeLanes(P(-100, -4), 1, true));
+            Assert.AreEqual("G0-2-1-t", west.Type.Id == "G0-2-1-t" ? "G0-2-1-t" : map.Segments.First(s => s.Type.CenterLane).Type.Id);
+            Assert.IsNull(map.TrySetMiddleLane(P(-100, 0.5), false, true));
+            Assert.AreEqual(0, map.Segments.Count(s => s.Type.CenterLane));
+            Assert.AreEqual(1, map.Segments.Count(s => s.Type.Lanes == 3));
+            // A one-way road has no middle.
+            var oneWay = new EditableMap();
+            Assert.IsNull(oneWay.TryAdd(P(-250, 0), P(250, 0), T("h2"), true));
+            Assert.IsFalse(oneWay.CouldHaveMiddleLane(P(0, 0)));
+            Assert.IsNotNull(oneWay.TrySetMiddleLane(P(0, 0), true, true));
+        }
+
         // ---------------------------------------------------------------- forks, and roads coming together
 
         /// <summary>A two-lane one-way road that splits into two single lanes, which go their own ways and come back together.</summary>
@@ -1430,6 +1520,20 @@ namespace Traffic.Tests
             Grid.Run(sim, 300);
             Assert.AreEqual(0, sim.Crashes);
             Assert.Greater(sim.Left, 40);
+        }
+
+        [Test]
+        public void RoadsMayBeBroughtTogetherBeforeTheRoadTheyFeedIsDrawn()
+        {
+            // Two one-way roads arriving at one point 30 degrees apart, with nothing leaving yet: allowed, and flagged until it is finished.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 80), P(0, 0), T("a1"), true));
+            Assert.IsNull(map.TryAdd(P(-300, -80), P(0, 0), T("a1"), true));
+            Assert.AreEqual(1, map.Faults().Count, "their traffic has nowhere to go yet");
+            map.ToWorld();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(300, 0), T("a1x2"), true));
+            Assert.AreEqual(0, map.Faults().Count);
+            Assert.AreEqual(0, map.ToWorld().Nodes.Count(n => n.Controlled));
         }
 
         [Test]

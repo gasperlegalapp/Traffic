@@ -28,6 +28,8 @@ namespace Traffic.Ui
         /// <summary>Lanes each way. None backward makes it one-way.</summary>
         public int Forward = 1, Backward;
         public bool Median;
+        /// <summary>A turning lane down the middle.</summary>
+        public bool Turn;
     }
 
     /// <summary>One thing on the toolbar that can be pointed at and clicked.</summary>
@@ -332,7 +334,8 @@ namespace Traffic.Ui
             int lanes = road.Forward + road.Backward;
             double lane = lanes >= 4 ? 6 : lanes == 3 ? 7 : 8;
             bool twoWay = road.Backward > 0;
-            double gap = !twoWay ? 0 : road.Median ? 6 : 0;
+            if (road.Turn) lane = 6;
+            double gap = !twoWay ? 0 : road.Median ? 6 : road.Turn ? lane : 0;
             double high = lanes * lane + gap + 4, top = item.Y + (item.H - high) / 2;
             double left = item.X, wide = item.W;
             s.Fill(left, item.Y, wide, item.H, 10, Grass);
@@ -344,7 +347,14 @@ namespace Traffic.Ui
             double y = top + 2;
             for (int k = 1; k < road.Backward; k++) Dashes(s, left, y + k * lane, wide);
             y += road.Backward * lane;
-            if (twoWay && road.Median)
+            if (twoWay && road.Turn)
+            {
+                // A lane of asphalt between two yellow lines, with an arrow each way.
+                s.Fill(left, y - 0.6, wide, 1.1, 0, Yellow);
+                s.Fill(left, y + gap - 0.5, wide, 1.1, 0, Yellow);
+                s.Icon("goleft", left + wide / 2 - 9, y + 0.8, gap - 1.4, Paint);
+            }
+            else if (twoWay && road.Median)
             {
                 s.Fill(left, y - 0.6, wide, 1.1, 0, Yellow);
                 s.Fill(left, y + gap - 0.5, wide, 1.1, 0, Yellow);

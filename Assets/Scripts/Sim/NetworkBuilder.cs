@@ -73,6 +73,8 @@ namespace Traffic.Sim
             /// <summary>For a traced road: this end keeps the direction of the trace's own last points, and is not trimmed.</summary>
             public bool OwnA, OwnB;
             public double Inner;
+            /// <summary>The gap between the two directions is pavement, a lane of its own, and not a strip of ground.</summary>
+            public bool PavedMiddle;
         }
 
         private readonly List<Vec> nodePos = new List<Vec>();
@@ -164,6 +166,16 @@ namespace Traffic.Sim
 
         /// <summary>How far a vehicle pulls forward before it swings round to go back the way it came.</summary>
         private const double PullForward = 2.5;
+
+        /// <summary>
+        /// The road just added has a lane down its middle, in the gap its lanes leave between the
+        /// two directions (an inner of half a lane): it is paved, not laid out as a median. Lanes
+        /// in that gap are slot -1 of either direction.
+        /// </summary>
+        public void PaveMiddle()
+        {
+            roads[roads.Count - 1].PavedMiddle = true;
+        }
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
         public void AllowUTurn(int node, int arrivingFrom)
@@ -340,7 +352,7 @@ namespace Traffic.Sim
                 BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak, r.Inner, r.RampLen);
                 BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak, r.Inner, r.RampLen);
                 // A divided road has a strip of ground down the middle, a little narrower than the gap between its yellow lines.
-                if (r.Inner > 0.5 && r.Fwd.Length > 0 && r.Back.Length > 0)
+                if (r.Inner > 0.5 && r.Fwd.Length > 0 && r.Back.Length > 0 && !r.PavedMiddle)
                 {
                     world.Medians.Add(new Strip { Left = Geo.Offset(center, -(r.Inner - 0.3)), Right = Geo.Offset(center, r.Inner - 0.3), Peak = peak, Heights = Lift(center, peak, r.RampLen) });
                 }
@@ -394,7 +406,7 @@ namespace Traffic.Sim
             var lanes = new Lane[count];
             var fromSt = new double[count];
             var toSt = new double[count];
-            int maxSlot = 0;
+            int maxSlot = 0, minSlot = 0;
             int maxReaching = 0;
             for (int k = 0; k < count; k++)
             {
@@ -402,6 +414,7 @@ namespace Traffic.Sim
                 fromSt[k] = Resolve(spec.From, len);
                 toSt[k] = Resolve(spec.To, len);
                 maxSlot = Math.Max(maxSlot, spec.Slot);
+                minSlot = Math.Min(minSlot, spec.Slot);
                 Vec[] offset = Geo.Offset(center, (spec.Slot + 0.5) * LaneW + inner);
                 var pts = new List<Vec>();
                 for (int i = 0; i <= n; i++) if (st[i] >= fromSt[k] - 1e-6 && st[i] <= toSt[k] + 1e-6) pts.Add(offset[i]);
@@ -499,7 +512,7 @@ namespace Traffic.Sim
             world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true, Peak = peak, Heights = lift });
 
             bool controlled = EndsAt(to.Node) > 2 && nodeMode[to.Node] != JunctionMode.Free;
-            for (int slot = 0; slot < maxSlot; slot++)
+            for (int slot = minSlot; slot < maxSlot; slot++)
             {
                 Vec[] divider = Geo.Offset(center, (slot + 1) * LaneW + inner);
                 int runStart = -1;

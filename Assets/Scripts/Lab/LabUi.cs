@@ -145,6 +145,8 @@ namespace Traffic.Lab
                 {
                     cardShown = true;
                     laneCard.Added = pen.PickedIsAdded;
+                    laneCard.Middle = pen.PickedIsMiddle;
+                    laneCard.CanMiddle = pen.CanAddMiddle;
                     bool[] there, may;
                     laneCard.Turns = pen.PickedTurns(out there, out may);
                     for (int i = 0; i < 3; i++)

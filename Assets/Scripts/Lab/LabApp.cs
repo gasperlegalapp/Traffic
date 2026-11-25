@@ -348,7 +348,8 @@ namespace Traffic.Lab
         {
             string before = drawing.Serialize();
             string refused;
-            bool changed = act == LaneAct.Add ? pen.AddLane(out refused) : act == LaneAct.Remove ? pen.RemoveLane(out refused) : pen.ToggleTurn(act - LaneAct.Left, out refused);
+            bool changed = act == LaneAct.Add ? pen.AddLane(out refused) : act == LaneAct.Remove ? pen.RemoveLane(out refused)
+                : act == LaneAct.Middle ? pen.AddMiddleLane(out refused) : pen.ToggleTurn(act - LaneAct.Left, out refused);
             if (refused != null) Toast(refused);
             if (changed) DrawingChanged(before);
         }
@@ -435,12 +436,13 @@ namespace Traffic.Lab
             {
                 RoadType t = RoadType.All[i];
                 string body = t.Mph + " mph.  $" + t.CostPerMeter.ToString(t.CostPerMeter % 1 == 0 ? "0" : "0.00", System.Globalization.CultureInfo.InvariantCulture) + " a meter.  " + Mathf.RoundToInt((float)t.Width * Feet) + " ft wide.\n";
-                body += t.OneWay ? "Traffic runs the way you draw it. Bring it in alongside another road, on the right of that road's traffic, and it merges in; start it on one the same way and it peels off."
+                body += t.CenterLane ? "A turning lane runs down the middle: traffic about to turn left waits there, out of the way of the rest.\n" : "";
+                body += t.CenterLane ? "" : t.OneWay ? "Traffic runs the way you draw it. Bring it in alongside another road, on the right of that road's traffic, and it merges in; start it on one the same way and it peels off."
                     : t.Median > 0 ? "A grass median divides the two directions."
                     : "A double yellow line divides the two directions.";
                 body += t.Group == RoadType.Street ? "\nWhere only streets meet, drivers get stop signs all round." : "\nWhere it meets another road it gets a traffic light.";
                 body += "\nCurves no tighter than " + Mathf.RoundToInt((float)t.MinRadius * Feet / 10) * 10 + " ft.";
-                tiles[i] = new DockRoad { Group = RoadType.GroupNames[t.Group], Title = t.Name, Body = body, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0 };
+                tiles[i] = new DockRoad { Group = RoadType.GroupNames[t.Group], Title = t.Name, Body = body, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0, Turn = t.CenterLane };
             }
             return tiles;
         }

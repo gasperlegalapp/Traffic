@@ -197,15 +197,29 @@ namespace Traffic.Ui
         /// <summary>Give the road of the picked lane one more lane on that side, for its whole length. Returns true if the map changed.</summary>
         public bool AddLane(out string refused)
         {
-            refused = picked ? map.TryChangeLanes(pickedAt, 1, true) : "Pick a lane first.";
+            refused = !picked ? "Pick a lane first." : PickedIsMiddle ? "Pick a lane on the side you want another lane on." : map.TryChangeLanes(pickedAt, 1, true);
             stamp++;
             return refused == null;
         }
 
-        /// <summary>Take the picked lane away: an added lane by itself, or else one lane off that side of the road. Returns true if the map changed.</summary>
+        /// <summary>Whether the picked lane is the turning lane down the middle of its road.</summary>
+        public bool PickedIsMiddle => picked && map.MiddleLaneAt(pickedAt);
+        /// <summary>Whether the road of the picked lane could be given a turning lane down its middle.</summary>
+        public bool CanAddMiddle => picked && map.CouldHaveMiddleLane(pickedAt);
+
+        /// <summary>Give the road of the picked lane a turning lane down its middle. Returns true if the map changed.</summary>
+        public bool AddMiddleLane(out string refused)
+        {
+            refused = picked ? map.TrySetMiddleLane(pickedAt, true, true) : "Pick a lane first.";
+            stamp++;
+            return refused == null;
+        }
+
+        /// <summary>Take the picked lane away: an added lane or the middle turning lane by itself, or else one lane off that side of the road. Returns true if the map changed.</summary>
         public bool RemoveLane(out string refused)
         {
-            refused = !picked ? "Pick a lane first." : PickedIsAdded ? map.TryRemoveLane(pickedAt, true) : map.TryChangeLanes(pickedAt, -1, true);
+            refused = !picked ? "Pick a lane first." : PickedIsMiddle ? map.TrySetMiddleLane(pickedAt, false, true)
+                : PickedIsAdded ? map.TryRemoveLane(pickedAt, true) : map.TryChangeLanes(pickedAt, -1, true);
             stamp++;
             if (refused == null) picked = false;
             return refused == null;
