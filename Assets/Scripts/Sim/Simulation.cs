@@ -498,6 +498,22 @@ namespace Traffic.Sim
         }
 
         /// <summary>Change how one intersection is controlled.</summary>
+        /// <summary>
+        /// Run an intersection by signs: one kind of sign on its side street and none on the
+        /// through street, or, with Sign.None, no signs anywhere.
+        /// </summary>
+        public void SetSigns(int node, Sign sign)
+        {
+            Junction junction = Junctions[node];
+            if (junction.IsSideStreet(sign) || !World.Nodes[node].Controlled) return;
+            junction.SignSideStreet(sign, Time);
+            foreach (var c in Cars)
+            {
+                Lane lane = Lanes[c.Lane];
+                if (lane.Node == node || lane.ApproachNode == node) c.Junc = new JunctionMemo();
+            }
+        }
+
         public void SetMode(int node, JunctionMode mode)
         {
             Junction junction = Junctions[node];
@@ -1065,6 +1081,10 @@ namespace Traffic.Sim
             double vc = Math.Min(v0, ConnSpeed(conn, d));
             double margin = 0.8 + 1.2 * d.Nerves;
             double myRank = Rank(car, conn, u);
+            // Facing a stop or yield sign, the whole way across has to be clear before setting off: the car waits at
+            // the line, not out among the traffic going by, and looks far enough up the road to judge fast traffic.
+            bool bySigns = Junctions[conn.Node].Mode == JunctionMode.Signs;
+            bool atSign = outside && Junctions[conn.Node].SignAt(conn.FromArm) != Sign.None;
             foreach (var cz in conn.Conflicts)
             {
                 if (myFront > cz.SIn) continue;
@@ -1075,7 +1095,8 @@ namespace Traffic.Sim
                 Lane foeConn = Lanes[cz.Foe];
                 bool wait = false;
                 bool blocked = false;
-                ForFoes(foeConn, (foe, uf) =>
+                double look = bySigns ? Math.Max(80, Lanes[foeConn.From].SpeedLimit * 7) : 80;
+                ForFoes(foeConn, look, (foe, uf) =>
                 {
                     if (wait || foe == car) return;
                     double fFront = uf + foe.Len / 2;
@@ -1098,7 +1119,9 @@ namespace Traffic.Sim
                         if (!inZone && fFront <= Committed && foe.V < 1 && held) return;
                         // Not at a junction without signs, though: there, waiting just short of the
                         // traffic going by is how giving way works, however long it takes.
-                        bool giveWay = Junctions[conn.Node].Mode == JunctionMode.Free;
+                        // The same goes for the through street of an intersection run by signs: a car turning left off it
+                        // waits for its gap in the middle, as long as that takes.
+                        bool giveWay = Junctions[conn.Node].Mode == JunctionMode.Free || (bySigns && !Junctions[conn.Node].NoSigns);
                         // Giving up on waiting is for getting out of a standstill, so it only ever applies to a car that
                         // is itself stopped or crawling. However long the wait, nobody pulls out in front of traffic at speed.
                         bool crawling = foe.V < 4;
@@ -1135,7 +1158,7 @@ namespace Traffic.Sim
                 });
                 if (wait)
                 {
-                    double dist = blocked && outside ? -myFront - 0.6 : dIn - 1.0;
+                    double dist = (blocked || atSign) && outside ? -myFront - 0.6 : dIn - 1.0;
                     if (!found || dist < stopDist)
                     {
                         stopDist = dist;
@@ -1154,13 +1177,40 @@ namespace Traffic.Sim
             Junction jn = Junctions[conn.Node];
             if (jn.Mode == JunctionMode.Free) return true;
 
-            if (jn.Mode == JunctionMode.AllWay)
+            if (jn.Mode == JunctionMode.Signs && !jn.NoSigns)
             {
+                Sign sign = jn.SignAt(lane.Arm);
+                if (sign == Sign.Stop && !j.Released)
+                {
+                    // A stop sign: come to a stop at the line (ORC 4511.43(A)). After that the car goes when
+                    // the way is clear, which the giving way in JunctionStop sees to. The less a driver
+                    // cares for the rules, the faster they roll through it.
+                    double rolling = 0.4 + (1 - car.Drv.Compliance) * 4;
+                    if (dLine > 3.2 || car.V > rolling) return false;
+                    if (j.Arrival < 0) j.Arrival = Time;
+                    if (Time - j.Arrival < (0.4 + 0.6 * d.Nerves) * car.Drv.Compliance) return false;
+                    j.Released = true;
+                }
+                // A yield sign: slow to a speed that is easy to stop from, and stop only if someone is coming (4511.43(B)).
+                if (sign == Sign.Yield && car.V > YieldSpeed && dLine > 1) return false;
+                return ExitHasSpace(car, conn);
+            }
+
+            if (jn.Mode == JunctionMode.AllWay || jn.NoSigns)
+            {
+                // Stop signs all round: everyone stops, and whoever stopped first goes first. With no signs at all it is the
+                // same, except that nobody has to stop: each comes up slowly, and goes straight through if the way is free.
+                bool open = jn.NoSigns;
                 if (j.Released) return true;
                 double rolling = 0.4 + (1 - car.Drv.Compliance) * 4;
-                if (dLine > 3.2 || car.V > rolling) return false;
+                if (open)
+                {
+                    List<Entry> queue = laneCars[lane.Id];
+                    if (dLine > 14 || car.V > YieldSpeed || queue.Count == 0 || queue[queue.Count - 1].Car != car) return false;
+                }
+                else if (dLine > 3.2 || car.V > rolling) return false;
                 if (j.Arrival < 0) j.Arrival = Time;
-                if (Time - j.Arrival < (0.4 + 0.6 * d.Nerves) * car.Drv.Compliance) return false;
+                if (!open && Time - j.Arrival < (0.4 + 0.6 * d.Nerves) * car.Drv.Compliance) return false;
                 foreach (var o in active)
                 {
                     if (o.Car == car || o.Conn.Id == conn.Id || o.Conn.Node != conn.Node) continue;
@@ -1172,10 +1222,30 @@ namespace Traffic.Sim
                 {
                     JunctionMemo oj = o.Junc;
                     if (jumpsQueue) break;
-                    if (o == car || o.Crashed || oj.Arrival < 0 || oj.Released) continue;
+                    if (o == car || o.Crashed || oj.Released) continue;
                     Lane ol = Lanes[o.Lane];
                     if (ol.Connectors == null || ol.Node != conn.Node) continue;
-                    if (oj.Arrival < j.Arrival || (oj.Arrival == j.Arrival && o.Id < car.Id))
+                    double theirArrival = oj.Arrival;
+                    if (theirArrival < 0)
+                    {
+                        // Not there yet. With no signs, a car coming up to its line as this one reaches its own is
+                        // as good as arriving together with it.
+                        List<Entry> theirQueue = laneCars[ol.Id];
+                        bool coming = open && ol.Length - o.S - o.Len / 2 < 22 && o.V > 0.5 && theirQueue.Count > 0 && theirQueue[theirQueue.Count - 1].Car == o;
+                        if (!coming) continue;
+                        theirArrival = Time;
+                    }
+                    bool theyFirst = theirArrival < j.Arrival || (theirArrival == j.Arrival && o.Id < car.Id);
+                    if (open && ol.Arm != lane.Arm && Math.Abs(theirArrival - j.Arrival) < 1.5 && Time - j.Arrival < 4)
+                    {
+                        // Two who come to an intersection with no signs from different streets at about the same time:
+                        // the one on the left gives way to the one on the right (ORC 4511.41). The rule lapses after a
+                        // few seconds, so that four who arrive together do not each wait for the next for ever.
+                        List<Approach> arms = World.Nodes[conn.Node].Arms;
+                        double onRight = Math.Sin(arms[ol.Arm].Angle - arms[lane.Arm].Angle);
+                        if (Math.Abs(onRight) > 0.3) theyFirst = onRight > 0;
+                    }
+                    if (theyFirst)
                     {
                         // Someone who got here first goes first, unless they have nowhere to go.
                         Lane theirs = PlannedConn(o, ol);
@@ -1220,9 +1290,10 @@ namespace Traffic.Sim
                     j.Run = Rng.Next() >= car.Drv.Compliance;
                 }
                 ok = j.Run;
-                if (!ok && RightOnRed && conn.Turn == Turn.Right)
+                if (!ok && RightOnRed && (conn.Turn == Turn.Right || (conn.Turn == Turn.Left && OneWayToOneWay(conn))))
                 {
-                    // Right turn on red: come to a stop at the line first, then go when there is a gap.
+                    // Turn on red: right, or left from a one-way street into a one-way street (ORC 4511.13(C)(1)(b)).
+                    // Come to a stop at the line first, then go when there is a gap.
                     if (!j.RightOnRed && dLine < 3.2 && car.V < 0.4)
                     {
                         if (j.Arrival < 0) j.Arrival = Time;
@@ -1232,6 +1303,18 @@ namespace Traffic.Sim
                 }
             }
             return ok && ExitHasSpace(car, conn);
+        }
+
+        /// <summary>The speed a driver slows to for a yield sign, meters per second (about 15 mph).</summary>
+        private const double YieldSpeed = 7;
+
+        /// <summary>Whether a path through an intersection leads from a one-way road into a one-way road.</summary>
+        private bool OneWayToOneWay(Lane conn)
+        {
+            Node node = World.Nodes[conn.Node];
+            if (node.Arms[conn.FromArm].Outbound.Count > 0) return false;
+            foreach (Approach arm in node.Arms) if (arm.Outbound.Contains(conn.Next)) return arm.Inbound.Count == 0;
+            return false;
         }
 
         /// <summary>Don't block the box: is there room on the far side?</summary>
@@ -1252,7 +1335,9 @@ namespace Traffic.Sim
             if (uf + foe.Len / 2 > Committed) return true;
             Junction jn = Junctions[foeConn.Node];
             if (jn.Mode == JunctionMode.Free) return true;
-            if (jn.Mode == JunctionMode.AllWay) return foe.Junc.Released;
+            if (jn.Mode == JunctionMode.AllWay || jn.NoSigns) return foe.Junc.Released;
+            // Run by signs: everyone is on their way except a car that has yet to make its stop.
+            if (jn.Mode == JunctionMode.Signs) return jn.SignAt(foeConn.FromArm) != Sign.Stop || foe.Junc.Released;
             if (foe.Junc.Run) return true;
             SignalLight light = jn.State(foeConn.FromArm, foeConn.Turn);
             if (light == SignalLight.Green) return true;
@@ -1267,7 +1352,14 @@ namespace Traffic.Sim
             // No light or signs (a way on to a roundabout): traffic carrying straight on goes first, and whoever is turning in gives way.
             // Where two ways straight on end in one lane, the straighter of them goes first.
             if (jn.Mode == JunctionMode.Free) return conn.Turn == Turn.Straight && !conn.GiveWay ? 3 : 2;
-            if (jn.Mode == JunctionMode.AllWay) return 1e6 - (car.Junc.Order >= 0 ? car.Junc.Order : 1e5);
+            if (jn.Mode == JunctionMode.AllWay || jn.NoSigns) return 1e6 - (car.Junc.Order >= 0 ? car.Junc.Order : 1e5);
+            if (jn.Mode == JunctionMode.Signs)
+            {
+                // Traffic with no sign to face has the right of way over traffic facing a stop or yield sign
+                // (ORC 4511.43), and either way a left turn gives way to traffic coming the other way (4511.42).
+                double among = conn.Turn == Turn.UTurn ? 0 : conn.Turn == Turn.Left ? 0.5 : 1;
+                return (jn.SignAt(conn.FromArm) == Sign.None ? 3 : 1) + among;
+            }
             bool crossed = u + car.Len / 2 > Committed;
             if (car.Junc.RightOnRed) return 0.5; // turning right on red: gives way to everyone with a green
             if (car.Junc.Run) return crossed && IsBully(car) ? 5 : 0; // red-light runner: waits for a gap, unless pushy enough to force it
@@ -1278,13 +1370,13 @@ namespace Traffic.Sim
         }
 
         /// <summary>Every car using, approaching or just leaving a path through the intersection.</summary>
-        private void ForFoes(Lane conn, Action<Car, double> fn)
+        private void ForFoes(Lane conn, double look, Action<Car, double> fn)
         {
             foreach (var e in laneCars[conn.Id]) fn(e.Car, e.S);
             Lane from = Lanes[conn.From];
             foreach (var e in laneCars[from.Id])
             {
-                if (e.Ghost || from.Length - e.S > 80) continue;
+                if (e.Ghost || from.Length - e.S > look) continue;
                 if (PlannedConn(e.Car, from) == conn) fn(e.Car, e.S - from.Length);
             }
             foreach (var e in laneCars[conn.Next])

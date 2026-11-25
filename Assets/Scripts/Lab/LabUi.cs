@@ -24,6 +24,7 @@ namespace Traffic.Lab
 
         private readonly Dock dock = new Dock();
         private readonly LaneCard laneCard = new LaneCard();
+        private readonly SignCard signCard = new SignCard();
         private GuiSurface surface;
         private Texture2D white;
         private GUIStyle panel, heading, label, value, big, sub, tagStyle, stateStyle, button, buttonOn, toggle, hint;
@@ -165,6 +166,26 @@ namespace Traffic.Lab
                 }
             }
             bool overCard = cardShown && laneCard.Contains(mouse.x, mouse.y);
+            // Beside a lane picked with the signs tool: what runs the intersection ahead, and the speed limit.
+            if (building && pen.Tool == RoadPen.Signs && pen.Picked)
+            {
+                Vector3 spot = cam.WorldToScreenPoint(MeshKit.ToWorld(pen.PickedAt.X, pen.PickedAt.Y));
+                if (spot.z > 0)
+                {
+                    signCard.Intersection = pen.PickedControl(out signCard.Now, out signCard.Automatic);
+                    signCard.Mph = pen.PickedSpeed(out signCard.Posted);
+                    signCard.Layout(spot.x / scale, (Screen.height - spot.y) / scale, w, (float)dock.Top - 8);
+                    if (e.type == EventType.Repaint) signCard.Draw(surface, mouse.x, mouse.y);
+                    if (e.type == EventType.MouseDown && e.button == 0 && signCard.Contains(mouse.x, mouse.y))
+                    {
+                        Control which;
+                        SignAct act = signCard.ItemAt(mouse.x, mouse.y, out which);
+                        if (act != SignAct.None) SignAction(act, which);
+                        e.Use();
+                    }
+                    overCard |= signCard.Contains(mouse.x, mouse.y);
+                }
+            }
 
             if (e.type == EventType.Repaint) DrawPlaceNames(scale);
             if (level != null && stars > 0 && !resultShown) DrawResult(w, h);
@@ -557,6 +578,10 @@ namespace Traffic.Lab
                 if (GUILayout.Button("Traffic light", mode == JunctionMode.Signal ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.Signal);
                 if (GUILayout.Button("Traffic light with left arrows", mode == JunctionMode.ProtectedLeft ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.ProtectedLeft);
                 if (GUILayout.Button("All-way stop", mode == JunctionMode.AllWay ? buttonOn : button)) Sim.SetMode(selectedNode, JunctionMode.AllWay);
+                Junction chosen = Sim.Junctions[selectedNode];
+                if (GUILayout.Button("Stop signs on the side street", chosen.IsSideStreet(Sign.Stop) ? buttonOn : button)) Sim.SetSigns(selectedNode, Sign.Stop);
+                if (GUILayout.Button("Yield signs on the side street", chosen.IsSideStreet(Sign.Yield) ? buttonOn : button)) Sim.SetSigns(selectedNode, Sign.Yield);
+                if (GUILayout.Button("No signs", chosen.IsSideStreet(Sign.None) ? buttonOn : button)) Sim.SetSigns(selectedNode, Sign.None);
             }
 
             GUILayout.Space(10);
@@ -833,6 +858,7 @@ namespace Traffic.Lab
                         }
                         else if (e.keyCode == KeyCode.M) pen.Tool = RoadPen.Move;
                         else if (e.keyCode == KeyCode.L) pen.Tool = RoadPen.Lane;
+                        else if (e.keyCode == KeyCode.T) pen.Tool = RoadPen.Signs;
                         else if (e.keyCode == KeyCode.R) pen.Tool = RoadPen.Replace;
                         else if (e.keyCode == KeyCode.B) pen.Tool = RoadPen.Bulldoze;
                         else if (e.keyCode == KeyCode.G) pen.Grid = RoadPen.GridFeet[(System.Array.IndexOf(RoadPen.GridFeet, pen.Grid) + 1) % RoadPen.GridFeet.Length];

@@ -156,6 +156,7 @@ internal static class Program
             ("Building a curve on a bridge, pointing at bridge level 2", d => { d.Building = true; d.Shape = 1; d.Road = 5; d.Height = 1; d.CanUndo = true; d.CanRedo = true; d.Hint = "Sweep the road round to where it should end, and click. Right-click to point it again."; }, DockKind.Shape, 1),
             ("Moving, pointing at the move tool", d => { d.Building = true; d.Tool = 3; d.CanUndo = true; d.Hint = "Drag a point to move it. Drag the middle of a road to bend it, or pull it back straight."; }, DockKind.Tool, 3),
             ("Bulldozing", d => { d.Building = true; d.Tool = 1; d.Hint = "Click a road to remove it."; }, DockKind.Tool, 1),
+            ("The signs tool, and its card: left to the game, with a stop sign on this street, and on a road with no intersection ahead", d => { d.Building = true; d.Tool = 5; d.CanUndo = true; d.Hint = "Choose what runs the intersection ahead, or post a speed limit, with the card. Click another lane to pick it."; }, DockKind.None, 0),
             ("Driving on your own map", d => { d.Rate = 1; }, DockKind.Build, 0),
             ("Driving, paused, on a built-in map", d => { d.OwnMap = false; d.Paused = true; d.Rate = 2; }, DockKind.Pause, 0),
         };
@@ -186,6 +187,14 @@ internal static class Program
             s.OffsetY = (states.Length - 1) * h;
             card.Layout(170 + i * 300, i == 2 ? 215 : i == 3 ? 265 : 150, w, h);
             card.Draw(s, 80 + i * 430, i >= 2 ? 130 : 80);
+        }
+        // The signs tool's card: at an intersection left to the game, at one with a stop sign on this street, and on a road with no intersection ahead.
+        for (int i = 0; i < 3; i++)
+        {
+            var card = new SignCard { Intersection = i < 2, Now = i == 0 ? Control.Light : Control.Stop, Automatic = i == 0, Mph = i == 1 ? 35 : i == 2 ? 55 : 40, Posted = i >= 1 };
+            s.OffsetY = (states.Length - 3) * h;
+            card.Layout(190 + i * 400, 330, w, 300);
+            card.Draw(s, i == 0 ? 120 : i == 1 ? 520 : 870, i == 0 ? 20 : i == 1 ? 110 : 155);
         }
         // Every icon, large, to check the drawing.
         s.OffsetY = states.Length * h;

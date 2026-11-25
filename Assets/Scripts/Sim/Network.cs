@@ -123,10 +123,22 @@ namespace Traffic.Sim
     }
 
     /// <summary>One road arriving at (and leaving) an intersection.</summary>
+    /// <summary>A sign facing the traffic that arrives at an intersection along one road.</summary>
+    public enum Sign
+    {
+        None,
+        /// <summary>Stop at the line, then go when nothing is in the intersection or close enough to be a danger.</summary>
+        Stop,
+        /// <summary>Slow down, and stop only if something is in the intersection or close enough to be a danger.</summary>
+        Yield,
+    }
+
     public sealed class Approach
     {
         public int Node;
         public int Arm;
+        /// <summary>The sign this road's traffic meets as it arrives, where the intersection is run by signs.</summary>
+        public Sign Sign;
         /// <summary>Direction pointing away from the intersection along this road, radians.</summary>
         public double Angle;
         /// <summary>0 for the north-south street, 1 for east-west. Opposite arms share a street and a green.</summary>

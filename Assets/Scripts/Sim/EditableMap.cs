@@ -147,8 +147,10 @@ namespace Traffic.Sim
         public RoadType Type;
         /// <summary>1 is a single one-way lane from A to B; 2 is one lane each way; 4 is two lanes each way.</summary>
         public int Lanes => Type.Lanes;
-        /// <summary>Speed limit in miles per hour.</summary>
-        public int Mph => Type.Mph;
+        /// <summary>Speed limit in miles per hour: the one posted on it, or the usual one for its kind of road.</summary>
+        public int Mph => Limit > 0 ? Limit : Type.Mph;
+        /// <summary>The speed limit the player has posted, miles per hour; 0 leaves the usual limit for its kind of road.</summary>
+        public int Limit;
         /// <summary>A curved stretch is part of a circle, from A to B, passing through Mid halfway along.</summary>
         public bool Curved;
         public Vec Mid;
@@ -167,6 +169,37 @@ namespace Traffic.Sim
         /// list at all, leaves the lane to be worked out.
         /// </summary>
         public int[] TurnsAtA, TurnsAtB;
+        /// <summary>
+        /// What the traffic arriving at each end meets there, where the player has said: one of
+        /// EditableMap.AsLight, AsArrows, AsStop, AsYield or AsNoSign. 0 leaves it to be worked out.
+        /// </summary>
+        public int ControlAtA, ControlAtB;
+    }
+
+    /// <summary>
+    /// What the player can ask for at an intersection, as seen from one of the roads that lead
+    /// to it. The signs follow the Ohio Revised Code: a stop sign means stop at the line and
+    /// then give way to anything in the intersection or close enough to be a danger, and a
+    /// yield sign means slow down and stop only if that is needed (section 4511.43); roads
+    /// that enter a through street face one or the other (4511.65); and with no signs at all,
+    /// of two drivers who arrive together the one on the left gives way (4511.41).
+    /// </summary>
+    public enum Control
+    {
+        /// <summary>Left to the game: stop signs all round where only 25 mph streets meet, a light otherwise.</summary>
+        Automatic,
+        Light,
+        /// <summary>A light with left-turn arrows.</summary>
+        LightWithArrows,
+        AllWayStop,
+        /// <summary>A stop sign on this road, and on the same road across the intersection; the cross street has none.</summary>
+        Stop,
+        /// <summary>A yield sign likewise.</summary>
+        Yield,
+        /// <summary>This road is the through street: the cross street has the stop signs.</summary>
+        RightOfWay,
+        /// <summary>No signs or light at all.</summary>
+        NoSigns,
     }
 
     /// <summary>
@@ -264,7 +297,7 @@ namespace Traffic.Sim
             copy.Bound = Bound;
             foreach (EditSegment s in Segments)
             {
-                var piece = new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked };
+                var piece = new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked, Limit = s.Limit, ControlAtA = s.ControlAtA, ControlAtB = s.ControlAtB };
                 foreach (ExtraLane x in s.Extras) piece.Extras.Add(new ExtraLane { Forward = x.Forward, From = x.From, To = x.To });
                 piece.TurnsAtA = s.TurnsAtA == null ? null : (int[])s.TurnsAtA.Clone();
                 piece.TurnsAtB = s.TurnsAtB == null ? null : (int[])s.TurnsAtB.Clone();
@@ -924,6 +957,9 @@ namespace Traffic.Sim
             int[] turns = s.TurnsAtA;
             s.TurnsAtA = s.TurnsAtB;
             s.TurnsAtB = turns;
+            int control = s.ControlAtA;
+            s.ControlAtA = s.ControlAtB;
+            s.ControlAtB = control;
             foreach (ExtraLane x in s.Extras)
             {
                 double from = x.From;
@@ -1441,6 +1477,18 @@ namespace Traffic.Sim
                 laid++;
             }
             if (laid == 0) return "There is already a road there.";
+            // A piece that carries on from a road with a speed limit of its own posted is under the same limit.
+            for (int i = Segments.Count - laid; i < Segments.Count; i++)
+            {
+                EditSegment piece = Segments[i];
+                foreach (int node in new[] { piece.A, piece.B })
+                {
+                    List<EditSegment> here = RoadsAt(node);
+                    if (here.Count != 2 || piece.Limit != 0) continue;
+                    EditSegment other = here[0] == piece ? here[1] : here[0];
+                    if (other.Type.Id == piece.Type.Id && other.Level == 0 && piece.Level == 0) piece.Limit = other.Limit;
+                }
+            }
             for (int i = Segments.Count - laid; i < Segments.Count; i++)
             {
                 if (Alongside(Segments[i])) return "Too close alongside another road. Leave a gap between them, or add lanes to that road with the lane tool.";
@@ -1524,6 +1572,20 @@ namespace Traffic.Sim
             {
                 double off = FlowOf(s, node) - flow;
                 if (Math.Abs(Math.Atan2(Math.Sin(off), Math.Cos(off))) > ForkSpread) return false;
+            }
+            // One road parting into several, or several closing up into one, cross nobody's path. But where two or more
+            // arrive and two or more leave, their paths cross, and that is only a weave if they all run close to the same
+            // way. Two one-way streets crossing at a right angle are an intersection, and need a light or signs.
+            if (arriving > 1 && here.Count - arriving > 1)
+            {
+                foreach (EditSegment s in here)
+                {
+                    foreach (EditSegment o in here)
+                    {
+                        double apart = FlowOf(s, node) - FlowOf(o, node);
+                        if (Math.Abs(Math.Atan2(Math.Sin(apart), Math.Cos(apart))) > ForkSpread) return false;
+                    }
+                }
             }
             return true;
         }
@@ -1687,7 +1749,7 @@ namespace Traffic.Sim
             Vec at = PointAt(s, t);
             Nodes.Add(at);
             int mid = Nodes.Count - 1;
-            var rest = new EditSegment { A = mid, B = s.B, Type = s.Type, Ring = s.Ring, Locked = s.Locked };
+            var rest = new EditSegment { A = mid, B = s.B, Type = s.Type, Ring = s.Ring, Locked = s.Locked, Limit = s.Limit };
             if (s.Curved)
             {
                 // Each part of a curve is a piece of the same circle.
@@ -1706,6 +1768,8 @@ namespace Traffic.Sim
             // What the lanes may do at the far end goes with the far part.
             rest.TurnsAtB = s.TurnsAtB;
             s.TurnsAtB = null;
+            rest.ControlAtB = s.ControlAtB;
+            s.ControlAtB = 0;
             Segments.Add(rest);
             s.B = mid;
             return mid;
@@ -2107,7 +2171,7 @@ namespace Traffic.Sim
         {
             if (here.Count != 2) return false;
             EditSegment x = here[0], y = here[1];
-            if (x == y || x.Ring || y.Ring || x.Level != 0 || y.Level != 0 || x.Type.Id != y.Type.Id) return false;
+            if (x == y || x.Ring || y.Ring || x.Level != 0 || y.Level != 0 || x.Type.Id != y.Type.Id || x.Limit != y.Limit) return false;
             // The lanes one way must match the lanes that way on the other piece.
             bool sameWay = (x.B == node) != (y.B == node);
             return sameWay || x.Type.Forward == x.Type.Backward;
@@ -2444,6 +2508,8 @@ namespace Traffic.Sim
             foreach (Run run in runs) foreach (int node in run.Joints) inside[node] = true;
             var joins = new Join[Nodes.Count];
             var built = new int[Nodes.Count];
+            // The sign each piece's traffic faces at each of its ends, where an intersection is run by signs.
+            var signs = new Dictionary<EditSegment, Sign[]>();
             for (int i = 0; i < Nodes.Count; i++)
             {
                 built[i] = -1;
@@ -2459,7 +2525,7 @@ namespace Traffic.Sim
                 // On a roundabout nobody stops for a light or a sign: whoever is going round goes first.
                 bool onRing = false;
                 foreach (EditSegment s in Segments) if (s.Ring && (s.A == i || s.B == i)) onRing = true;
-                JunctionMode mode = arms <= 2 || joins[i] != null || onRing || FlowsThrough(i) ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
+                JunctionMode mode = arms <= 2 || joins[i] != null || onRing || FlowsThrough(i) ? JunctionMode.Free : ControlOf(i, fastest, signs);
                 built[i] = b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
                 if (arms == 1 && DeadEndAt(i)) b.DeadEnd(built[i]);
             }
@@ -2500,7 +2566,7 @@ namespace Traffic.Sim
                 int lastPiece = run.Pieces.Count - 1;
                 Told(fwd, run.Turned[lastPiece] ? last.TurnsAtA : last.TurnsAtB);
                 if (back != null) Told(back, run.Turned[0] ? first.TurnsAtB : first.TurnsAtA);
-                double speed = type.Mph * 0.44704;
+                double speed = first.Mph * 0.44704;
                 bool rampAtFrom = joins[run.From] != null && joins[run.From].Ramp == first, rampAtTo = joins[run.To] != null && joins[run.To].Ramp == last;
                 if (rampAtFrom || rampAtTo)
                 {
@@ -2518,6 +2584,8 @@ namespace Traffic.Sim
                 }
                 else if (run.Pieces.Count == 1 && !first.Curved) b.AddRoad(built[run.From], built[run.To], fwd, back, null, speed, 0, 0, false, type.Inner);
                 else b.AddCurvedRoad(built[run.From], built[run.To], fwd, back, run.Trace, speed, type.Inner);
+                Sign atFrom = SignOf(signs, first, run.From), atTo = SignOf(signs, last, run.To);
+                if (atFrom != Sign.None || atTo != Sign.None) b.Signs(atFrom, atTo);
                 if (first.Level != 0) b.Raise(first.Level * LevelHeight, RampFor(first.Level));
                 if (type.CenterLane) b.PaveMiddle();
             }
@@ -2682,6 +2750,251 @@ namespace Traffic.Sim
             return "That lane does not lead to an intersection.";
         }
 
+        // ---------------------------------------------------------------- signs, lights and speed limits
+
+        /// <summary>What the traffic at one end of a piece meets at the intersection there, as kept in EditSegment.ControlAtA and ControlAtB.</summary>
+        public const int AsLight = 1, AsStop = 2, AsYield = 3, AsNoSign = 4, AsArrows = 5;
+
+        /// <summary>
+        /// The speed limits a road can be posted with, miles per hour: the ones Ohio's law sets
+        /// out (Revised Code 4511.21(B)). 15 is for alleys, 20 a school zone, 25 the streets of a
+        /// town, 35 its through streets and state routes, 50 an expressway in town, 55 a highway
+        /// out of town, 60 a divided highway in the country, 65 a freeway in town and 70 a
+        /// freeway in the country.
+        /// </summary>
+        public static readonly int[] SpeedLimits = { 15, 20, 25, 35, 50, 55, 60, 65, 70 };
+
+        /// <summary>What a speed limit is for, in a few words.</summary>
+        public static string SpeedLimitFor(int mph)
+        {
+            switch (mph)
+            {
+                case 15: return "an alley";
+                case 20: return "a school zone";
+                case 25: return "a street in town";
+                case 35: return "a through street in town";
+                case 50: return "an expressway in town";
+                case 55: return "a highway out of town";
+                case 60: return "a divided highway in the country";
+                case 65: return "a freeway in town";
+                case 70: return "a freeway in the country";
+                default: return "";
+            }
+        }
+
+        /// <summary>The sign a piece's traffic faces at one of its ends, from a note of them kept by piece: the sign at A, then the sign at B.</summary>
+        private static Sign SignOf(Dictionary<EditSegment, Sign[]> signs, EditSegment piece, int node)
+        {
+            Sign[] ends;
+            return signs.TryGetValue(piece, out ends) ? ends[piece.A == node ? 0 : 1] : Sign.None;
+        }
+
+        private static void NoteSign(Dictionary<EditSegment, Sign[]> signs, EditSegment piece, int node, Sign sign)
+        {
+            Sign[] ends;
+            if (!signs.TryGetValue(piece, out ends)) signs[piece] = ends = new Sign[2];
+            ends[piece.A == node ? 0 : 1] = sign;
+        }
+
+        private static int ControlCode(EditSegment piece, int node)
+        {
+            return piece.A == node ? piece.ControlAtA : piece.ControlAtB;
+        }
+
+        private static void SetControlCode(EditSegment piece, int node, int code)
+        {
+            if (piece.A == node) piece.ControlAtA = code;
+            if (piece.B == node) piece.ControlAtB = code;
+        }
+
+        /// <summary>
+        /// What runs the intersection at a point: whatever the player asked for on the roads
+        /// that meet there, or, where they asked for nothing, stop signs all round if only 25 mph
+        /// streets meet and a light otherwise. The sign each road's traffic faces is noted in signs.
+        /// </summary>
+        private JunctionMode ControlOf(int node, int fastest, Dictionary<EditSegment, Sign[]> signs)
+        {
+            List<EditSegment> here = RoadsAt(node);
+            bool asked = false, light = false, arrows = false, allStop = true;
+            foreach (EditSegment piece in here)
+            {
+                int code = ControlCode(piece, node);
+                asked |= code != 0;
+                light |= code == AsLight;
+                arrows |= code == AsArrows;
+                allStop &= code == AsStop || code == 0;
+            }
+            if (!asked) return fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
+            if (arrows) return JunctionMode.ProtectedLeft;
+            if (light) return JunctionMode.Signal;
+            // Stop signs on every road, counting a road that has joined since they were put up.
+            if (allStop) return JunctionMode.AllWay;
+            foreach (EditSegment piece in here)
+            {
+                int code = ControlCode(piece, node);
+                NoteSign(signs, piece, node, code == AsStop ? Sign.Stop : code == AsYield ? Sign.Yield : Sign.None);
+            }
+            return JunctionMode.Signs;
+        }
+
+        /// <summary>
+        /// The piece and point at the end of the road that the lane under a point leads to, if
+        /// that end is an intersection which a light or signs can run: three or more roads, and
+        /// not a merge, a fork or a way on to a roundabout.
+        /// </summary>
+        private bool ApproachUnder(Vec p, out EditSegment piece, out int node)
+        {
+            piece = null;
+            node = -1;
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return false;
+            EditSegment under = Segments[seg];
+            foreach (Run run in Runs())
+            {
+                int index = run.Pieces.IndexOf(under);
+                if (index < 0) continue;
+                bool withRun = forward != run.Turned[index];
+                // A one-way road only arrives at one of its ends.
+                if (under.Type.OneWay && !withRun) return false;
+                piece = run.Pieces[withRun ? run.Pieces.Count - 1 : 0];
+                node = withRun ? run.To : run.From;
+                break;
+            }
+            if (piece == null || RoadsAt(node).Count < 3 || JoinAt(node) != null || FlowsThrough(node)) return false;
+            foreach (EditSegment s in RoadsAt(node)) if (s.Ring) return false;
+            return true;
+        }
+
+        /// <summary>The roads at an intersection that are the same street as one of them: itself, and the road most nearly straight across from it, if there is one.</summary>
+        private List<EditSegment> SameStreet(EditSegment piece, int node)
+        {
+            var street = new List<EditSegment> { piece };
+            EditSegment across = null;
+            double widest = Math.PI - 25 * Math.PI / 180;
+            foreach (EditSegment s in RoadsAt(node))
+            {
+                if (s == piece) continue;
+                double apart = Math.Abs(Math.Atan2(Math.Sin(HeadingFrom(s, node) - HeadingFrom(piece, node)), Math.Cos(HeadingFrom(s, node) - HeadingFrom(piece, node))));
+                if (apart <= widest) continue;
+                widest = apart;
+                across = s;
+            }
+            if (across != null) street.Add(across);
+            return street;
+        }
+
+        /// <summary>
+        /// What runs the intersection that the lane under a point leads to, as seen from that
+        /// lane's road, and whether that was left to the game. False if the lane does not lead
+        /// to an intersection that a light or signs can run.
+        /// </summary>
+        public bool ControlAt(Vec p, out Control control, out bool automatic)
+        {
+            control = Control.Automatic;
+            automatic = true;
+            EditSegment piece;
+            int node;
+            if (!ApproachUnder(p, out piece, out node)) return false;
+            int fastest = 0;
+            foreach (EditSegment s in RoadsAt(node))
+            {
+                fastest = Math.Max(fastest, s.Mph);
+                if (ControlCode(s, node) != 0) automatic = false;
+            }
+            var signs = new Dictionary<EditSegment, Sign[]>();
+            JunctionMode mode = ControlOf(node, fastest, signs);
+            if (mode == JunctionMode.Signal) control = Control.Light;
+            else if (mode == JunctionMode.ProtectedLeft) control = Control.LightWithArrows;
+            else if (mode == JunctionMode.AllWay) control = Control.AllWayStop;
+            else
+            {
+                Sign mine = SignOf(signs, piece, node);
+                bool othersSigned = false;
+                List<EditSegment> street = SameStreet(piece, node);
+                foreach (EditSegment s in RoadsAt(node)) if (!street.Contains(s) && SignOf(signs, s, node) != Sign.None) othersSigned = true;
+                control = mine == Sign.Stop ? Control.Stop : mine == Sign.Yield ? Control.Yield : othersSigned ? Control.RightOfWay : Control.NoSigns;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Say what should run the intersection that the lane under a point leads to. A stop or
+        /// yield sign goes on that lane's road and on the same road across the intersection, and
+        /// the cross street is left without; "right of way" is the other way about. Returns null
+        /// if it was set, or a short reason why it cannot be.
+        /// </summary>
+        public string TrySetControl(Vec p, Control control, bool commit)
+        {
+            EditSegment piece;
+            int node;
+            if (!ApproachUnder(p, out piece, out node)) return "That lane does not lead to an intersection.";
+            EditableMap work = Clone();
+            piece = work.Segments[Segments.IndexOf(piece)];
+            List<EditSegment> street = work.SameStreet(piece, node);
+            foreach (EditSegment s in work.RoadsAt(node))
+            {
+                bool mine = street.Contains(s);
+                int code;
+                switch (control)
+                {
+                    case Control.Light: code = AsLight; break;
+                    case Control.LightWithArrows: code = AsArrows; break;
+                    case Control.AllWayStop: code = AsStop; break;
+                    case Control.Stop: code = mine ? AsStop : AsNoSign; break;
+                    case Control.Yield: code = mine ? AsYield : AsNoSign; break;
+                    case Control.RightOfWay: code = mine ? AsNoSign : AsStop; break;
+                    case Control.NoSigns: code = AsNoSign; break;
+                    default: code = 0; break;
+                }
+                SetControlCode(s, node, code);
+            }
+            string problem = work.Unbuildable(this);
+            if (problem != null) return problem;
+            if (commit) Segments = work.Segments;
+            return null;
+        }
+
+        /// <summary>The speed limit on the road under a point, miles per hour, and whether the player posted it; 0 where there is no road.</summary>
+        public int SpeedAt(Vec p, out bool posted)
+        {
+            posted = false;
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return 0;
+            posted = Segments[seg].Limit > 0;
+            return Segments[seg].Mph;
+        }
+
+        /// <summary>
+        /// Post a speed limit on the road under a point, for its whole length from one junction
+        /// or road end to the next: one of SpeedLimits, or 0 to go back to the usual limit for
+        /// its kind of road. Returns null if it was set, or a short reason why it cannot be.
+        /// </summary>
+        public string TrySetSpeed(Vec p, int mph, bool commit)
+        {
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return "There is no road there.";
+            if (mph != 0 && Array.IndexOf(SpeedLimits, mph) < 0) return "That is not a speed limit the law provides for.";
+            EditableMap work = Clone();
+            EditSegment under = work.Segments[seg];
+            if (under.Ring) return "A roundabout's ring keeps its own speed.";
+            foreach (Run run in work.Runs())
+            {
+                if (!run.Pieces.Contains(under)) continue;
+                foreach (EditSegment piece in run.Pieces) piece.Limit = mph == piece.Type.Mph ? 0 : mph;
+                break;
+            }
+            string problem = work.Unbuildable(this);
+            if (problem != null) return problem;
+            if (commit) Segments = work.Segments;
+            return null;
+        }
+
         /// <summary>How long an extra lane has to be, meters, and how near the end of its road it is taken to run right to the end.</summary>
         public const double ShortestLane = 24, LaneEndSnap = 10;
         /// <summary>About how far a junction's stop lines are from its middle: the network works out the real figure.</summary>
@@ -2832,6 +3145,9 @@ namespace Traffic.Sim
                 foreach (ExtraLane x in s.Extras) sb.Append(",X").Append(x.Forward ? '+' : '-').Append(x.From.ToString("F4", CultureInfo.InvariantCulture)).Append(':').Append(x.To.ToString("F4", CultureInfo.InvariantCulture));
                 if (s.TurnsAtA != null) sb.Append(",TA:").Append(string.Join(".", s.TurnsAtA));
                 if (s.TurnsAtB != null) sb.Append(",TB:").Append(string.Join(".", s.TurnsAtB));
+                if (s.ControlAtA != 0) sb.Append(",CA:").Append(s.ControlAtA);
+                if (s.ControlAtB != 0) sb.Append(",CB:").Append(s.ControlAtB);
+                if (s.Limit > 0) sb.Append(",S").Append(s.Limit);
                 sb.Append(';');
             }
             return sb.ToString();
@@ -2854,7 +3170,16 @@ namespace Traffic.Sim
                 {
                     string[] f = item.Split(',');
                     var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]) };
-                    // What the lanes may do at each end comes last of all: TA or TB, and a number for each lane.
+                    // Last of all: a speed limit posted on it (S), and what its traffic meets at the intersection at each end (CA, CB).
+                    while (f.Length > 3 && (f[f.Length - 1].StartsWith("CA:") || f[f.Length - 1].StartsWith("CB:") || (f[f.Length - 1].Length > 1 && f[f.Length - 1][0] == 'S' && char.IsDigit(f[f.Length - 1][1]))))
+                    {
+                        string last = f[f.Length - 1];
+                        if (last[0] == 'S') s.Limit = int.Parse(last.Substring(1));
+                        else if (last[1] == 'A') s.ControlAtA = int.Parse(last.Substring(3));
+                        else s.ControlAtB = int.Parse(last.Substring(3));
+                        Array.Resize(ref f, f.Length - 1);
+                    }
+                    // Before those, what the lanes may do at each end: TA or TB, and a number for each lane.
                     while (f[f.Length - 1].StartsWith("TA:") || f[f.Length - 1].StartsWith("TB:"))
                     {
                         int[] turns = Array.ConvertAll(f[f.Length - 1].Substring(3).Split('.'), int.Parse);

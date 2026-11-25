@@ -1112,6 +1112,227 @@ namespace Traffic.Tests
             foreach (Approach x in node.Arms) if (x != stem) Assert.AreNotEqual(stem.Street, x.Street);
         }
 
+        // ---------------------------------------------------------------- signs, lights and speed limits
+
+        /// <summary>An avenue running east and west, crossed by a street running north and south, with the control asked for from the street.</summary>
+        private static EditableMap SignedCrossing(Control control, string main = "a2p", string side = "s2")
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-350, 0), P(350, 0), T(main), true));
+            Assert.IsNull(map.TryAdd(P(0, -300), P(0, 300), T(side), true));
+            Assert.IsNull(map.TrySetControl(P(2, -100), control, true));
+            return map;
+        }
+
+        /// <summary>Send one car alone up to the crossing, from the south on the street or from the west on the avenue: the slowest it goes in the last 30 m before the line.</summary>
+        private static double SlowestAtTheLine(World world, bool onStreet)
+        {
+            Node node = world.Nodes.Single(n => n.Arms.Count == 4);
+            var sim = new Simulation(world, 1);
+            sim.ArrivalsPerMinute = 0;
+            Lane lane = world.Lanes.First(l => l.Kind == LaneKind.Road && l.Node == node.Id && (onStreet ? l.Path.At(0).Y < -100 : l.Path.At(0).X < -100));
+            Car car = sim.AddCar(lane.Id, lane.Length - 150, 8, DriverParams.Normal, Turn.Straight);
+            double slowest = double.PositiveInfinity;
+            for (int step = 0; step < 30 * 60 && car.Lane == lane.Id; step++)
+            {
+                sim.Step();
+                if (car.Lane == lane.Id && lane.Length - car.S < 30) slowest = Math.Min(slowest, car.V);
+            }
+            Assert.AreNotEqual(lane.Id, car.Lane, "the car gets through");
+            return slowest;
+        }
+
+        [Test]
+        public void AStopSignMeansStopAndAYieldSignMeansSlow()
+        {
+            // Ohio Revised Code 4511.43: stop at the line for a stop sign; for a yield sign slow down, and stop only if need be.
+            World stop = SignedCrossing(Control.Stop).ToWorld();
+            Node node = stop.Nodes.Single(n => n.Arms.Count == 4);
+            Assert.AreEqual(JunctionMode.Signs, node.DefaultMode);
+            foreach (Approach arm in node.Arms) Assert.AreEqual(Math.Abs(Math.Sin(arm.Angle)) > 0.5 ? Sign.Stop : Sign.None, arm.Sign, "stop signs on the street, none on the avenue");
+            Assert.Less(SlowestAtTheLine(stop, true), 0.5, "the street's traffic stops, with nobody else about");
+            Assert.Greater(SlowestAtTheLine(stop, false), 12, "the avenue's does not slow at all");
+
+            World yield = SignedCrossing(Control.Yield).ToWorld();
+            double slowest = SlowestAtTheLine(yield, true);
+            Assert.Greater(slowest, 3, "at a yield sign, with nothing coming, nobody stops");
+            Assert.Less(slowest, 8, "but they slow down for it");
+
+            World none = SignedCrossing(Control.NoSigns).ToWorld();
+            Assert.Less(SlowestAtTheLine(none, false), 8, "with no signs at all everyone comes up slowly, the avenue too");
+            Assert.Greater(SlowestAtTheLine(none, false), 3);
+        }
+
+        [TestCase(Control.Stop)]
+        [TestCase(Control.Yield)]
+        [TestCase(Control.NoSigns)]
+        [TestCase(Control.RightOfWay)]
+        public void TrafficSortsItselfOutBySigns(Control control)
+        {
+            World world = SignedCrossing(control, "a4").ToWorld();
+            var sim = new Simulation(world, 5);
+            sim.ArrivalsPerMinute = 5;
+            Grid.Run(sim, 240, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 60);
+        }
+
+        [Test]
+        public void WithNoSignsTheDriverOnTheLeftGivesWay()
+        {
+            // Two cars reach an intersection with no signs at the same moment (Ohio Revised Code 4511.41):
+            // one from the south, one from the east, which is on the first one's right.
+            World world = SignedCrossing(Control.NoSigns, "s2").ToWorld();
+            Node node = world.Nodes.Single(n => n.Arms.Count == 4);
+            var sim = new Simulation(world, 1);
+            sim.ArrivalsPerMinute = 0;
+            Lane fromSouth = world.Lanes.First(l => l.Kind == LaneKind.Road && l.Node == node.Id && l.Path.At(0).Y < -100);
+            Lane fromEast = world.Lanes.First(l => l.Kind == LaneKind.Road && l.Node == node.Id && l.Path.At(0).X > 100);
+            Car left = sim.AddCar(fromSouth.Id, fromSouth.Length - 60, 8, DriverParams.Normal, Turn.Straight);
+            Car right = sim.AddCar(fromEast.Id, fromEast.Length - 60, 8, DriverParams.Normal, Turn.Straight);
+            double leftIn = -1, rightIn = -1;
+            for (int step = 0; step < 30 * 40; step++)
+            {
+                sim.Step();
+                if (leftIn < 0 && left.Lane != fromSouth.Id) leftIn = sim.Time;
+                if (rightIn < 0 && right.Lane != fromEast.Id) rightIn = sim.Time;
+            }
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(rightIn, 0);
+            Assert.Greater(leftIn, rightIn, "the car on the right goes first");
+        }
+
+        [Test]
+        public void TheControlAskedForIsSeenFromEachStreetAndIsSaved()
+        {
+            EditableMap map = SignedCrossing(Control.Stop);
+            Control control;
+            bool automatic;
+            Assert.IsTrue(map.ControlAt(P(2, -100), out control, out automatic));
+            Assert.AreEqual(Control.Stop, control);
+            Assert.IsFalse(automatic);
+            Assert.IsTrue(map.ControlAt(P(-2, 100), out control, out automatic), "the same street, coming the other way");
+            Assert.AreEqual(Control.Stop, control);
+            Assert.IsFalse(map.ControlAt(P(2, 100), out control, out automatic), "the lane beside it has left the intersection behind");
+            Assert.IsTrue(map.ControlAt(P(-100, -2), out control, out automatic));
+            Assert.AreEqual(Control.RightOfWay, control, "from the avenue it is the cross street that stops");
+
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.AreEqual(JunctionMode.Signs, loaded.ToWorld().Nodes.Single(n => n.Arms.Count == 4).DefaultMode);
+
+            // The other choices, each as the network sees it.
+            Assert.AreEqual(JunctionMode.AllWay, SignedCrossing(Control.AllWayStop).ToWorld().Nodes.Single(n => n.Arms.Count == 4).DefaultMode);
+            Assert.AreEqual(JunctionMode.Signal, SignedCrossing(Control.Light).ToWorld().Nodes.Single(n => n.Arms.Count == 4).DefaultMode);
+            Assert.AreEqual(JunctionMode.ProtectedLeft, SignedCrossing(Control.LightWithArrows).ToWorld().Nodes.Single(n => n.Arms.Count == 4).DefaultMode);
+            EditableMap back = SignedCrossing(Control.Stop);
+            Assert.IsNull(back.TrySetControl(P(-100, -2), Control.Automatic, true));
+            Assert.IsTrue(back.ControlAt(P(2, -100), out control, out automatic));
+            Assert.IsTrue(automatic);
+            Assert.AreEqual(Control.Light, control, "left to the game, a 40 mph avenue gets a light");
+
+            // A road that is not on its way to an intersection has nothing to set.
+            var plain = new EditableMap();
+            Assert.IsNull(plain.TryAdd(P(0, 0), P(200, 0), T("s2"), true));
+            Assert.IsNotNull(plain.TrySetControl(P(100, -2), Control.Stop, true));
+        }
+
+        [Test]
+        public void ARoadCanBePostedWithASpeedLimit()
+        {
+            // The limits are the ones in Ohio Revised Code 4511.21(B).
+            CollectionAssert.AreEqual(new[] { 15, 20, 25, 35, 50, 55, 60, 65, 70 }, EditableMap.SpeedLimits);
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(0, 0), T("a2p"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(300, 60), T("a2p"), true), "a second piece of the same road");
+            bool posted;
+            Assert.AreEqual(40, map.SpeedAt(P(-100, 2), out posted));
+            Assert.IsFalse(posted);
+            Assert.IsNotNull(map.TrySetSpeed(P(-100, 2), 45, true), "45 is not one of the limits the law sets out");
+            Assert.IsNull(map.TrySetSpeed(P(-100, 2), 55, true));
+            Assert.AreEqual(55, map.SpeedAt(P(200, 42), out posted), "the whole road, from end to end");
+            Assert.IsTrue(posted);
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count, "still one road");
+            foreach (Lane lane in world.Lanes) Assert.AreEqual(55 * 0.44704, lane.SpeedLimit, 0.01);
+
+            // It is saved, and a piece drawn on from the road comes under the same limit.
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(map.Serialize(), loaded.Serialize());
+            Assert.IsNull(loaded.TryAdd(P(300, 60), P(500, 60), T("a2p"), true));
+            Assert.AreEqual(55, loaded.SpeedAt(P(400, 62), out posted));
+            Assert.AreEqual(2, loaded.ToWorld().Nodes.Count);
+
+            // Taking the sign down goes back to the usual limit for the kind of road.
+            Assert.IsNull(map.TrySetSpeed(P(-100, 2), 0, true));
+            Assert.AreEqual(40, map.SpeedAt(P(-100, 2), out posted));
+            Assert.IsFalse(posted);
+        }
+
+        [Test]
+        public void ASlowAvenueMeetingAStreetGetsStopSignsLeftToTheGame()
+        {
+            // Left to the game, an intersection gets stop signs all round where nothing faster than 25 mph meets.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T("a2p"), true));
+            Assert.IsNull(map.TryAdd(P(0, -300), P(0, 300), T("s2"), true));
+            Assert.AreEqual(JunctionMode.Signal, map.ToWorld().Nodes.Single(n => n.Arms.Count == 4).DefaultMode);
+            Assert.IsNull(map.TrySetSpeed(P(-100, 2), 25, true));
+            Assert.IsNull(map.TrySetSpeed(P(100, 2), 25, true));
+            Assert.AreEqual(JunctionMode.AllWay, map.ToWorld().Nodes.Single(n => n.Arms.Count == 4).DefaultMode);
+        }
+
+        [Test]
+        public void OneWayStreetsThatCrossMakeAnIntersection()
+        {
+            // A grid of one-way streets: where two cross they need a light or signs. (They were once taken for a
+            // fork, since both run "nearly the same way" by the measure used for roads that part and come together.)
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T("a1"), true));
+            Assert.IsNull(map.TryAdd(P(0, -300), P(0, 300), T("a1"), true));
+            Assert.IsNull(map.TryAdd(P(-300, 120), P(300, 120), T("s1"), true));
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count(n => n.Controlled));
+            Assert.AreEqual(0, map.Faults().Count);
+            var sim = new Simulation(world, 2);
+            sim.ArrivalsPerMinute = 10;
+            Grid.Run(sim, 180, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 40);
+        }
+
+        [Test]
+        public void ALeftTurnOnRedIsAllowedFromOneOneWayStreetIntoAnother()
+        {
+            // Ohio Revised Code 4511.13(C)(1)(b): after stopping, a right turn on red, or a left from a one-way street into a one-way street.
+            foreach (bool oneWayAhead in new[] { true, false })
+            {
+                var map = new EditableMap();
+                Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T("a1"), true), "one way, eastbound");
+                Assert.IsNull(map.TryAdd(P(0, -300), P(0, 300), T(oneWayAhead ? "a1" : "a2p"), true), "northbound, or two-way");
+                World world = map.ToWorld();
+                Node node = world.Nodes.Single(n => n.Arms.Count == 4);
+                Assert.AreEqual(JunctionMode.Signal, node.DefaultMode);
+                var sim = new Simulation(world, 1);
+                sim.ArrivalsPerMinute = 0;
+                Lane east = world.Lanes.First(l => l.Kind == LaneKind.Road && l.Node == node.Id && l.Path.At(0).X < -100);
+                // Hold the light green for the cross street, so the eastbound car faces a red for as long as it likes.
+                Junction jn = sim.Junctions[node.Id];
+                jn.ShowGreen(1 - node.Arms[east.Arm].Street, false, sim.Time);
+                jn.Hold = true;
+                Car car = sim.AddCar(east.Id, east.Length - 80, 10, DriverParams.Normal, Turn.Left);
+                bool stopped = false;
+                for (int step = 0; step < 30 * 40; step++)
+                {
+                    car.Drv.Compliance = 1;
+                    sim.Step();
+                    if (car.Lane == east.Id && car.V < 0.2) stopped = true;
+                }
+                Assert.IsTrue(stopped, "it stops for the red first");
+                Assert.AreEqual(oneWayAhead, car.Lane != east.Id, oneWayAhead ? "then turns left into the one-way street" : "and waits, since the street ahead is two-way");
+            }
+        }
+
         [Test]
         public void ARoadLandingTooCloseBesideACornerGoesThroughTheCorner()
         {

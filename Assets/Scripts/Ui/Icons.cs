@@ -3,7 +3,7 @@ namespace Traffic.Ui
     /// <summary>The icons on the toolbar, each drawn in code as a white shape that can be tinted.</summary>
     public static class Icons
     {
-        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star", "replace", "angle", "grid", "move", "lane", "plus", "minus", "goleft", "goahead", "goright" };
+        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star", "replace", "angle", "grid", "move", "lane", "plus", "minus", "goleft", "goahead", "goright", "sign" };
 
         /// <summary>Draw an icon into a square of the given size. Returns coverage per pixel, rows from the top.</summary>
         public static float[] Draw(string name, int size)
@@ -143,6 +143,18 @@ namespace Traffic.Ui
                     break;
                 case "minus":
                     p.Line(18, 50, 82, 50, 13);
+                    break;
+                case "sign": // an eight-sided sign on a post
+                    p.Line(36, 8, 64, 8, 8);
+                    p.Line(64, 8, 84, 28, 8);
+                    p.Line(84, 28, 84, 52, 8);
+                    p.Line(84, 52, 64, 72, 8);
+                    p.Line(64, 72, 36, 72, 8);
+                    p.Line(36, 72, 16, 52, 8);
+                    p.Line(16, 52, 16, 28, 8);
+                    p.Line(16, 28, 36, 8, 8);
+                    p.Line(34, 40, 66, 40, 9);
+                    p.Line(50, 72, 50, 94, 8);
                     break;
                 case "lane": // a road, and a plus beside it
                     p.Line(16, 12, 16, 88, 8);

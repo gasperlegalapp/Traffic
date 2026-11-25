@@ -35,6 +35,7 @@ namespace Traffic.Lab
             public Approach Arm;
             public GameObject Heads;
             public GameObject StopSign;
+            public GameObject YieldSign;
             public List<LaneHead> Lanes = new List<LaneHead>();
         }
 
@@ -670,10 +671,31 @@ namespace Traffic.Lab
             view.StopSign.transform.SetParent(root, false);
             view.StopSign.transform.position = MeshKit.ToWorld(arm.Post.X, arm.Post.Y);
             view.StopSign.transform.rotation = MeshKit.Heading(arm.H);
-            MeshKit.Spawn("Pole", MeshKit.Box(0.28f, 4.4f, 0.28f), dark, view.StopSign.transform).transform.localPosition = new Vector3(0, 2.2f, 0);
-            MeshKit.Spawn("Rim", Octagon(1.15f), MeshKit.Unlit(Color.white), view.StopSign.transform, false).transform.localPosition = new Vector3(0, 4.42f, 0);
-            MeshKit.Spawn("Plate", Octagon(1.0f), MeshKit.Unlit(MeshKit.Hex(0xe5383b)), view.StopSign.transform, false).transform.localPosition = new Vector3(0, 4.5f, 0);
+            // The signs stand upright on their posts and face the traffic they are for, as the signal heads do (local -x).
+            // They are drawn flat, so they are stood up with their faces that way; the plate sits a little in front of its rim.
+            Quaternion upright = Quaternion.LookRotation(Vector3.up, Vector3.left);
+            MeshKit.Spawn("Pole", MeshKit.Box(0.22f, 2.6f, 0.22f), dark, view.StopSign.transform).transform.localPosition = new Vector3(0, 1.3f, 0);
+            Transform rim = MeshKit.Spawn("Rim", Octagon(1.15f), MeshKit.Unlit(Color.white), view.StopSign.transform, false).transform;
+            rim.localPosition = new Vector3(-0.13f, 3.2f, 0);
+            rim.localRotation = upright;
+            Transform plate = MeshKit.Spawn("Plate", Octagon(1.0f), MeshKit.Unlit(MeshKit.Hex(0xe5383b)), view.StopSign.transform, false).transform;
+            plate.localPosition = new Vector3(-0.17f, 3.2f, 0);
+            plate.localRotation = upright;
             view.StopSign.SetActive(false);
+
+            // A yield sign: a white triangle with a red border, point down.
+            view.YieldSign = new GameObject("Yield sign");
+            view.YieldSign.transform.SetParent(root, false);
+            view.YieldSign.transform.position = MeshKit.ToWorld(arm.Post.X, arm.Post.Y);
+            view.YieldSign.transform.rotation = MeshKit.Heading(arm.H);
+            MeshKit.Spawn("Pole", MeshKit.Box(0.22f, 2.6f, 0.22f), dark, view.YieldSign.transform).transform.localPosition = new Vector3(0, 1.3f, 0);
+            rim = MeshKit.Spawn("Rim", PointDown(1.45f), MeshKit.Unlit(MeshKit.Hex(0xe5383b)), view.YieldSign.transform, false).transform;
+            rim.localPosition = new Vector3(-0.13f, 3.3f, 0);
+            rim.localRotation = upright;
+            plate = MeshKit.Spawn("Plate", PointDown(0.8f), MeshKit.Unlit(Color.white), view.YieldSign.transform, false).transform;
+            plate.localPosition = new Vector3(-0.17f, 3.3f, 0);
+            plate.localRotation = upright;
+            view.YieldSign.SetActive(false);
             return view;
         }
 
@@ -723,6 +745,20 @@ namespace Traffic.Lab
             }
             red.Line(ring, 0.26, h + 0.01f);
             red.Line(new[] { at(b1, 2.0, 1.0), at(b1, 0.0, -1.0) }, 0.26, h + 0.01f);
+        }
+
+        /// <summary>A triangle with one corner pointing down once it is stood upright, for a yield sign.</summary>
+        private static Mesh PointDown(float radius)
+        {
+            var ring = new List<Vec>();
+            for (int i = 0; i < 3; i++)
+            {
+                double a = -System.Math.PI / 2 + 2 * System.Math.PI / 3 * i;
+                ring.Add(new Vec(System.Math.Cos(a) * radius, System.Math.Sin(a) * radius));
+            }
+            var b = new FlatBuilder();
+            b.Fan(new Vec(0, 0), ring, 0);
+            return b.Build();
         }
 
         private static Mesh Octagon(float radius)
@@ -798,7 +834,7 @@ namespace Traffic.Lab
 
         private static Color LampColor(SignalLight st)
         {
-            return st == SignalLight.Green ? Green : st == SignalLight.Yellow ? Yellow : Red;
+            return st == SignalLight.Green ? Green : st == SignalLight.Yellow || st == SignalLight.Yield ? Yellow : Red;
         }
 
         /// <summary>The light a lane shows: the best of the turns it allows.</summary>
@@ -809,7 +845,7 @@ namespace Traffic.Lab
             {
                 if (lane.Connectors[t] < 0) continue;
                 SignalLight st = jn.State(lane.Arm, (Turn)t);
-                if (st == SignalLight.Stop) return SignalLight.Stop;
+                if (st == SignalLight.Stop || st == SignalLight.Yield) return st;
                 if (st == SignalLight.Green) best = SignalLight.Green;
                 else if (st == SignalLight.Yellow && best == SignalLight.Red) best = SignalLight.Yellow;
             }
@@ -824,16 +860,19 @@ namespace Traffic.Lab
             {
                 SignalLight light = LaneLight(junctions[line.Lane.Node], line.Lane);
                 Color c = LampColor(light);
-                if (light == SignalLight.Stop && !flash) c *= 0.45f;
+                // A stop sign shows at the stop line as flashing red, and a yield sign as flashing yellow.
+                if ((light == SignalLight.Stop || light == SignalLight.Yield) && !flash) c *= 0.45f;
                 line.Material.color = c;
             }
             foreach (SignalView s in signals)
             {
                 Junction jn = junctions[s.Arm.Node];
-                bool stop = jn.Mode == JunctionMode.AllWay;
-                s.Heads.SetActive(!stop);
-                s.StopSign.SetActive(stop);
-                if (stop) continue;
+                // A light, or a sign for this road, or (on the through street of an intersection run by signs) nothing.
+                bool lit = jn.Mode == JunctionMode.Signal || jn.Mode == JunctionMode.ProtectedLeft;
+                s.Heads.SetActive(lit);
+                s.StopSign.SetActive(jn.Mode == JunctionMode.AllWay || jn.SignAt(s.Arm.Arm) == Sign.Stop);
+                s.YieldSign.SetActive(jn.SignAt(s.Arm.Arm) == Sign.Yield);
+                if (!lit) continue;
                 foreach (LaneHead head in s.Lanes)
                 {
                     SignalLight st = LaneLight(jn, head.Lane);

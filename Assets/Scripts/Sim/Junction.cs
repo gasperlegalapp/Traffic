@@ -12,6 +12,12 @@ namespace Traffic.Sim
         ProtectedLeft,
         /// <summary>Stop sign on every arm.</summary>
         AllWay,
+        /// <summary>
+        /// Stop or yield signs on some arms and none on the others: traffic with no sign to face
+        /// has the right of way, and traffic facing one waits for a gap. With no signs at all,
+        /// whoever gets there first goes first, and of two who arrive together the one on the left gives way.
+        /// </summary>
+        Signs,
     }
 
     public enum SignalLight
@@ -20,6 +26,8 @@ namespace Traffic.Sim
         Yellow,
         Red,
         Stop,
+        /// <summary>Facing a yield sign.</summary>
+        Yield,
     }
 
     /// <summary>Controls one intersection: runs its signal cycle and answers what light each movement sees.</summary>
@@ -50,6 +58,8 @@ namespace Traffic.Sim
         public int Seq;
 
         private readonly int[] armStreet;
+        private readonly Sign[] signs;
+        private readonly int[] streetLanes = new int[2];
         private readonly bool[] streetHasLeft = new bool[2];
         private readonly bool[] streetUsed = new bool[2];
         private readonly List<Stage> phases = new List<Stage>();
@@ -59,9 +69,12 @@ namespace Traffic.Sim
         {
             Id = node.Id;
             armStreet = new int[node.Arms.Count];
+            signs = new Sign[node.Arms.Count];
             foreach (Approach arm in node.Arms)
             {
                 armStreet[arm.Arm] = arm.Street;
+                signs[arm.Arm] = arm.Sign;
+                streetLanes[arm.Street] += arm.Inbound.Count;
                 streetUsed[arm.Street] = true;
                 foreach (int id in arm.Inbound)
                 {
@@ -93,6 +106,8 @@ namespace Traffic.Sim
                     Add(AllRed, street, All, SignalLight.Red);
                 }
             }
+            NoSigns = mode == JunctionMode.Signs;
+            foreach (Sign sign in signs) if (sign != Sign.None) NoSigns = false;
             Phase = 0;
             PhaseT = 0;
             Seq = 0;
@@ -107,6 +122,39 @@ namespace Traffic.Sim
         }
 
         public int PhaseCount => phases.Count;
+
+        /// <summary>
+        /// True where nothing runs the intersection at all: no light, and no sign on any arm.
+        /// Everyone then comes up to it slowly, and whoever gets there first goes first.
+        /// </summary>
+        public bool NoSigns { get; private set; }
+
+        /// <summary>The sign that traffic arriving on an arm faces, when the intersection is run by signs.</summary>
+        public Sign SignAt(int arm)
+        {
+            return Mode == JunctionMode.Signs ? signs[arm] : Sign.None;
+        }
+
+        /// <summary>
+        /// Run the intersection by signs, with one kind of sign on every arm of its side
+        /// street (the street with fewer lanes arriving) and none on the other, which becomes the
+        /// through street. With Sign.None nobody has a sign at all.
+        /// </summary>
+        public void SignSideStreet(Sign sign, double time)
+        {
+            int side = streetUsed[0] && streetUsed[1] && streetLanes[0] < streetLanes[1] ? 0 : 1;
+            for (int arm = 0; arm < signs.Length; arm++) signs[arm] = armStreet[arm] == side ? sign : Sign.None;
+            SetMode(JunctionMode.Signs, time);
+        }
+
+        /// <summary>Whether the signs are as SignSideStreet would put them.</summary>
+        public bool IsSideStreet(Sign sign)
+        {
+            if (Mode != JunctionMode.Signs) return false;
+            int side = streetUsed[0] && streetUsed[1] && streetLanes[0] < streetLanes[1] ? 0 : 1;
+            for (int arm = 0; arm < signs.Length; arm++) if (signs[arm] != (armStreet[arm] == side ? sign : Sign.None)) return false;
+            return true;
+        }
 
         public void Update(double dt, double time)
         {
@@ -179,6 +227,8 @@ namespace Traffic.Sim
         private SignalLight StateIn(int arm, Turn turn, int phase)
         {
             if (Mode == JunctionMode.AllWay) return SignalLight.Stop;
+            // By signs: a road with none has the right of way. With no signs anywhere, everyone has to take care.
+            if (Mode == JunctionMode.Signs) return signs[arm] == Sign.Stop ? SignalLight.Stop : signs[arm] == Sign.Yield || NoSigns ? SignalLight.Yield : SignalLight.Green;
             if (Mode == JunctionMode.Free || phases.Count == 0) return SignalLight.Green;
             Stage p = phases[phase];
             if (p.Street != armStreet[arm]) return SignalLight.Red;

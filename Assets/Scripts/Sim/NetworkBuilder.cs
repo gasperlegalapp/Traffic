@@ -75,6 +75,8 @@ namespace Traffic.Sim
             public double Inner;
             /// <summary>The gap between the two directions is pavement, a lane of its own, and not a strip of ground.</summary>
             public bool PavedMiddle;
+            /// <summary>The sign its traffic faces on arriving at each end.</summary>
+            public Sign SignA, SignB;
         }
 
         private readonly List<Vec> nodePos = new List<Vec>();
@@ -175,6 +177,16 @@ namespace Traffic.Sim
         public void PaveMiddle()
         {
             roads[roads.Count - 1].PavedMiddle = true;
+        }
+
+        /// <summary>
+        /// Put a sign in front of the traffic of the road just added, where it arrives at its
+        /// first node and at its second. They only count at a node whose mode is Signs.
+        /// </summary>
+        public void Signs(Sign atFirst, Sign atSecond)
+        {
+            roads[roads.Count - 1].SignA = atFirst;
+            roads[roads.Count - 1].SignB = atSecond;
         }
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
@@ -357,6 +369,8 @@ namespace Traffic.Sim
                 Approach armA = AddArm(r.A, Math.Atan2(ay, ax), r.B);
                 Approach armB = AddArm(r.B, Math.Atan2(-by, -bx), r.A);
                 armA.Road = armB.Road = roads.IndexOf(r);
+                armA.Sign = r.SignA;
+                armB.Sign = r.SignB;
                 armA.Shift = r.ShiftA;
                 armB.Shift = -r.ShiftB;
                 armA.Inner = armB.Inner = r.Inner;

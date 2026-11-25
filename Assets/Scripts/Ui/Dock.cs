@@ -69,9 +69,9 @@ namespace Traffic.Ui
         /// <summary>True on the map the player draws, which is the only one that can be built on.</summary>
         public bool OwnMap;
         public bool Building, Paused, CanUndo, CanRedo;
-        /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen, 3 moves and bends what is there, 4 adds and removes lanes.</summary>
+        /// <summary>0 draws roads, 1 bulldozes, 2 replaces a road with the kind chosen, 3 moves and bends what is there, 4 adds and removes lanes, 5 sets signs, lights and speed limits.</summary>
         public int Tool;
-        private static readonly string[] ToolIcons = { "road", "bulldoze", "replace", "move", "lane" };
+        private static readonly string[] ToolIcons = { "road", "bulldoze", "replace", "move", "lane", "sign" };
         public int Shape, Road, Rate;
         /// <summary>Snapping: pull new roads into line with the roads they start from.</summary>
         public bool SnapAngles;
@@ -116,6 +116,7 @@ namespace Traffic.Ui
             {
                 Add(DockKind.Tool, 0, Button);
                 Add(DockKind.Tool, 4, Button);
+                Add(DockKind.Tool, 5, Button);
                 Add(DockKind.Tool, 3, Button);
                 Add(DockKind.Tool, 2, Button);
                 Add(DockKind.Tool, 1, Button);
@@ -455,8 +456,9 @@ namespace Traffic.Ui
             switch (item.Kind)
             {
                 case DockKind.Tool:
-                    title = item.Index == 0 ? "Road" : item.Index == 1 ? "Bulldoze" : item.Index == 2 ? "Replace" : item.Index == 3 ? "Move" : "Lane";
-                    body = item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground.\nKeys 1, 2 and 3 pick the shape."
+                    title = item.Index == 0 ? "Road" : item.Index == 1 ? "Bulldoze" : item.Index == 2 ? "Replace" : item.Index == 3 ? "Move" : item.Index == 4 ? "Lane" : "Signs";
+                    body = item.Index == 5 ? "Set the rules of the road. Click a lane, and a card sets what runs the intersection it leads to (a traffic light, stop signs all round, a stop or yield sign on that street only, or nothing) and the speed limit posted on its road.\nThe rules are Ohio's: a stop sign means stop, then give way to anything close enough to be a danger; with no signs, the driver on the left gives way to the one on the right.\nKey T."
+                        : item.Index == 0 ? "Draw roads. Pick a shape and a kind of road, then click on the ground.\nKeys 1, 2 and 3 pick the shape."
                         : item.Index == 1 ? "Click a road to remove it.\nKey B."
                         : item.Index == 2 ? "Pick a kind of road, then click a road to change it to that kind: wider or narrower, faster or slower, one-way or two.\nKey R."
                         : item.Index == 3 ? "Drag a point to move it, and the roads that meet there follow.\nDrag the middle of a road to bend it into a curve, or pull a curve back straight.\nKey M."

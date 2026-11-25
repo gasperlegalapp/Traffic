@@ -19,7 +19,7 @@ namespace Traffic.Ui
     public sealed class RoadPen
     {
         /// <summary>The tools, numbered as the toolbar numbers them.</summary>
-        public const int Road = 0, Bulldoze = 1, Replace = 2, Move = 3, Lane = 4;
+        public const int Road = 0, Bulldoze = 1, Replace = 2, Move = 3, Lane = 4, Signs = 5;
         /// <summary>The shapes a road can be drawn in.</summary>
         public const int Straight = 0, Curve = 1, Roundabout = 2;
 
@@ -248,6 +248,62 @@ namespace Traffic.Ui
             return refused == null;
         }
 
+        // ---------------------------------------------------------------- signs, lights and speed limits
+
+        /// <summary>The tools that work on a lane picked with a click: the lane tool, and the signs tool.</summary>
+        private bool Picking => tool == Lane || tool == Signs;
+
+        /// <summary>
+        /// For the picked lane, whether it leads to an intersection that a light or signs can
+        /// run, and if so what runs it now, as seen from that lane's road, and whether that was
+        /// left to the game.
+        /// </summary>
+        public bool PickedControl(out Control control, out bool automatic)
+        {
+            control = Control.Automatic;
+            automatic = true;
+            return picked && map.ControlAt(pickedAt, out control, out automatic);
+        }
+
+        /// <summary>Say what should run the intersection the picked lane leads to. Returns true if the map changed.</summary>
+        public bool SetControl(Control control, out string refused)
+        {
+            refused = picked ? map.TrySetControl(pickedAt, control, true) : "Pick a lane first.";
+            stamp++;
+            mapChanges++;
+            return refused == null;
+        }
+
+        /// <summary>The speed limit on the road of the picked lane, miles per hour, and whether the player posted it.</summary>
+        public int PickedSpeed(out bool posted)
+        {
+            posted = false;
+            return picked ? map.SpeedAt(pickedAt, out posted) : 0;
+        }
+
+        /// <summary>Post the next higher (or lower) of the speed limits the law provides on the road of the picked lane. Returns true if the map changed.</summary>
+        public bool StepSpeed(int direction, out string refused)
+        {
+            bool posted;
+            int now = PickedSpeed(out posted), next = now;
+            int[] limits = EditableMap.SpeedLimits;
+            if (direction > 0) foreach (int mph in limits) { if (mph > now) { next = mph; break; } }
+            if (direction < 0) for (int i = limits.Length - 1; i >= 0; i--) { if (limits[i] < now) { next = limits[i]; break; } }
+            refused = !picked ? "Pick a lane first." : next == now ? (direction > 0 ? "That is the highest speed limit there is." : "That is the lowest speed limit there is.") : map.TrySetSpeed(pickedAt, next, true);
+            stamp++;
+            mapChanges++;
+            return refused == null;
+        }
+
+        /// <summary>Take down the speed limit posted on the road of the picked lane, leaving the usual one for its kind of road. Returns true if the map changed.</summary>
+        public bool UsualSpeed(out string refused)
+        {
+            refused = picked ? map.TrySetSpeed(pickedAt, 0, true) : "Pick a lane first.";
+            stamp++;
+            mapChanges++;
+            return refused == null;
+        }
+
         // ---------------------------------------------------------------- the pointer
 
         /// <summary>The pointer is over this spot on the ground. Pixel is how many meters one pixel of screen covers.</summary>
@@ -292,7 +348,7 @@ namespace Traffic.Ui
                 laneDrag = false;
                 return;
             }
-            if (tool == Lane)
+            if (Picking)
             {
                 picked = false;
                 return;
@@ -324,6 +380,8 @@ namespace Traffic.Ui
                 if (tool == Bulldoze) return "Click a road to remove it.";
                 if (tool == Replace) return "Click a road to change it to the kind chosen.";
                 if (tool == Move) return "Drag a point to move it. Drag the middle of a road to bend it, or pull it back straight.";
+                if (tool == Signs) return picked ? "Choose what runs the intersection ahead, or post a speed limit, with the card. Click another lane to pick it."
+                    : "Click a lane. The card then sets the sign or light at the intersection it leads to, and the speed limit on its road.";
                 if (tool == Lane) return picked ? "Add or remove a lane with the card. Click another lane to pick it, or drag along a road to add a lane for part of it."
                     : "Click a lane to pick it. Drag along the side of a road to add a lane for just that part of it.";
                 if (shape == Roundabout) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
@@ -367,7 +425,7 @@ namespace Traffic.Ui
             }
             if (tool == Move) return false;
             // The lane tool works by presses and drags: see Press and Release.
-            if (tool == Lane) return false;
+            if (Picking) return false;
 
             if (shape == Roundabout)
             {
@@ -516,9 +574,10 @@ namespace Traffic.Ui
         /// <summary>The button went down with the move tool out. True if it took hold of a point or a road.</summary>
         public bool Press(Vec p)
         {
-            if (tool == Lane && map != null)
+            if (Picking && map != null)
             {
                 // Every press of the lane tool is taken: let go where it went down it picks a lane, dragged along a road it lays one.
+                // (The signs tool picks a lane the same way, and a drag with it does nothing more.)
                 laneDrag = true;
                 laneFrom = laneTo = p;
                 grabMoved = false;
@@ -562,7 +621,7 @@ namespace Traffic.Ui
             if (laneDrag)
             {
                 laneDrag = false;
-                if (grabMoved)
+                if (grabMoved && tool == Lane)
                 {
                     refused = map.TryAddLane(laneFrom, laneTo, true);
                     mapChanges++;
@@ -725,12 +784,12 @@ namespace Traffic.Ui
             {
                 // Over the toolbar or a panel: only where the half-drawn road starts.
                 if (hasStart && tool == Road) Ghost.Pin(start, true, false);
-                if (tool == Lane) LanePicture();
+                if (Picking) LanePicture();
                 return;
             }
             if (tool == Bulldoze || tool == Replace) OverRoad();
             else if (tool == Move) Handles();
-            else if (tool == Lane) LanePicture();
+            else if (Picking) LanePicture();
             else if (shape == Roundabout) RingPicture();
             else RoadPicture();
             // With nothing else to say, say what is wrong with a ringed place the pointer is on.
@@ -852,7 +911,7 @@ namespace Traffic.Ui
         /// </summary>
         private void LanePicture()
         {
-            if (laneDrag && grabMoved)
+            if (laneDrag && grabMoved && tool == Lane)
             {
                 string problem = Checked(laneTo, () => map.TryAddLane(laneFrom, laneTo, false));
                 Vec[] line = map.LaneLine(laneFrom, laneTo);

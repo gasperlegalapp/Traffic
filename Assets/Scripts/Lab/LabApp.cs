@@ -354,6 +354,17 @@ namespace Traffic.Lab
             if (changed) DrawingChanged(before);
         }
 
+        /// <summary>A button on the signs tool's card was pressed.</summary>
+        private void SignAction(SignAct act, Control which)
+        {
+            string before = drawing.Serialize();
+            string refused;
+            bool changed = act == SignAct.Control ? pen.SetControl(which, out refused) : act == SignAct.UsualSpeed ? pen.UsualSpeed(out refused)
+                : pen.StepSpeed(act == SignAct.Faster ? 1 : -1, out refused);
+            if (refused != null) Toast(refused);
+            if (changed) DrawingChanged(before);
+        }
+
         private Mesh ghostMesh;
         private GameObject ghostObject;
         private int ghostVersion = -1;
