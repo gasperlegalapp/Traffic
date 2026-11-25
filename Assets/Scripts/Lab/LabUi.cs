@@ -117,7 +117,7 @@ namespace Traffic.Lab
             dock.CanRedo = redo.Count > 0;
             dock.Tool = pen.Tool;
             dock.SnapAngles = pen.SnapAngles;
-            dock.SnapGrid = pen.SnapGrid;
+            dock.Grid = pen.Grid;
             dock.Shape = pen.Shape;
             if (dock.Roads.Length == 0) dock.Roads = RoadTiles();
             dock.Road = roadChoice;
@@ -240,8 +240,10 @@ namespace Traffic.Lab
                     pen.Level = Dock.HeightLevels[levelChoice];
                     break;
                 case DockKind.Snap:
-                    if (item.Index == 0) pen.SnapAngles = !pen.SnapAngles;
-                    else pen.SnapGrid = !pen.SnapGrid;
+                    pen.SnapAngles = !pen.SnapAngles;
+                    break;
+                case DockKind.Grid:
+                    pen.Grid = RoadPen.GridFeet[item.Index];
                     break;
                 case DockKind.Pause:
                     paused = !paused;
@@ -833,6 +835,7 @@ namespace Traffic.Lab
                         else if (e.keyCode == KeyCode.L) pen.Tool = RoadPen.Lane;
                         else if (e.keyCode == KeyCode.R) pen.Tool = RoadPen.Replace;
                         else if (e.keyCode == KeyCode.B) pen.Tool = RoadPen.Bulldoze;
+                        else if (e.keyCode == KeyCode.G) pen.Grid = RoadPen.GridFeet[(System.Array.IndexOf(RoadPen.GridFeet, pen.Grid) + 1) % RoadPen.GridFeet.Length];
                     }
                     else if (e.keyCode == KeyCode.Space) paused = !paused;
                     else if (e.keyCode == KeyCode.Period)

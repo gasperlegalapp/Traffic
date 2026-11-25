@@ -23,8 +23,13 @@ namespace Traffic.Ui
         /// <summary>The shapes a road can be drawn in.</summary>
         public const int Straight = 0, Curve = 1, Roundabout = 2;
 
-        /// <summary>The spacing of the grid that points can be kept to, meters (30 ft).</summary>
-        public const double GridStep = 9.144;
+        /// <summary>
+        /// The grids that points can be kept to, by the spacing of their lines in feet; 0 is no
+        /// grid. They are the measures of the old land survey, each a whole number of the one
+        /// before: 33 ft is half a surveyor's chain, 330 ft a city block at sixteen to the mile,
+        /// and 660 ft a furlong, a long block at eight to the mile.
+        /// </summary>
+        public static readonly int[] GridFeet = { 0, 33, 165, 330, 660 };
         /// <summary>How near a straight road has to come to lining up with another before it is pulled into line, radians.</summary>
         public const double Magnet = 7 * Math.PI / 180;
         private const double Feet = 3.28084;
@@ -32,7 +37,10 @@ namespace Traffic.Ui
         private EditableMap map;
         private int tool, shape, level;
         private RoadType type = RoadType.All[0];
-        private bool snapAngles = true, snapGrid;
+        private bool snapAngles = true;
+        /// <summary>The spacing of the grid, meters; 0 when there is none.</summary>
+        private double grid;
+        private int gridFeet;
 
         /// <summary>The map being built. Giving it a new one forgets any half-drawn road.</summary>
         public EditableMap Map
@@ -104,16 +112,24 @@ namespace Traffic.Ui
             }
         }
 
-        /// <summary>Keep new points on a 30 ft grid.</summary>
-        public bool SnapGrid
+        /// <summary>
+        /// Keep new points on a grid with lines this many feet apart (one of GridFeet), which is
+        /// drawn on the ground while building; 0 for none. With a grid on, every new point lands
+        /// where two of its lines cross, so roads come out square and blocks the same size.
+        /// </summary>
+        public int Grid
         {
-            get { return snapGrid; }
+            get { return gridFeet; }
             set
             {
-                snapGrid = value;
+                gridFeet = Math.Max(value, 0);
+                grid = gridFeet / Feet;
                 stamp++;
             }
         }
+
+        /// <summary>Whether there is a grid.</summary>
+        public bool SnapGrid => grid > 0;
 
         /// <summary>What the next click would do, as a picture to lay on the ground.</summary>
         public readonly Ghost Ghost = new Ghost();
@@ -579,7 +595,16 @@ namespace Traffic.Ui
 
         private Vec OnGrid(Vec p)
         {
-            return snapGrid ? new Vec(Math.Round(p.X / GridStep) * GridStep, Math.Round(p.Y / GridStep) * GridStep) : p;
+            return grid > 0 ? new Vec(OnGrid(p.X), OnGrid(p.Y)) : p;
+        }
+
+        /// <summary>The nearest line of the grid. The edge of the map counts as one, in place of a line that would fall just outside it.</summary>
+        private double OnGrid(double v)
+        {
+            double line = Math.Round(v / grid) * grid;
+            bool edged = map != null && map.Bound > 0;
+            if (edged && (Math.Abs(v) > map.Bound - 1e-6 || Math.Abs(line) > map.Bound)) return Math.Sign(v) * map.Bound;
+            return line;
         }
 
         /// <summary>
@@ -597,8 +622,16 @@ namespace Traffic.Ui
             int node = map.NodeAt(p, NodeReach);
             if (node >= 0) return map.Nodes[node];
             Vec on;
-            if (map.NearestSegment(p, RoadReach, out on) >= 0) return on;
+            if (map.NearestSegment(p, RoadReach, out on) >= 0)
+            {
+                // On a road. With a grid, at the place where the road meets the grid, if it runs through one close by.
+                Vec there;
+                if (grid > 0 && map.NearestSegment(OnGrid(p), 2, out there) >= 0) return there;
+                return on;
+            }
             p = OnGrid(p);
+            // With a grid on, the grid has the last word: lining up with other roads would take the point off it.
+            if (grid > 0) return p;
             double settled;
             bool pointing = shape == Curve && !Heading(out settled);
             if (!snapAngles || !hasStart || !(shape == Straight || pointing)) return p;
@@ -624,7 +657,6 @@ namespace Traffic.Ui
             if (!lined) return p;
             // Keep the length the pointer asked for, so the end stays under it as nearly as it can.
             double along = dx * Math.Cos(heading) + dy * Math.Sin(heading);
-            if (snapGrid) along = Math.Round(along / GridStep) * GridStep;
             return new Vec(start.X + Math.Cos(heading) * along, start.Y + Math.Sin(heading) * along);
         }
 
@@ -687,6 +719,7 @@ namespace Traffic.Ui
             Note = "";
             NoteBad = false;
             if (map == null) return;
+            GridPicture();
             Marks();
             if (!hasPointer)
             {
@@ -710,6 +743,35 @@ namespace Traffic.Ui
                 break;
             }
         }
+
+        /// <summary>
+        /// The grid, as faint lines on the ground under everything else, while a road is being
+        /// drawn or moved. Lines a block apart (330 ft) are a little stronger. From far out, where
+        /// the lines chosen would crowd together, only every fifth, tenth or twentieth is drawn.
+        /// </summary>
+        private void GridPicture()
+        {
+            if (grid <= 0 || !(tool == Road || tool == Move)) return;
+            double half = map.Bound > 0 ? map.Bound : 600, block = 330 / Feet;
+            double step = grid;
+            foreach (int feet in GridFeet)
+            {
+                if (feet / Feet < grid - 1e-6 || step >= Ghost.Pixel * 10) continue;
+                step = feet / Feet;
+            }
+            double thin = Ghost.AtLeast(0.22, 1), thick = Ghost.AtLeast(0.4, 1.5);
+            for (int k = (int)Math.Ceiling(-half / step); k * step <= half; k++)
+            {
+                double at = k * step;
+                // The edge of the map is drawn already, as a broken line.
+                if (map.Bound > 0 && Math.Abs(at) > half - step / 2) continue;
+                bool strong = Math.Abs(at / block - Math.Round(at / block)) < 1e-6;
+                Ghost.Stroke(new[] { new Vec(at, -half), new Vec(at, half) }, strong ? thick : thin, strong ? GridStrong : GridFaint);
+                Ghost.Stroke(new[] { new Vec(-half, at), new Vec(half, at) }, strong ? thick : thin, strong ? GridStrong : GridFaint);
+            }
+        }
+
+        private const uint GridFaint = 0x30FFFFFF, GridStrong = 0x5CFFFFFF;
 
         private List<Fault> faults = new List<Fault>();
 

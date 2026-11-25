@@ -17,7 +17,7 @@ namespace Traffic.Ui
         void Text(string text, double x, double y, double w, double h, int size, bool bold, int align, uint color);
     }
 
-    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Snap, Pause, Step, Rate }
+    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Snap, Grid, Pause, Step, Rate }
 
     /// <summary>A kind of road on offer in the tray: enough to draw its picture and explain it.</summary>
     public sealed class DockRoad
@@ -73,8 +73,10 @@ namespace Traffic.Ui
         public int Tool;
         private static readonly string[] ToolIcons = { "road", "bulldoze", "replace", "move", "lane" };
         public int Shape, Road, Rate;
-        /// <summary>Snapping: pull new roads into line with the roads they start from, and keep points to a grid.</summary>
-        public bool SnapAngles, SnapGrid;
+        /// <summary>Snapping: pull new roads into line with the roads they start from.</summary>
+        public bool SnapAngles;
+        /// <summary>The grid new points are kept to, by the spacing of its lines in feet (one of RoadPen.GridFeet); 0 for none.</summary>
+        public int Grid;
         /// <summary>Which of HeightLevels is chosen.</summary>
         public int Height;
         /// <summary>The heights a road can be built at, in the order the tray shows them: the ground, three bridges, three tunnels.</summary>
@@ -170,7 +172,7 @@ namespace Traffic.Ui
                     int columns = (g.Value.Count + 1) / 2;
                     trayW += between + columns * tile + (columns - 1) * Gap;
                 }
-                trayW += between + 4 * high + 3 * Gap + between + high;
+                trayW += between + 4 * high + 3 * Gap + between + high + between + 3 * high + 2 * Gap;
                 trayH = 12 + 14 + 6 + high * 2 + Gap + 10 + 16 + 10;
                 trayX = Math.Round((w - trayW) / 2);
                 trayY = barY - 10 - trayH;
@@ -199,7 +201,11 @@ namespace Traffic.Ui
                 }
                 tx += 4 * high + 3 * Gap + between;
                 headings.Add(new KeyValuePair<string, double>("SNAP", tx));
-                for (int i = 0; i < 2; i++) Items.Add(new DockItem { Kind = DockKind.Snap, Index = i, X = tx, Y = ty + i * (high + Gap), W = high, H = high });
+                Items.Add(new DockItem { Kind = DockKind.Snap, Index = 0, X = tx, Y = ty, W = high, H = high });
+                // The grids: none, then finer along the top and blocks underneath.
+                tx += high + between;
+                headings.Add(new KeyValuePair<string, double>("GRID, FT", tx));
+                for (int i = 0; i < RoadPen.GridFeet.Length; i++) Items.Add(new DockItem { Kind = DockKind.Grid, Index = i, X = tx + (i % 3) * (high + Gap), Y = ty + (i / 3) * (high + Gap), W = high, H = high });
                 Top = trayY;
             }
             else if (note)
@@ -300,10 +306,21 @@ namespace Traffic.Ui
                         HeightTile(s, item, HeightLevels[item.Index], Height == item.Index, hot);
                         break;
                     case DockKind.Snap:
+                        if (!SnapAngles) s.Fill(item.X, item.Y, item.W, item.H, 12, Lift);
+                        Glyph(s, item, "angle", SnapAngles, hot, true);
+                        break;
+                    case DockKind.Grid:
                         {
-                            bool on = item.Index == 0 ? SnapAngles : SnapGrid;
-                            if (!on) s.Fill(item.X, item.Y, item.W, item.H, 12, Lift);
-                            Glyph(s, item, item.Index == 0 ? "angle" : "grid", on, hot, true);
+                            int feet = RoadPen.GridFeet[item.Index];
+                            bool on = Grid == feet;
+                            s.Fill(item.X, item.Y, item.W, item.H, 12, on ? Accent : hot ? Hover : Lift);
+                            if (feet == 0) s.Text("Off", item.X, item.Y, item.W, item.H, 13, true, 1, on ? Ink : Light);
+                            else
+                            {
+                                // The grid's icon, small, over the spacing of its lines.
+                                s.Icon("grid", item.X + item.W / 2 - 7, item.Y + 5, 14, on ? Ink : Dim);
+                                s.Text(feet.ToString(), item.X, item.Y + 18, item.W, item.H - 20, 13, true, 1, on ? Ink : Light);
+                            }
                         }
                         break;
                 }
@@ -488,10 +505,20 @@ namespace Traffic.Ui
                     body = Roads[item.Index].Body;
                     break;
                 case DockKind.Snap:
-                    title = item.Index == 0 ? "Snap to angles" : "Snap to grid";
-                    body = item.Index == 0 ? "Pulls a straight road into line when it is nearly straight on from the roads it starts from, square to them, or halfway between. On open ground it lines up with the compass."
-                        : "Keeps the ends of new roads on a 30 ft grid, so they line up.";
-                    body += "\nJoining an existing road always comes first.";
+                    title = "Snap to angles";
+                    body = "Pulls a straight road into line when it is nearly straight on from the roads it starts from, square to them, or halfway between. On open ground it lines up with the compass.\nJoining an existing road always comes first, and a grid, when one is on, comes before this.";
+                    break;
+                case DockKind.Grid:
+                    {
+                        int feet = RoadPen.GridFeet[item.Index];
+                        title = feet == 0 ? "No grid" : feet + " ft grid";
+                        body = feet == 0 ? "New points go exactly where you click."
+                            : feet == 33 ? "Fine lines, half a surveyor's chain apart, for close work that still lines up."
+                            : feet == 165 ? "Half a block: for alleys, and short blocks."
+                            : feet == 330 ? "A city block, sixteen to the mile. Lay streets along the lines for a square grid of blocks."
+                            : "A long block, eight to the mile. With the 330 ft grid it gives the oblong blocks of many Midwestern cities.";
+                        if (feet > 0) body += "\nThe grid shows on the ground, and every new point lands where two of its lines cross. Joining an existing road still comes first. Key G steps through the grids.";
+                    }
                     break;
                 case DockKind.Height:
                     {

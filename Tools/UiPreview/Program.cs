@@ -152,6 +152,7 @@ internal static class Program
         var states = new (string Name, Action<Dock> Set, DockKind Point, int Index)[]
         {
             ("Building, pointing at the wide avenue", d => { d.Building = true; d.Road = 0; d.CanUndo = true; d.Hint = "Click where the road starts."; }, DockKind.Road, 3),
+            ("Building on the block grid, pointing at the 330 ft grid", d => { d.Building = true; d.Road = 1; d.Grid = 330; d.SnapAngles = true; d.CanUndo = true; d.Hint = "Click where the road ends. Right-click to stop."; }, DockKind.Grid, 3),
             ("Building a curve on a bridge, pointing at bridge level 2", d => { d.Building = true; d.Shape = 1; d.Road = 5; d.Height = 1; d.CanUndo = true; d.CanRedo = true; d.Hint = "Sweep the road round to where it should end, and click. Right-click to point it again."; }, DockKind.Shape, 1),
             ("Moving, pointing at the move tool", d => { d.Building = true; d.Tool = 3; d.CanUndo = true; d.Hint = "Drag a point to move it. Drag the middle of a road to bend it, or pull it back straight."; }, DockKind.Tool, 3),
             ("Bulldozing", d => { d.Building = true; d.Tool = 1; d.Hint = "Click a road to remove it."; }, DockKind.Tool, 1),
@@ -371,6 +372,18 @@ internal static class PenScenes
         pen = New("s2", -130, -70, 110, -70, 110, -70, 110, 70, 110, 70, -130, 70, -130, 70, -130, -70);
         Click(pen, 0, 10, px);
         add("Pointed too close beside a corner for a junction of its own: it joins at the corner", pen, 93.5, -70, 0, 0, z);
+
+        // A grid of half blocks (165 ft): streets laid along its lines, and the next one snapping to it.
+        const double g = 165 / 3.28084;
+        pen = New("s2", -2 * g, -g, 2 * g, -g, -2 * g, g, 2 * g, g, -g, -g, -g, g);
+        pen.Grid = 165;
+        Click(pen, g + 6, -g - 5, px);
+        add("Grid on: the lines show on the ground, and the road being drawn lands where they cross", pen, g - 9, g + 12, 0, 0, z);
+
+        pen = New("s1");
+        pen.Grid = 33;
+        Click(pen, -72, -31, px);
+        add("The fine grid, for close work: a one-way street between two of its crossings", pen, 58, -27, 0, 0, z);
 
         pen = New("a4", -150, 20, 150, 20);
         pen.Tool = RoadPen.Lane;
