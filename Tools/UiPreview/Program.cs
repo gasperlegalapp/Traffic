@@ -360,6 +360,18 @@ internal static class PenScenes
         Click(pen, -60, -110, px);
         add("Crossing two roads: a ring where each intersection will be", pen, 20, 100, 0, 0, z);
 
+        pen = New("s2", -130, -70, 110, -70, 110, -70, 110, 70, 110, 70, -130, 70, -130, 70, -130, -70);
+        Click(pen, -40, -70, px);
+        add("A block laid with straight streets: tight corners, and a street drawn across it", pen, -40, 70, 0, 0, z);
+
+        pen = New("a4", -130, -70, 110, -70, 110, -70, 110, 70, 110, 70, -130, 70, -130, 70, -130, -70);
+        Click(pen, 20, -120, px);
+        add("An avenue across the corner of a block, at a slant: an intersection on each side", pen, 160, 20, 0, 0, z);
+
+        pen = New("s2", -130, -70, 110, -70, 110, -70, 110, 70, 110, 70, -130, 70, -130, 70, -130, -70);
+        Click(pen, 0, 10, px);
+        add("Pointed too close beside a corner for a junction of its own: it joins at the corner", pen, 93.5, -70, 0, 0, z);
+
         pen = New("a4", -150, 20, 150, 20);
         pen.Tool = RoadPen.Lane;
         add("Lane tool: the lane under the pointer, lit for its whole length", pen, 30, 14, 0, 0, 2.2);

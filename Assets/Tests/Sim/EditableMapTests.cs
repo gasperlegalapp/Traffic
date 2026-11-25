@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
 using Traffic.Sim;
@@ -334,7 +335,8 @@ namespace Traffic.Tests
             Assert.GreaterOrEqual(world.Medians.Count, 2, "the avenues should have medians");
             foreach (Lane lane in world.Lanes)
             {
-                if (lane.Kind != LaneKind.Road || lane.IsExit) continue;
+                // (A lane that ends before the junction, where its road narrows, hands its traffic to the lane beside it.)
+                if (lane.Kind != LaneKind.Road || lane.IsExit || lane.MergeSide != 0) continue;
                 Assert.IsTrue(lane.Connectors != null && lane.Connectors.Any(c => c >= 0), "lane " + lane.Id + " leads nowhere");
             }
             var sim = new Simulation(world, seed);
@@ -881,43 +883,97 @@ namespace Traffic.Tests
             Assert.Greater(sim.Left, 15);
         }
 
-        [Test]
-        public void ACornerBetweenTwoPiecesIsRounded()
+        /// <summary>How near the lanes of a road come to a point, and the tightest any of them turns.</summary>
+        private static void Corner(World world, Vec at, out double nearest, out double tightest)
         {
+            nearest = double.PositiveInfinity;
+            tightest = double.PositiveInfinity;
+            foreach (Lane lane in world.Lanes)
+            {
+                for (double d = 0; d <= lane.Length; d += 1) nearest = Math.Min(nearest, Geo.Hypot(lane.Path.At(d).X - at.X, lane.Path.At(d).Y - at.Y));
+                for (double d = 4; d + 4 <= lane.Length; d += 1) tightest = Math.Min(tightest, Geo.Circumradius(lane.Path.At(d - 4).Point, lane.Path.At(d).Point, lane.Path.At(d + 4).Point));
+            }
+        }
+
+        [Test]
+        public void StraightStreetsMeetInATightCorner()
+        {
+            // Two straight stretches of a street: the corner of a city block, not a sweeping curve.
             var map = new EditableMap();
             Assert.IsNull(map.TryAdd(P(-150, 0), P(0, 0), T("s2"), true));
             Assert.IsNull(map.TryAdd(P(0, 0), P(0, 150), T("s2"), true));
             World world = map.ToWorld();
-            Assert.AreEqual(2, world.Nodes.Count);
-            // The road cuts the corner: no lane comes within a few meters of the point where the pieces meet.
-            double nearest = double.PositiveInfinity, tightest = double.PositiveInfinity;
+            Assert.AreEqual(2, world.Nodes.Count, "still one road, with no junction at the corner");
+            double nearest, tightest;
+            Corner(world, P(0, 0), out nearest, out tightest);
+            Assert.Less(nearest, 4, "the road stays close to the corner the player drew");
+            Assert.Greater(tightest, 5, "but its lanes still turn, on a curve a car can drive");
+            Assert.Less(tightest, 12);
+            // The road is straight until a few meters from the corner.
             foreach (Lane lane in world.Lanes)
             {
-                for (double d = 0; d <= lane.Length; d += 1) nearest = Math.Min(nearest, Geo.Hypot(lane.Path.At(d).X, lane.Path.At(d).Y));
-                for (double d = 6; d + 6 <= lane.Length; d += 2) tightest = Math.Min(tightest, Geo.Circumradius(lane.Path.At(d - 6).Point, lane.Path.At(d).Point, lane.Path.At(d + 6).Point));
+                for (double d = 0; d <= lane.Length; d += 2)
+                {
+                    PathPose at = lane.Path.At(d);
+                    if (at.X < -12) Assert.Less(Math.Abs(Math.Abs(at.Y) - NetworkBuilder.LaneW / 2), 0.05, "straight along the first stretch");
+                    if (at.Y > 12) Assert.Less(Math.Abs(Math.Abs(at.X) - NetworkBuilder.LaneW / 2), 0.05, "straight along the second");
+                }
             }
-            Assert.Greater(nearest, 7);
-            Assert.Greater(tightest, 22, "nowhere tighter than a street may turn");
+
+            // Traffic gets round it.
+            var sim = new Simulation(world, 3);
+            sim.ArrivalsPerMinute = 12;
+            Grid.Run(sim, 180);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 15);
+        }
+
+        [Test]
+        public void AHighwayCornerIsSweptRound()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(0, 0), T("h2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 200), T("h2"), true));
+            double nearest, tightest;
+            Corner(map.ToWorld(), P(0, 0), out nearest, out tightest);
+            Assert.Greater(nearest, 20, "the road cuts the corner");
+            Assert.Greater(tightest, 60, "nowhere tighter than a highway may turn");
+        }
+
+        [Test]
+        public void ASlightChangeOfDirectionStillGetsACurve()
+        {
+            // A kink of a few degrees is eased over a length, not turned in a couple of meters.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-150, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(150, 50), T("s2"), true));
+            double nearest, tightest;
+            Corner(map.ToWorld(), P(0, 0), out nearest, out tightest);
+            Assert.Greater(tightest, 22, "as gentle as a street's curves");
         }
 
         [Test]
         public void ACornerWithNoRoomToRoundItIsRefused()
         {
-            // A square turn with only 60 ft either side of it: a street cannot get round that.
+            // A street turns a square corner with very little either side of it.
             var map = new EditableMap();
-            Assert.IsNull(map.TryAdd(P(0, 0), P(18, 0), T("s2"), true), "a short stretch on its own is fine now");
-            string refused = map.TryAdd(P(18, 0), P(18, 18), T("s2"), true);
+            Assert.IsNull(map.TryAdd(P(0, 0), P(18, 0), T("s2"), true), "a short stretch on its own is fine");
+            Assert.IsNull(map.TryAdd(P(18, 0), P(18, 18), T("s2"), true), "and so is a square corner on to another");
+            Assert.AreEqual(0, map.SharpCorners().Count);
+            // A wide avenue cannot make two square corners 50 ft apart: its inside edge would have nothing to turn round.
+            var wide = new EditableMap();
+            Assert.IsNull(wide.TryAdd(P(0, 0), P(60, 0), T("a4"), true));
+            Assert.IsNull(wide.TryAdd(P(60, 0), P(60, 15), T("a4"), true));
+            string refused = wide.TryAdd(P(60, 15), P(120, 15), T("a4"), true);
             Assert.IsNotNull(refused);
-            StringAssert.Contains("sharp", refused);
-            // A gentle turn in the same space is fine, and so is the square turn given room.
-            Assert.IsNull(map.TryAdd(P(18, 0), P(38, 4), T("s2"), true));
-            var roomy = new EditableMap();
-            Assert.IsNull(roomy.TryAdd(P(0, 0), P(60, 0), T("s2"), true));
-            Assert.IsNull(roomy.TryAdd(P(60, 0), P(60, 60), T("s2"), true));
-            // A highway needs far more room than a street for the same turn.
+            StringAssert.Contains("corner", refused);
+            Assert.IsNull(wide.TryAdd(P(60, 15), P(60, 60), T("a4"), true), "carrying straight on is fine");
+            // A highway is swept round, and needs far more room for the same turn.
             var fast = new EditableMap();
             Assert.IsNull(fast.TryAdd(P(0, 0), P(45, 0), T("h2"), true));
-            Assert.IsNotNull(fast.TryAdd(P(45, 0), P(45, 45), T("h2"), true));
+            refused = fast.TryAdd(P(45, 0), P(45, 45), T("h2"), true);
+            Assert.IsNotNull(refused);
+            StringAssert.Contains("sharp", refused);
             Assert.IsNull(fast.TryAdd(P(45, 0), P(140, 20), T("h2"), true));
         }
 
@@ -925,14 +981,255 @@ namespace Traffic.Tests
         public void MovingAPointCannotMakeACornerTooSharp()
         {
             var map = new EditableMap();
-            Assert.IsNull(map.TryAdd(P(-100, 0), P(0, 0), T("s2"), true));
-            Assert.IsNull(map.TryAdd(P(0, 0), P(100, 20), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(-100, 0), P(0, 0), T("h2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(100, 20), T("h2"), true));
             int far = map.NodeAt(P(100, 20), 5);
-            string refused = map.TryMove(far, P(3, 16), true);
-            Assert.IsNotNull(refused, "a square turn with 50 ft to make it in");
+            string refused = map.TryMove(far, P(10, 25), true);
+            Assert.IsNotNull(refused, "a highway turning most of a square corner in 90 ft");
             StringAssert.Contains("sharp", refused);
-            Assert.IsNull(map.TryMove(far, P(5, 30), true), "with 100 ft there is just room to round it");
+            Assert.IsNull(map.TryMove(far, P(20, 30), true), "with a little more there is just room to sweep round");
             Assert.IsNull(map.TryMove(far, P(90, 60), true));
+
+            // A street's corner can be pulled almost anywhere.
+            var street = new EditableMap();
+            Assert.IsNull(street.TryAdd(P(-100, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(street.TryAdd(P(0, 0), P(100, 20), T("s2"), true));
+            Assert.IsNull(street.TryMove(street.NodeAt(P(100, 20), 5), P(3, 16), true));
+        }
+
+        /// <summary>A block: four straight stretches of one kind of road, joined corner to corner.</summary>
+        private static EditableMap Block(string type, double halfWide = 160, double halfHigh = 90)
+        {
+            var map = new EditableMap();
+            var c = new[] { P(-halfWide, -halfHigh), P(halfWide, -halfHigh), P(halfWide, halfHigh), P(-halfWide, halfHigh) };
+            for (int i = 0; i < 4; i++) Assert.IsNull(map.TryAdd(c[i], c[(i + 1) % 4], T(type), true));
+            return map;
+        }
+
+        /// <summary>How far outside the lanes of the roads the pavement of a bend reaches, at most.</summary>
+        private static double BendOverhang(World world)
+        {
+            double most = 0;
+            foreach (Node node in world.Nodes)
+            {
+                if (node.Arms.Count != 2) continue;
+                foreach (Vec p in node.Box)
+                {
+                    double nearest = double.PositiveInfinity;
+                    foreach (Lane lane in world.Lanes) nearest = Math.Min(nearest, lane.Path.Project(p.X, p.Y).D);
+                    most = Math.Max(most, nearest - NetworkBuilder.LaneW / 2);
+                }
+            }
+            return most;
+        }
+
+        [Test]
+        public void TheCornersOfAClosedLoopAreAllCornersWithNoPavementSpilling()
+        {
+            // A loop with no junction on it needs one point to begin and end at. That one is a bend, and its
+            // pavement follows its lanes round like the rest, with no lump sticking out past the edge lines.
+            World world = Block("a2p").ToWorld();
+            Assert.AreEqual(1, world.Nodes.Count);
+            Assert.Less(BendOverhang(world), 0.6, "the pavement of the bend stays under its lanes");
+            foreach (Vec corner in new[] { P(-160, -90), P(160, -90), P(160, 90), P(-160, 90) })
+            {
+                double nearest = double.PositiveInfinity;
+                foreach (Lane lane in world.Lanes) nearest = Math.Min(nearest, lane.Path.Project(corner.X, corner.Y).D);
+                Assert.Less(nearest, 5.5, "every corner is tight");
+            }
+            var sim = new Simulation(world, 4);
+            for (int i = 0; i < 6; i++) sim.Spawn(DriverParams.Normal, 0);
+            Grid.Run(sim, 120);
+            Assert.AreEqual(0, sim.Crashes);
+        }
+
+        [Test]
+        public void WhereOneKindOfRoadTurnsIntoAnotherThePavementFollowsTheLanes()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-120, 0), P(0, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(0, 120), T("a2p"), true));
+            World world = map.ToWorld();
+            Assert.AreEqual(3, world.Nodes.Count, "a bend where the two kinds meet");
+            Assert.Less(BendOverhang(world), 0.6);
+        }
+
+        [Test]
+        public void ARoadCanBeDrawnAcrossTheCornerOfABlock()
+        {
+            // Across a square corner a road meets one side at more of a slant than the other: down to 30 degrees is allowed.
+            EditableMap map = Block("a2p");
+            Assert.IsNull(map.TryAdd(P(20, -200), P(260, 120), T("a4"), true), "53 degrees to one side, 37 to the other");
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Nodes.Count(n => n.Controlled), "an intersection on each side it crosses");
+            string refused = Block("a2p").TryAdd(P(60, -200), P(200, 200), T("a4"), true);
+            Assert.IsNotNull(refused, "19 degrees to a side is too much of a slant");
+            StringAssert.Contains("squarely", refused);
+
+            var sim = new Simulation(world, 6);
+            sim.ArrivalsPerMinute = 14;
+            Grid.Run(sim, 180, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 20);
+        }
+
+        [TestCase("a4", "a4", 35)]
+        [TestCase("a4", "a2p", 32)]
+        [TestCase("a2p", "a2p", 40)]
+        public void RoadsThatCrossAtASlantNeverHaveGreenTogether(string one, string other, double degrees)
+        {
+            // Under 45 degrees the two roads used to be taken for one street, and their lights went green together.
+            var map = new EditableMap();
+            double a = degrees * Math.PI / 180;
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T(one), true));
+            Assert.IsNull(map.TryAdd(P(-Math.Cos(a) * 300, -Math.Sin(a) * 300), P(Math.Cos(a) * 300, Math.Sin(a) * 300), T(other), true));
+            World world = map.ToWorld();
+            Node node = world.Nodes.Single(n => n.Controlled);
+            foreach (Approach x in node.Arms)
+            {
+                foreach (Approach y in node.Arms)
+                {
+                    bool sameRoad = Math.Abs(Math.Cos(x.Angle - y.Angle)) > 0.99;
+                    Assert.AreEqual(sameRoad, x.Street == y.Street, "the two ends of a road share a green, and the roads take turns");
+                }
+            }
+            var sim = new Simulation(world, 3);
+            sim.ArrivalsPerMinute = 14;
+            Grid.Run(sim, 180, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 40);
+        }
+
+        [Test]
+        public void ARoadThatJoinsAtASlantWaitsForTheRoadItJoins()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(240, 170), T("a2p"), true), "35 degrees");
+            Node node = map.ToWorld().Nodes.Single(n => n.Controlled);
+            Assert.AreEqual(3, node.Arms.Count);
+            Approach stem = node.Arms.Single(x => Math.Abs(Math.Sin(x.Angle)) > 0.3);
+            foreach (Approach x in node.Arms) if (x != stem) Assert.AreNotEqual(stem.Street, x.Street);
+        }
+
+        [Test]
+        public void ARoadLandingTooCloseBesideACornerGoesThroughTheCorner()
+        {
+            // 17 m along a side from the corner there is no room for a junction and the corner both.
+            EditableMap map = Block("s2");
+            Vec[] line;
+            List<Vec> meets;
+            Assert.IsNull(map.TryAdd(P(-60, 0), P(-143, 90), T("s2"), true, null, 0, out line, out meets));
+            Assert.Less(Geo.Hypot(line[line.Length - 1].X + 160, line[line.Length - 1].Y - 90), 0.5, "it ends at the corner, which is told to whoever draws it");
+            World world = map.ToWorld();
+            Assert.AreEqual(1, world.Nodes.Count(n => n.Controlled));
+            Assert.AreEqual(3, world.Nodes.First(n => n.Controlled).Arms.Count);
+
+            // Where it cannot go through the corner either (it would run in beside the other side), it says so plainly.
+            string refused = Block("s2").TryAdd(P(-143, 0), P(-143, 90), T("s2"), true);
+            Assert.IsNotNull(refused);
+            StringAssert.Contains("corner", refused);
+            // A little further along there is room.
+            Assert.IsNull(Block("s2").TryAdd(P(-135, 0), P(-135, 90), T("s2"), true));
+        }
+
+        [Test]
+        public void ARoadDrawnOverOneThatIsThereOnlyAddsWhatIsNew()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(0, 0), P(100, 0), T("s2"), true));
+            Assert.IsNull(map.TryAdd(P(-100, 0), P(200, 0), T("s2"), true), "the stretch in the middle is already there");
+            Assert.AreEqual(3, map.Segments.Count);
+            Assert.AreEqual(2, map.ToWorld().Nodes.Count, "one road from end to end");
+            Assert.IsNotNull(map.TryAdd(P(0, 0), P(100, 0), T("s2"), true), "nothing new in that");
+        }
+
+        [Test]
+        public void ARoadCannotBeLaidOnTopOfAnother()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("a4"), true));
+            // Drawn along the avenue, half on its pavement: its ends land on the avenue, and there is nothing new to build.
+            Assert.IsNotNull(map.TryAdd(P(-150, 10), P(150, 10), T("s2"), true));
+            // A long curve that starts and ends well clear but sags on to the avenue in the middle.
+            string refused = map.TryAdd(P(-150, 40), P(150, 40), T("s2"), true, P(0, 9));
+            Assert.IsNotNull(refused, "their pavement would overlap for a hundred meters");
+            StringAssert.Contains("alongside", refused);
+            Assert.AreEqual(1, map.Segments.Count);
+            Assert.IsNull(map.TryAdd(P(-150, 40), P(150, 40), T("s2"), true), "with a gap between them it is just another road");
+            Assert.IsNull(map.TryAdd(P(-40, 120), P(30, -120), T("s2"), true), "and a road across both is fine");
+        }
+
+        [Test]
+        public void ARoadThatEndsOnTheEdgeOfAWideRoadJoinsIt()
+        {
+            // The end of the street is 11 m from the middle of the avenue: clear of its center, but on its pavement.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-200, 0), P(200, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(0, 150), P(0, 11), T("s2"), true));
+            World world = map.ToWorld();
+            Assert.AreEqual(1, world.Nodes.Count(n => n.Arms.Count == 3), "a junction, not a road end lying on the avenue");
+            // And an avenue drawn past the open end of a street takes that end in.
+            var other = new EditableMap();
+            Assert.IsNull(other.TryAdd(P(0, 150), P(0, 11), T("s2"), true));
+            Assert.IsNull(other.TryAdd(P(-200, 0), P(200, 0), T("a4"), true));
+            Assert.AreEqual(1, other.ToWorld().Nodes.Count(n => n.Arms.Count == 3));
+        }
+
+        [Test]
+        public void AnAvenueThatBecomesAStreetLosesItsLaneBeforeTheyMeet()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(0, 0), T("a4"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(300, 0), T("s2"), true));
+            World world = map.ToWorld();
+            Node bend = world.Nodes.First(n => n.Arms.Count == 2);
+            foreach (Approach arm in bend.Arms) Assert.AreEqual(1, arm.Inbound.Count, "one lane arrives from each side: the avenue's outside lane has ended");
+            Assert.AreEqual(1, world.Lanes.Count(l => l.Kind == LaneKind.Road && l.MergeSide != 0), "and its traffic moves over, as at any lane drop");
+
+            var sim = new Simulation(world, 9);
+            sim.ArrivalsPerMinute = 20;
+            Grid.Run(sim, 240);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 60);
+        }
+
+        [Test]
+        public void RoadsDrawnAtRandomAlwaysBuildAndCarryTraffic()
+        {
+            // Whatever is accepted while drawing must make a network that can be built, with nothing lying
+            // on top of anything else, and traffic must get through it.
+            string[] kinds = { "s2", "s2", "a2p", "a4", "a2" };
+            int built = 0;
+            for (int seed = 1; seed <= 4; seed++)
+            {
+                var rng = new Random(seed);
+                var map = new EditableMap();
+                for (int i = 0; i < 30; i++)
+                {
+                    double x = Math.Round((rng.NextDouble() * 2 - 1) * 400), y = Math.Round((rng.NextDouble() * 2 - 1) * 400);
+                    double len = 120 + rng.NextDouble() * 400;
+                    int style = rng.Next(4);
+                    double way = style == 0 ? 0 : style == 1 ? Math.PI / 2 : rng.NextDouble() * Math.PI * 2;
+                    Vec p = map.JoinPoint(P(x, y)), q = map.JoinPoint(P(x + Math.Cos(way) * len, y + Math.Sin(way) * len));
+                    if (map.TryAdd(p, q, T(kinds[rng.Next(kinds.Length)]), true) == null) built++;
+                }
+                World world = map.ToWorld();
+                foreach (Node a in world.Nodes)
+                {
+                    foreach (Node b in world.Nodes)
+                    {
+                        if (a.Id >= b.Id || a.Arms.Count < 2 || b.Arms.Count < 2) continue;
+                        Assert.GreaterOrEqual(Geo.Hypot(a.Pos.X - b.Pos.X, a.Pos.Y - b.Pos.Y), a.Radius + b.Radius, "no junction lies inside another");
+                    }
+                }
+                var sim = new Simulation(world, (uint)seed);
+                sim.ArrivalsPerMinute = 20;
+                Grid.Run(sim, 90, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+                Assert.Greater(sim.Left, 100, "traffic gets through map " + seed);
+                Assert.LessOrEqual(sim.Crashes, 2, "and does not pile up in map " + seed);
+            }
+            Assert.Greater(built, 70, "most of what is drawn can be built");
         }
 
         [Test]

@@ -166,6 +166,8 @@ namespace Traffic.Sim
         public JunctionMode DefaultMode;
         /// <summary>Outline of the pavement inside the intersection.</summary>
         public List<Vec> Box = new List<Vec>();
+        /// <summary>A point inside that outline from which the whole of it can be seen: where the roads meet, or, at a bend, the middle of the bend.</summary>
+        public Vec Hub;
         /// <summary>The edge of the pavement round each corner, from one road to the next, with the pavement on its left.</summary>
         public List<Vec[]> Corners = new List<Vec[]>();
 

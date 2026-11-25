@@ -272,7 +272,7 @@ namespace Traffic.Sim
                         if (between < Math.PI) radius[i] = Math.Max(radius[i], (one[1] + next[1] + 1) / (2 * Math.Sin(between / 2)));
                     }
                 }
-                world.Nodes.Add(new Node { Id = i, Pos = nodePos[i], Radius = radius[i], DefaultMode = nodeMode[i], DeadEnd = ends == 1 && deadEnds.Contains(i) });
+                world.Nodes.Add(new Node { Id = i, Pos = nodePos[i], Hub = nodePos[i], Radius = radius[i], DefaultMode = nodeMode[i], DeadEnd = ends == 1 && deadEnds.Contains(i) });
                 extent = Math.Max(extent, Math.Max(Math.Abs(nodePos[i].X), Math.Abs(nodePos[i].Y)));
             }
             // At a dead end the lanes stop a little short of the end of the pavement, to leave room to turn round in,
@@ -293,6 +293,18 @@ namespace Traffic.Sim
                     length += Geo.Hypot(nodePos[r.B].X - last.X, nodePos[r.B].Y - last.Y);
                     double room = Math.Max(widest[end.Id] - LaneW / 2, LaneW / 2) + PullForward + 0.8;
                     end.Radius = radius[end.Id] = Geo.Clamp(length - radius[other.Id] - 22, 0, room);
+                }
+            }
+
+            // No two junctions may overlap, whether or not a road joins them. (The check on the length of the road
+            // between two junctions does not catch this: when both are large the road comes out long again, back to front.)
+            for (int i = 0; i < nodePos.Count; i++)
+            {
+                if (EndsAt(i) < 2) continue;
+                for (int k = i + 1; k < nodePos.Count; k++)
+                {
+                    if (EndsAt(k) < 2) continue;
+                    if (Geo.Hypot(nodePos[i].X - nodePos[k].X, nodePos[i].Y - nodePos[k].Y) < radius[i] + radius[k]) throw new InvalidOperationException("Two intersections are too close together: one would lie inside the other.");
                 }
             }
 
@@ -602,18 +614,7 @@ namespace Traffic.Sim
                 return;
             }
 
-            // Which arms share a green: those lying along the most north-south road through the node
-            // are one street, and those across it are the other. This holds for roads at any angle.
-            double axis = 0, best = -1;
-            foreach (Approach arm in node.Arms)
-            {
-                if (Math.Abs(Math.Sin(arm.Angle)) > best)
-                {
-                    best = Math.Abs(Math.Sin(arm.Angle));
-                    axis = arm.Angle;
-                }
-            }
-            foreach (Approach arm in node.Arms) arm.Street = Math.Abs(Math.Cos(arm.Angle - axis)) >= Math.Cos(Math.PI / 4) - 1e-9 ? 0 : 1;
+            AssignStreets(node);
 
             var conns = new List<Lane>();
             foreach (Approach arm in node.Arms)
@@ -769,6 +770,70 @@ namespace Traffic.Sim
             }
         }
 
+        /// <summary>
+        /// Decide which arms of an intersection share a green. A road that runs straight through
+        /// (two arms nearly opposite each other) is a street, and so is whatever crosses or joins
+        /// it. Where no road runs straight through, the arms lying along the most north-south one
+        /// are one street and those across it are the other.
+        /// </summary>
+        private static void AssignStreets(Node node)
+        {
+            int count = node.Arms.Count, first = 0;
+            double best = -1;
+            for (int i = 0; i < count; i++)
+            {
+                if (Math.Abs(Math.Sin(node.Arms[i].Angle)) <= best) continue;
+                best = Math.Abs(Math.Sin(node.Arms[i].Angle));
+                first = i;
+            }
+            double axis = node.Arms[first].Angle;
+            foreach (Approach arm in node.Arms) arm.Street = Math.Abs(Math.Cos(arm.Angle - axis)) >= Math.Cos(Math.PI / 4) - 1e-9 ? 0 : 1;
+            if (count < 3 || count > 4) return;
+
+            // Sorting by direction alone goes wrong where two roads cross at a slant: under 45 degrees it would put
+            // both in one street, and give them green together. So pair up the arms that are each other's far side.
+            var road = new int[count];
+            for (int i = 0; i < count; i++) road[i] = -1;
+            int roads = 0;
+            while (true)
+            {
+                int one = -1, other = -1;
+                double widest = Math.PI - 25 * Math.PI / 180;
+                for (int i = 0; i < count; i++)
+                {
+                    for (int k = i + 1; k < count; k++)
+                    {
+                        double apart = Math.Abs(Wrap(node.Arms[i].Angle - node.Arms[k].Angle));
+                        if (road[i] >= 0 || road[k] >= 0 || apart <= widest) continue;
+                        widest = apart;
+                        one = i;
+                        other = k;
+                    }
+                }
+                if (one < 0) break;
+                road[one] = road[other] = roads++;
+            }
+            if (roads == 0) return;
+            // The street that goes first is still the one the most north-south arm is on.
+            for (int i = 0; i < count; i++) node.Arms[i].Street = road[i] == road[first] ? 0 : 1;
+        }
+
+        /// <summary>
+        /// A line round a bend, for traffic that arrives on one arm and leaves on the other: it
+        /// starts offIn to the right of the arriving road's centerline and ends offOut to the
+        /// right of the leaving road's centerline.
+        /// </summary>
+        private static Vec[] BendCurve(Node node, Approach arm, Approach other, double offIn, double offOut)
+        {
+            double hIn = arm.H, hOut = other.Angle;
+            double inX = node.Pos.X + Math.Cos(arm.Angle) * node.Radius, inY = node.Pos.Y + Math.Sin(arm.Angle) * node.Radius;
+            double outX = node.Pos.X + Math.Cos(other.Angle) * node.Radius, outY = node.Pos.Y + Math.Sin(other.Angle) * node.Radius;
+            var a = new PathPose { X = inX + Math.Sin(hIn) * offIn, Y = inY - Math.Cos(hIn) * offIn, H = hIn };
+            var b = new PathPose { X = outX + Math.Sin(hOut) * offOut, Y = outY - Math.Cos(hOut) * offOut, H = hOut };
+            double chord = Geo.Hypot(b.X - a.X, b.Y - a.Y);
+            return Geo.Bezier(a, b, 0.5523 * chord / Math.Sqrt(2));
+        }
+
         /// <summary>Carry the edge lines, the center line and the lane lines round a bend.</summary>
         private void PaintBend(Node node)
         {
@@ -777,21 +842,8 @@ namespace Traffic.Sim
                 // Traffic arrives on this arm and leaves on the other one.
                 Approach other = node.Arms[1 - arm.Arm];
                 if (arm.Inbound.Count == 0 || other.Outbound.Count == 0) continue;
-                double hIn = arm.H;
-                double hOut = other.Angle;
-                double inX = node.Pos.X + Math.Cos(arm.Angle) * node.Radius, inY = node.Pos.Y + Math.Sin(arm.Angle) * node.Radius;
-                double outX = node.Pos.X + Math.Cos(other.Angle) * node.Radius, outY = node.Pos.Y + Math.Sin(other.Angle) * node.Radius;
-                // A curve that starts offIn to the right of the arriving road's centerline
-                // and ends offOut to the right of the leaving road's centerline.
-                Vec[] Curve(double offIn, double offOut)
-                {
-                    var a = new PathPose { X = inX + Math.Sin(hIn) * offIn, Y = inY - Math.Cos(hIn) * offIn, H = hIn };
-                    var b = new PathPose { X = outX + Math.Sin(hOut) * offOut, Y = outY - Math.Cos(hOut) * offOut, H = hOut };
-                    double chord = Geo.Hypot(b.X - a.X, b.Y - a.Y);
-                    return Geo.Bezier(a, b, 0.5523 * chord / Math.Sqrt(2));
-                }
-                world.Markings.Add(new Marking { Pts = Curve(arm.InRight - 0.25, other.OutRight - 0.25), Width = 0.14 });
-                world.Markings.Add(new Marking { Pts = Curve(arm.InLeft + 0.16, other.OutLeft + 0.16), Width = 0.12, Yellow = true });
+                world.Markings.Add(new Marking { Pts = BendCurve(node, arm, other, arm.InRight - 0.25, other.OutRight - 0.25), Width = 0.14 });
+                world.Markings.Add(new Marking { Pts = BendCurve(node, arm, other, arm.InLeft + 0.16, other.OutLeft + 0.16), Width = 0.12, Yellow = true });
                 // A solid line between lanes that go round side by side: no lane changes in the bend.
                 for (int i = 0; i + 1 < arm.Inbound.Count; i++)
                 {
@@ -803,9 +855,36 @@ namespace Traffic.Sim
                     Lane innerOut = world.Lanes[world.Lanes[innerConn].Next];
                     Lane outerOut = world.Lanes[world.Lanes[outerConn].Next];
                     if (outer.Slot != inner.Slot + 1 || outerOut.Slot != innerOut.Slot + 1) continue;
-                    world.Markings.Add(new Marking { Pts = Curve(outer.Slot * LaneW + arm.Inner, outerOut.Slot * LaneW + other.Inner), Width = 0.14 });
+                    world.Markings.Add(new Marking { Pts = BendCurve(node, arm, other, outer.Slot * LaneW + arm.Inner, outerOut.Slot * LaneW + other.Inner), Width = 0.14 });
                 }
             }
+        }
+
+        /// <summary>
+        /// The pavement of a bend, where one road carries on as another: each side of it follows
+        /// the same curve as the lines painted round it, so the paint always lies on the pavement
+        /// and the pavement does not stick out past it. False if no traffic goes round the bend,
+        /// when the plain outline has to do.
+        /// </summary>
+        private bool BuildBend(Node node)
+        {
+            Approach a = node.Arms[0], b = node.Arms[1];
+            bool ab = a.Inbound.Count > 0 && b.Outbound.Count > 0, ba = b.Inbound.Count > 0 && a.Outbound.Count > 0;
+            if (!ab && !ba) return false;
+            // Each side runs with the pavement on its left: the right-hand edge of the traffic going that
+            // way round, or, where none does (a one-way road), the left-hand edge of the traffic coming the other way.
+            Vec[] one = ab ? BendCurve(node, a, b, a.InRight, b.OutRight) : BendCurve(node, b, a, b.InLeft, a.OutLeft);
+            Vec[] two = ba ? BendCurve(node, b, a, b.InRight, a.OutRight) : BendCurve(node, a, b, a.InLeft, b.OutLeft);
+            if (!ab) Array.Reverse(one);
+            if (!ba) Array.Reverse(two);
+            node.Box.AddRange(one);
+            node.Box.AddRange(two);
+            node.Corners.Add(one);
+            node.Corners.Add(two);
+            // The point where the roads meet can lie outside a narrow road's bend: the middle of the bend never does.
+            Vec p = one[one.Length / 2], q = two[two.Length / 2];
+            node.Hub = new Vec((p.X + q.X) / 2, (p.Y + q.Y) / 2);
+            return true;
         }
 
         /// <summary>Decide which turns each arriving lane may make.</summary>
@@ -1026,6 +1105,7 @@ namespace Traffic.Sim
                 cw[i] = new Vec(mx + dy * toCw, my - dx * toCw);
                 ccw[i] = new Vec(mx - dy * toCcw, my + dx * toCcw);
             }
+            if (n == 2 && BuildBend(node)) return;
             for (int i = 0; i < n; i++)
             {
                 int j = (i + 1) % n;

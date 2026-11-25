@@ -415,6 +415,8 @@ namespace Traffic.Sim
                         continue;
                     }
                     double speed = lane.SpeedLimit * 0.9;
+                    // On a road that reaches a junction almost at once, come in slowly enough to stop for it.
+                    if (lane.Length < 45) speed = Math.Min(speed, Math.Sqrt(2 * 2.0 * Math.Max(lane.Length - length - 3, 1)));
                     if (ahead != null)
                     {
                         // Come in no faster than can be stopped, gently, in the room there is.

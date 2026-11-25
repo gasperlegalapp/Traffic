@@ -210,8 +210,12 @@ namespace Traffic.Sim
         /// <summary>How close a click has to be to an existing point, or to a road, to land on it.</summary>
         public const double SnapNode = 13;
         public const double SnapRoad = 9;
-        /// <summary>The sharpest angle allowed between two roads at one point, radians.</summary>
-        public const double MinAngle = 40 * Math.PI / 180;
+        /// <summary>
+        /// The sharpest angle allowed between two roads at one point, radians. It is as low as an
+        /// intersection can sensibly be built: a road drawn across the corner of a block crosses
+        /// one side at a slant, and the intersection there grows to fit.
+        /// </summary>
+        public const double MinAngle = 30 * Math.PI / 180;
         /// <summary>The tightest curve allowed, as a turning radius in meters.</summary>
         public const double MinRadius = 22;
         /// <summary>The furthest round one curve may turn: two thirds of a circle.</summary>
@@ -477,10 +481,48 @@ namespace Traffic.Sim
         /// </summary>
         public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through = null, int level = 0)
         {
-            EditableMap work = Clone();
-            // Make sure the result can actually be built before accepting it.
-            string error = work.Add(p, q, type, through, level) ?? work.Unbuildable(this);
-            if (error != null) return error;
+            Vec[] line;
+            List<Vec> meets;
+            return TryAdd(p, q, type, commit, through, level, out line, out meets);
+        }
+
+        /// <summary>
+        /// The same, and when the road can be built, the line it will follow and the places along
+        /// it where it will meet roads that are already there. The line is not always the one
+        /// asked for: a road that would cross too close beside a corner, a junction or the end of
+        /// a road for a junction of its own to fit goes through that point instead.
+        /// </summary>
+        public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through, int level, out Vec[] line, out List<Vec> meets)
+        {
+            line = null;
+            meets = null;
+            EditableMap work = null;
+            string error = null;
+            // As drawn first. If there is no room for that, try with whatever lands close beside a point of the map going
+            // through the point: first only what is very close, then from further off.
+            foreach (double beside in new[] { 0.0, 24, 40 })
+            {
+                EditableMap attempt = Clone();
+                // Make sure the result can actually be built before accepting it.
+                string problem = attempt.Add(p, q, type, through, level, beside) ?? attempt.Unbuildable(this);
+                if (problem == null)
+                {
+                    work = attempt;
+                    break;
+                }
+                if (error == null) error = problem;
+                if (level != 0 || (problem != NoRoom && problem != TooSharpCorner && problem != TooNearCorner)) break;
+            }
+            if (work == null) return error;
+            var along = new List<Vec>();
+            meets = new List<Vec>();
+            for (int i = work.Segments.Count - work.laid; i < work.Segments.Count; i++)
+            {
+                Vec[] part = work.Trace(work.Segments[i]);
+                for (int k = along.Count == 0 ? 0 : 1; k < part.Length; k++) along.Add(part[k]);
+                if (i + 1 < work.Segments.Count) meets.Add(work.Nodes[work.Segments[i].B]);
+            }
+            line = along.ToArray();
             if (commit)
             {
                 Nodes = work.Nodes;
@@ -488,6 +530,9 @@ namespace Traffic.Sim
             }
             return null;
         }
+
+        /// <summary>How many pieces the road last added was laid in: they are the last of the segments.</summary>
+        private int laid;
 
         /// <summary>The same, for a road given by its lane count (1 one-way, 2, or 4) and speed limit.</summary>
         public string TryAdd(Vec p, Vec q, int lanes, int mph, bool commit, Vec? through = null, int level = 0)
@@ -1275,12 +1320,14 @@ namespace Traffic.Sim
             public Vec At;
         }
 
-        private string Add(Vec p, Vec q, RoadType type, Vec? through, int level)
+        private string Add(Vec p, Vec q, RoadType type, Vec? through, int level, double beside = 0)
         {
             string error;
-            int a = Resolve(p, out error);
+            laid = 0;
+            int a = Resolve(p, out error, beside, level == 0 ? type : null, SnapTo(q));
             if (a < 0) return error;
-            int b = Resolve(q, out error);
+            // The first end may have cut the road it landed on in two: the far end keeps clear of both parts.
+            int b = Resolve(q, out error, beside, level == 0 ? type : null, new Snap { Node = a, Segment = -1 });
             if (b < 0) return error;
             if (a == b) return "Too short.";
 
@@ -1302,14 +1349,23 @@ namespace Traffic.Sim
                 return "Too short to " + (level > 0 ? "climb that high" : "go down that deep") + ": it needs at least " + Math.Round((2 * RampFor(level) + 20) * 3.28084 / 10) * 10 + " ft.";
             }
 
-            // Everything the new road meets on the way becomes a point along it.
+            // Everything the new road meets on the way becomes a point along it: a point of the map close beside its line,
+            // or the end of a road so near that the new road would lie over it.
+            var widest = new double[Nodes.Count];
+            foreach (EditSegment s in Segments)
+            {
+                if (s.Level != 0) continue;
+                widest[s.A] = Math.Max(widest[s.A], s.Type.Width);
+                widest[s.B] = Math.Max(widest[s.B], s.Type.Width);
+            }
             var stops = new List<Stop>();
             for (int i = 0; i < Nodes.Count; i++)
             {
                 if (i == a || i == b) continue;
                 double t;
                 Vec on;
-                if (!(Project(path, Nodes[i], out t, out on) < SnapRoad && t > 0 && t < 1)) continue;
+                double within = level == 0 && widest[i] > 0 ? Math.Max(SnapRoad, (type.Width + widest[i]) / 2 + 1.5) : SnapRoad;
+                if (!(Project(path, Nodes[i], out t, out on) < within && t > 0 && t < 1)) continue;
                 if (level == 0) stops.Add(new Stop { T = t, Node = i });
                 // A bridge or tunnel passes clean over or under a point, unless it is still too near the ground there.
                 else if (Math.Abs(HeightAlong(level, t * pathLength, pathLength)) < Clearance) return "A bridge or tunnel can only meet other roads at its ends.";
@@ -1336,11 +1392,11 @@ namespace Traffic.Sim
                         if (room < Clearance) return "Not enough room between the roads there. Cross nearer the middle of the bridge or tunnel.";
                         continue;
                     }
+                    double fromA = LengthBetween(s, 0, u), fromB = LengthBetween(s, u, 1);
                     if (Dist(x.At, Nodes[s.A]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.A });
                     else if (Dist(x.At, Nodes[s.B]) < SnapNode) stops.Add(new Stop { T = x.T, Node = s.B });
                     // Crossing right beside the end of a piece: go through that end instead, a few meters out of line.
-                    else if (LengthBetween(s, 0, u) < Shortest(s)) stops.Add(new Stop { T = x.T, Node = s.A });
-                    else if (LengthBetween(s, u, 1) < Shortest(s)) stops.Add(new Stop { T = x.T, Node = s.B });
+                    else if (Math.Min(fromA, fromB) < Beside(s, beside)) stops.Add(new Stop { T = x.T, Node = fromA <= fromB ? s.A : s.B });
                     else
                     {
                         stops.Add(new Stop { T = x.T, Node = Split(i, u) });
@@ -1373,12 +1429,21 @@ namespace Traffic.Sim
                 }
                 Vec[] shape = Trace(Nodes[from], Nodes[to], piece.Curved, piece.Mid);
                 if (piece.Curved && TightestRadius(shape) < type.MinRadius) return "That curve is too tight for this kind of road.";
+                // Where the new road runs along one that is already there, that stretch is left as it is.
+                bool there = false;
                 foreach (EditSegment s in Segments)
                 {
                     bool same = (s.A == from && s.B == to) || (s.A == to && s.B == from);
-                    if (same && !s.Curved && !piece.Curved) return "There is already a road there.";
+                    if (same && !s.Curved && !piece.Curved) there = true;
                 }
+                if (there) continue;
                 Segments.Add(piece);
+                laid++;
+            }
+            if (laid == 0) return "There is already a road there.";
+            for (int i = Segments.Count - laid; i < Segments.Count; i++)
+            {
+                if (Alongside(Segments[i])) return "Too close alongside another road. Leave a gap between them, or add lanes to that road with the lane tool.";
             }
 
             foreach (int node in touched)
@@ -1407,7 +1472,7 @@ namespace Traffic.Sim
                 {
                     double between = Math.Abs(Math.Atan2(Math.Sin(headings[i] - headings[k]), Math.Cos(headings[i] - headings[k])));
                     if (between < least) return least < MinAngle ? "Too close together: the roads need to part a little more widely."
-                        : "Too sharp an angle. Only one-way roads can join that closely.";
+                        : "Too shallow an angle: the roads need to meet more squarely. Only a one-way road can merge in that closely.";
                 }
             }
             return null;
@@ -1527,11 +1592,29 @@ namespace Traffic.Sim
         }
 
         /// <summary>Turn a dropped point into a point of the map, splitting a road if it lands on one.</summary>
-        private int Resolve(Vec p, out string error)
+        private int Resolve(Vec p, out string error, double beside = 0, RoadType type = null, Snap? farEnd = null)
         {
             error = null;
             Snap snap = SnapTo(p);
             if (snap.Node >= 0) return snap.Node;
+            if (snap.Segment < 0 && type != null)
+            {
+                // On open ground, but so close beside a road that the end of the new one would lie on top of it: it lands on that
+                // road. The roads at the new road's other end do not count: it leaves them there, and is bound to be close to them.
+                double nearest = double.MaxValue;
+                for (int i = 0; i < Segments.Count; i++)
+                {
+                    EditSegment near = Segments[i];
+                    if (near.Level != 0) continue;
+                    if (farEnd.HasValue && (farEnd.Value.Segment == i || (farEnd.Value.Node >= 0 && (near.A == farEnd.Value.Node || near.B == farEnd.Value.Node)))) continue;
+                    double t;
+                    Vec on;
+                    double d = Project(Trace(near), p, out t, out on);
+                    if (d >= Math.Min(nearest, Touching(type, near.Type))) continue;
+                    nearest = d;
+                    snap = new Snap { Point = on, Node = -1, Segment = i, T = t };
+                }
+            }
             if (snap.Segment < 0)
             {
                 Nodes.Add(p);
@@ -1544,9 +1627,57 @@ namespace Traffic.Sim
                 return -1;
             }
             // Right beside the end of a piece: join at that end.
-            if (LengthBetween(s, 0, snap.T) < Shortest(s)) return s.A;
-            if (LengthBetween(s, snap.T, 1) < Shortest(s)) return s.B;
+            double fromA = LengthBetween(s, 0, snap.T), fromB = LengthBetween(s, snap.T, 1);
+            if (Math.Min(fromA, fromB) < Beside(s, beside)) return fromA <= fromB ? s.A : s.B;
             return Split(snap.Segment, snap.T);
+        }
+
+        /// <summary>How close the middles of two roads can be before their pavement touches, with a little to spare.</summary>
+        private static double Touching(RoadType one, RoadType other)
+        {
+            return (one.Width + other.Width) / 2 + 1.5;
+        }
+
+        /// <summary>
+        /// Whether a new piece of road runs side by side with another road, on top of it: the two
+        /// heading nearly the same way (or opposite ways) with their pavement overlapping, for
+        /// more than a few meters. Roads that cross, or that come together at an angle, do not count.
+        /// </summary>
+        private bool Alongside(EditSegment piece)
+        {
+            if (piece.Level != 0) return false;
+            Vec[] line = Trace(piece);
+            double length = LengthOf(line);
+            int samples = Math.Max(2, (int)(length / 5));
+            foreach (EditSegment s in Segments)
+            {
+                if (s == piece || s.Level != 0) continue;
+                // Roads that meet at a point are judged there, by the angle between them.
+                if (s.A == piece.A || s.A == piece.B || s.B == piece.A || s.B == piece.B) continue;
+                // A one-way road runs in beside the road it joins, or peels away from it, for some way either side of where they meet.
+                double clear = piece.Type.OneWay || s.Type.OneWay ? 90 : 0;
+                Vec[] other = Trace(s);
+                int run = 0;
+                for (int i = 0; i <= samples; i++)
+                {
+                    PathPose here = PoseAlong(line, length * i / samples);
+                    double t;
+                    Vec on;
+                    double d = Project(other, here.Point, out t, out on);
+                    bool beside = false;
+                    if (Dist(here.Point, Nodes[piece.A]) < clear || Dist(here.Point, Nodes[piece.B]) < clear) { }
+                    else if (d < (piece.Type.Width + s.Type.Width) / 2 && t > 1e-6 && t < 1 - 1e-6)
+                    {
+                        Vec before = PointAt(s, Math.Max(t - 0.01, 0)), after = PointAt(s, Math.Min(t + 0.01, 1));
+                        double off = Math.Atan2(after.Y - before.Y, after.X - before.X) - here.H;
+                        beside = Math.Abs(Math.Sin(off)) < 0.17;
+                    }
+                    run = beside ? run + 1 : 0;
+                    // Side by side for three samples running: at least 10 m of one road lying on the other.
+                    if (run >= 3) return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>Cut a road in two at a position along it (0 to 1). Returns the new point.</summary>
@@ -1622,6 +1753,16 @@ namespace Traffic.Sim
             return s.Ring ? RingPiece : SnapNode + 2;
         }
 
+        /// <summary>
+        /// How close to the end of a piece a new road may land on it and still get a junction of
+        /// its own; any closer and it goes through the end. That is the shortest piece, unless
+        /// the road is being fitted in where there is no room, when it is taken further.
+        /// </summary>
+        private static double Beside(EditSegment s, double beside)
+        {
+            return s.Ring ? Shortest(s) : Math.Max(Shortest(s), beside);
+        }
+
         /// <summary>The road a roundabout's ring is made of: one lane, one-way, of the same class as the road chosen.</summary>
         public static RoadType RingType(RoadType chosen)
         {
@@ -1679,7 +1820,7 @@ namespace Traffic.Sim
                     // The road should come in across the ring, not along it.
                     Vec before = PointAt(s, Math.Max(0, x.T / upTo - 0.02)), after = PointAt(s, Math.Min(1, x.T / upTo + 0.02));
                     double along = Math.Atan2(after.Y - before.Y, after.X - before.X), outward = Math.Atan2(x.At.Y - c.Y, x.At.X - c.X);
-                    if (Math.Abs(Math.Cos(along - outward)) < Math.Cos(Math.PI / 2 - MinAngle)) return "A road meets the ring at too shallow an angle.";
+                    if (Math.Abs(Math.Cos(along - outward)) < Math.Cos(Math.PI / 2 - MergeAngle)) return "A road meets the ring at too shallow an angle.";
                     int node = Split(i, x.T / upTo);
                     double d = Dist(Nodes[node], c);
                     Nodes[node] = new Vec(c.X + (Nodes[node].X - c.X) / d * r, c.Y + (Nodes[node].Y - c.Y) / d * r);
@@ -1787,7 +1928,7 @@ namespace Traffic.Sim
         }
 
         /// <summary>Roads may join as a merge when they meet at less than this angle; steeper and they make an intersection.</summary>
-        public static double MergeAngle => MinAngle;
+        public const double MergeAngle = 40 * Math.PI / 180;
         /// <summary>The slight angle a ramp keeps to the road where it meets it.</summary>
         private const double RampTilt = 0.14;
 
@@ -1939,8 +2080,24 @@ namespace Traffic.Sim
 
         /// <summary>A corner turns this little, in radians, without needing to be rounded.</summary>
         private const double Gentle = 0.035;
-        /// <summary>How much of a road's end is left alone when rounding corners, where it meets a junction.</summary>
-        private const double JunctionRoom = 16;
+        /// <summary>How much of a road's end is left alone when rounding corners, where it meets a junction; and the less that a tight corner leaves.</summary>
+        private const double JunctionRoom = 16, CornerRoom = 13;
+
+        /// <summary>
+        /// Whether straight stretches of this kind of road meet in a tight corner, like the corner
+        /// of a city block, instead of a sweeping curve. Streets and avenues do: the player lays
+        /// out grids with them. A highway always sweeps round.
+        /// </summary>
+        private static bool SquareCorners(RoadType type)
+        {
+            return type.Mph < 55;
+        }
+
+        /// <summary>The radius the middle of a road turns a tight corner with: it leaves the inside edge of the road a curve of 5 m.</summary>
+        private static double CornerRadius(RoadType type)
+        {
+            return type.Width / 2 + 5;
+        }
 
         /// <summary>
         /// Whether the two roads at a point carry on as one road: the same kind of road, on the
@@ -2005,12 +2162,31 @@ namespace Traffic.Sim
                 if (joint[i]) continue;
                 foreach (EditSegment s in at[i]) if (!done.Contains(s)) walk(i, s);
             }
-            // What is left is rings of pieces with no junction anywhere on them: each needs one point to begin and end at.
+            // What is left is rings of pieces with no junction anywhere on them: each needs one point to begin and end
+            // at. That point stays a bend while the rest are rounded off, so take the one where the ring turns least.
             foreach (EditSegment s in Segments)
             {
                 if (done.Contains(s)) continue;
-                joint[s.A] = false;
-                walk(s.A, s);
+                int begin = s.A, node = s.A;
+                EditSegment first = s, piece = s;
+                double least = double.MaxValue;
+                do
+                {
+                    EditSegment other = at[node][0] == piece ? at[node][1] : at[node][0];
+                    double off = HeadingFrom(piece, node) - HeadingFrom(other, node) - Math.PI;
+                    double turns = Math.Abs(Math.Atan2(Math.Sin(off), Math.Cos(off)));
+                    if (turns < least - 1e-6)
+                    {
+                        least = turns;
+                        begin = node;
+                        first = piece;
+                    }
+                    node = piece.A == node ? piece.B : piece.A;
+                    piece = at[node][0] == piece ? at[node][1] : at[node][0];
+                }
+                while (node != s.A && joint[node]);
+                joint[begin] = false;
+                walk(begin, first);
             }
             foreach (Run run in runs)
             {
@@ -2051,8 +2227,10 @@ namespace Traffic.Sim
 
         /// <summary>
         /// Work out the line a run follows. Where two of its pieces meet at an angle the corner
-        /// is rounded, taking as much of the pieces either side as a comfortable curve needs, or
-        /// as much as there is. A corner left tighter than the road allows is marked as sharp.
+        /// is rounded. Two straight stretches of a street or avenue get a tight corner; where a
+        /// curve is involved, or on a highway, the corner takes as much of the pieces either side
+        /// as a comfortable curve needs, or as much as there is. A corner left tighter than the
+        /// road allows is marked as sharp.
         /// </summary>
         private void Lay(Run run, bool junctionAtFrom, bool junctionAtTo)
         {
@@ -2082,17 +2260,24 @@ namespace Traffic.Sim
             var turn = new double[count - 1];
             var want = new double[count - 1];
             var take = new double[count - 1];
+            var square = new bool[count - 1];
             for (int j = 0; j < count - 1; j++)
             {
                 double arrive = PoseAlong(lines[j], length[j]).H, leave = PoseAlong(lines[j + 1], 0).H;
                 turn[j] = Math.Abs(Math.Atan2(Math.Sin(leave - arrive), Math.Cos(leave - arrive)));
-                want[j] = turn[j] < Gentle ? 0 : type.MinRadius * 1.5 * Math.Tan(Math.Min(turn[j], 3) / 2);
+                double tan = Math.Tan(Math.Min(turn[j], 3) / 2), flowing = type.MinRadius * 1.5 * tan;
+                // Two straight stretches of a street or an avenue make a corner, as at the corner of a city block: a
+                // tight turn, not a sweep. (A slight change of direction still gets a curve long enough to look like one.)
+                square[j] = SquareCorners(type) && !run.Pieces[j].Curved && !run.Pieces[j + 1].Curved;
+                want[j] = turn[j] < Gentle ? 0 : square[j] ? Math.Min(flowing, Math.Max(CornerRadius(type) * tan, 8)) : flowing;
             }
             var room = new double[count];
             for (int i = 0; i < count; i++)
             {
-                room[i] = length[i] - (i == 0 && junctionAtFrom ? JunctionRoom : 0) - (i == count - 1 && junctionAtTo ? JunctionRoom : 0);
-                room[i] = Math.Max(room[i], 0);
+                // A tight corner may come closer to a junction than a sweeping one: it only has to keep clear of the junction itself.
+                double atFrom = i == 0 && junctionAtFrom ? (square[0] ? CornerRoom : JunctionRoom) : 0;
+                double atTo = i == count - 1 && junctionAtTo ? (square[count - 2] ? CornerRoom : JunctionRoom) : 0;
+                room[i] = Math.Max(length[i] - atFrom - atTo, 0);
             }
             // Share each piece between the corners at its two ends; then let each corner have what its neighbors left.
             for (int j = 0; j < count - 1; j++)
@@ -2104,8 +2289,10 @@ namespace Traffic.Sim
             {
                 double before = room[j] - (j > 0 ? take[j - 1] : 0), after = room[j + 1] - (j + 2 < count ? take[j + 1] : 0);
                 take[j] = Math.Max(take[j], Math.Min(want[j], Math.Min(before, after)));
-                // A corner that hardly turns is no trouble even left as it is.
-                run.Sharp[j] = turn[j] > 0.14 && take[j] / Math.Tan(Math.Min(turn[j], 3) / 2) < type.MinRadius * 0.98;
+                // A corner that hardly turns is no trouble even left as it is. A square corner only has to leave
+                // the inside edge of the road something to turn round; any other must be as gentle as the road's curves.
+                double least = square[j] ? type.Width / 2 + 1 : type.MinRadius * 0.98;
+                run.Sharp[j] = turn[j] > 0.14 && take[j] / Math.Tan(Math.Min(turn[j], 3) / 2) < least;
             }
 
             var trace = new List<Vec>();
@@ -2153,6 +2340,20 @@ namespace Traffic.Sim
 
         /// <summary>What a change is refused with when it would put two junctions too close together for the network to build.</summary>
         public const string NoRoom = "Not enough room there: the junctions would be too close together.";
+        /// <summary>What a change is refused with when it would leave a corner with no room to be rounded off.</summary>
+        public const string TooSharpCorner = "Too sharp a corner for this kind of road. Make the turn gentler, or leave more room either side of it.";
+        /// <summary>The same, when the corner was there already and it is something new beside it that takes its room.</summary>
+        public const string TooNearCorner = "Too close to the corner there. Leave it a little more room, or go through the corner itself.";
+
+        /// <summary>How far a road turns at a point in the middle of it, where two of its pieces meet and nothing else does, in radians; -1 at any other point.</summary>
+        private double TurnAt(int node)
+        {
+            var here = new List<EditSegment>();
+            foreach (EditSegment s in Segments) if (s.A == node || s.B == node) here.Add(s);
+            if (!CarriesOn(here, node)) return -1;
+            double off = HeadingFrom(here[0], node) - HeadingFrom(here[1], node) - Math.PI;
+            return Math.Abs(Math.Atan2(Math.Sin(off), Math.Cos(off)));
+        }
 
         /// <summary>
         /// Where a road dropped at a point should really join. A point on a road that is too
@@ -2211,7 +2412,10 @@ namespace Traffic.Sim
             var already = new HashSet<int>(before.SharpCorners());
             foreach (int node in SharpCorners())
             {
-                if (!already.Contains(node)) return "Too sharp a corner for this kind of road. Make the turn gentler, or leave more room either side of it.";
+                if (already.Contains(node)) continue;
+                // A corner that was there before, turning just as it does now, has been left without room by something landing close beside it.
+                double turned = TurnAt(node), turnedBefore = node < before.Nodes.Count && Dist(before.Nodes[node], Nodes[node]) < 0.01 ? before.TurnAt(node) : -1;
+                return turnedBefore >= 0 && Math.Abs(turned - turnedBefore) < 1e-3 ? TooNearCorner : TooSharpCorner;
             }
             try
             {
@@ -2283,6 +2487,8 @@ namespace Traffic.Sim
                 TrackSpec[] back = type.OneWay ? null : Tracks(withFirst ? type.Backward : type.Forward, joins[run.From], first, joins[run.To], last, length, exitAtFrom);
                 fwd = WithExtras(fwd, run, true, exitAtTo);
                 if (back != null) back = WithExtras(back, run, false, exitAtFrom);
+                fwd = Narrowed(fwd, run.To, last, length);
+                if (back != null) back = Narrowed(back, run.From, first, length);
                 if (type.CenterLane)
                 {
                     // The turning lane is used at each end of the road by the traffic arriving there, where there is a left to take.
@@ -2324,6 +2530,28 @@ namespace Traffic.Sim
                 foreach (Node node in world.Nodes) if (node.Terminal && Dist(node.Pos, end.At) < 2) node.Name = end.Name;
             }
             return world;
+        }
+
+        /// <summary>
+        /// Where a road carries on as a narrower one (an avenue becoming a street, say), the
+        /// lanes the narrower road has no room for end a little before the place where they meet.
+        /// Their traffic moves over in good time, as at any lane drop, instead of two lanes
+        /// squeezing into one in the bend itself.
+        /// </summary>
+        private TrackSpec[] Narrowed(TrackSpec[] tracks, int node, EditSegment arriving, double length)
+        {
+            List<EditSegment> here = RoadsAt(node);
+            if (here.Count != 2 || JoinAt(node) != null) return tracks;
+            EditSegment onward = here[0] == arriving ? here[1] : here[0];
+            int room = onward.A == node ? onward.Type.Forward : onward.Type.Backward;
+            if (room < 1) return tracks;
+            double until = 1 - Math.Min(70 / Math.Max(length, 1), 0.45);
+            var result = (TrackSpec[])tracks.Clone();
+            for (int i = 0; i < result.Length; i++)
+            {
+                if (result[i].Slot >= room && result[i].To >= 1 && result[i].From < until - 0.2) result[i].To = until;
+            }
+            return result;
         }
 
         private static TrackSpec[] Plus(TrackSpec[] tracks, TrackSpec one)

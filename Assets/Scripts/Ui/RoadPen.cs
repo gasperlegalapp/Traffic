@@ -402,14 +402,18 @@ namespace Traffic.Ui
                     return false;
                 }
             }
-            refused = map.TryAdd(start, end, type, true, curved ? via : (Vec?)null, level);
+            Vec[] built;
+            List<Vec> meets;
+            refused = map.TryAdd(start, end, type, true, curved ? via : (Vec?)null, level, out built, out meets);
             if (refused != null) return false;
-            // Carry on from where this stretch ended, heading the way it arrived.
-            flow = curved && EditableMap.IsCurve(start, via, end) ? EditableMap.BendArrives(start, heading, end) : Math.Atan2(end.Y - start.Y, end.X - start.X);
+            // Carry on from where this stretch ended (which may be a corner or junction close by that it was taken to), heading the way it arrived.
+            Vec arrived = built[built.Length - 1], before = built[built.Length - 2];
+            bool asPointed = Dist(arrived, end) < 0.5;
+            flow = curved && asPointed && EditableMap.IsCurve(start, via, end) ? EditableMap.BendArrives(start, heading, end) : Math.Atan2(arrived.Y - before.Y, arrived.X - before.X);
             hasFlow = true;
             hasAim = false;
             ownAim = false;
-            start = map.SnapTo(end).Point;
+            start = asPointed ? map.SnapTo(end).Point : arrived;
             return true;
         }
 
@@ -639,6 +643,27 @@ namespace Traffic.Ui
         private static string Ft(double meters)
         {
             return Math.Round(meters * Feet).ToString("N0", CultureInfo.InvariantCulture) + " ft";
+        }
+
+        private Vec[] checkedLine;
+        private List<Vec> checkedMeets;
+
+        /// <summary>How far the furthest of some points lies from a line.</summary>
+        private static double Aside(Vec[] line, List<Vec> points)
+        {
+            double most = 0;
+            foreach (Vec p in points)
+            {
+                double least = double.MaxValue;
+                for (int i = 0; i + 1 < line.Length; i++)
+                {
+                    double dx = line[i + 1].X - line[i].X, dy = line[i + 1].Y - line[i].Y, len = dx * dx + dy * dy;
+                    double t = len < 1e-12 ? 0 : Geo.Clamp(((p.X - line[i].X) * dx + (p.Y - line[i].Y) * dy) / len, 0, 1);
+                    least = Math.Min(least, Geo.Hypot(p.X - line[i].X - dx * t, p.Y - line[i].Y - dy * t));
+                }
+                most = Math.Max(most, least);
+            }
+            return most;
         }
 
         /// <summary>The answer to "can this be built", worked out afresh only when the pointer has moved or something has changed.</summary>
@@ -898,10 +923,12 @@ namespace Traffic.Ui
                 return;
             }
 
-            Vec via = default(Vec);
+            Vec via = default(Vec), from = start;
             bool curved = shape == Curve && EditableMap.Bend(start, heading, end, out via);
             bool behind = shape == Curve && !curved && Behind(heading, end);
-            string problem = behind ? TooSharp : Checked(end, () => map.TryAdd(start, end, type, false, curved ? via : (Vec?)null, level));
+            // The line the road will really follow, and where it will meet other roads: not always quite the line
+            // pointed out, since a road that crosses close beside a corner or a junction goes through it.
+            string problem = behind ? TooSharp : Checked(end, () => map.TryAdd(start, end, type, false, curved ? via : (Vec?)null, level, out checkedLine, out checkedMeets));
             bool good = problem == null;
 
             if (shape == Curve && reach > 1)
@@ -923,9 +950,22 @@ namespace Traffic.Ui
                 double cost = EditableMap.CostOf(start, end, type, curved ? via : (Vec?)null, out length, level);
                 int steps = curved ? (int)Geo.Clamp(length / 3, 16, 120) : 1;
                 Vec[] path = EditableMap.Trace(start, end, curved, via, steps);
-                Ghost.Road(path, type.Width, type.OneWay, good);
-                // A ring wherever it crosses a road on the way: an intersection will be made there.
-                foreach (Vec place in map.WouldCross(path, level))
+                bool laid = good && checkedLine != null && checkedLine.Length >= 2;
+                // A curve is drawn as pointed out, which is finer than the map's own tracing of it, unless it has been pulled aside.
+                bool asPointed = !laid || (curved && Aside(path, checkedMeets) < 0.5);
+                Ghost.Road(asPointed ? path : checkedLine, type.Width, type.OneWay, good);
+                if (laid)
+                {
+                    // An end that has been taken to a corner or a junction close by is pinned there.
+                    if (Dist(checkedLine[0], start) > 0.5) from = checkedLine[0];
+                    if (Dist(checkedLine[checkedLine.Length - 1], end) > 0.5)
+                    {
+                        end = checkedLine[checkedLine.Length - 1];
+                        caught = true;
+                    }
+                }
+                // A ring wherever it meets a road on the way: an intersection will be made there.
+                foreach (Vec place in laid ? checkedMeets : map.WouldCross(path, level))
                 {
                     if (Dist(place, start) < EditableMap.SnapNode || Dist(place, end) < EditableMap.SnapNode) continue;
                     Ghost.Ring(place, Ghost.AtLeast(type.Width * 0.5 + 1.2, 8), Ghost.AtLeast(0.5, 2.4), good ? Ghost.GoodEdge : Ghost.BadEdge);
@@ -943,7 +983,7 @@ namespace Traffic.Ui
                 Note = problem;
                 NoteBad = true;
             }
-            Ghost.Pin(start, good || reach <= 1, false);
+            Ghost.Pin(from, good || reach <= 1, false);
             Ghost.Pin(end, good || reach <= 1, caught);
         }
     }
