@@ -170,7 +170,7 @@ namespace Traffic.Sim
 
         /// <summary>The edge of the map: vehicles leave here and new ones arrive.</summary>
         public bool Terminal => Arms.Count == 1 && !DeadEnd;
-        /// <summary>A road that simply stops, with a place to turn round: traffic that drives in comes back out.</summary>
+        /// <summary>A road that simply stops: traffic that drives in turns round across the road and comes back out. Its Box is the last of the pavement, whose far side (the second and third corners) is the end of the road.</summary>
         public bool DeadEnd;
     }
 

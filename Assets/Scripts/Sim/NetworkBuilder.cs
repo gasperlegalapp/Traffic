@@ -145,16 +145,17 @@ namespace Traffic.Sim
         private readonly HashSet<int> deadEnds = new HashSet<int>();
 
         /// <summary>
-        /// Make a node with one road a dead end and not the edge of the map: the road ends in a
-        /// round turning place, and traffic that drives in goes round it and comes back out.
+        /// Make a node with one road a dead end and not the edge of the map: the road simply
+        /// stops there, and traffic that drives in turns round across the middle of the road
+        /// and comes back out.
         /// </summary>
         public void DeadEnd(int node)
         {
             deadEnds.Add(node);
         }
 
-        /// <summary>How far short of a dead end's point its lanes stop, to leave room for the turning place, where the road is long enough.</summary>
-        private const double TurningRoom = 10;
+        /// <summary>How far a vehicle pulls forward before it swings round to go back the way it came.</summary>
+        private const double PullForward = 2.5;
 
         /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
         public void AllowUTurn(int node, int arrivingFrom)
@@ -254,7 +255,8 @@ namespace Traffic.Sim
                 world.Nodes.Add(new Node { Id = i, Pos = nodePos[i], Radius = radius[i], DefaultMode = nodeMode[i], DeadEnd = ends == 1 && deadEnds.Contains(i) });
                 extent = Math.Max(extent, Math.Max(Math.Abs(nodePos[i].X), Math.Abs(nodePos[i].Y)));
             }
-            // A dead end's turning place sits round its point if the road is long enough to give up the room; if not, beyond it.
+            // At a dead end the lanes stop a little short of the end of the pavement, to leave room to turn round in,
+            // where the road is long enough to give that up; if it is not, the turn is made just beyond the end.
             foreach (RoadSpec r in roads)
             {
                 foreach (bool atA in new[] { true, false })
@@ -269,7 +271,8 @@ namespace Traffic.Sim
                         last = v;
                     }
                     length += Geo.Hypot(nodePos[r.B].X - last.X, nodePos[r.B].Y - last.Y);
-                    end.Radius = radius[end.Id] = Geo.Clamp(length - radius[other.Id] - 22, 0, TurningRoom);
+                    double room = Math.Max(widest[end.Id] - LaneW / 2, LaneW / 2) + PullForward + 0.8;
+                    end.Radius = radius[end.Id] = Geo.Clamp(length - radius[other.Id] - 22, 0, room);
                 }
             }
 
@@ -559,7 +562,7 @@ namespace Traffic.Sim
         {
             if (node.DeadEnd)
             {
-                BuildTurningPlace(node);
+                BuildRoadEnd(node);
                 return;
             }
             if (node.Terminal)
@@ -829,11 +832,12 @@ namespace Traffic.Sim
         }
 
         /// <summary>
-        /// The turning place at a dead end: each lane that arrives swings out to the right, goes
-        /// round to the left and comes back into the lane beside the one it came in by, as a
-        /// driver does in a cul-de-sac. The lanes go round one inside the other, so none cross.
+        /// A dead end: the road just stops. Whatever drives up to the end pulls forward, swings
+        /// round to the left across the middle of the road and goes back the way it came, each
+        /// lane into the lane it mirrors, so the paths lie one inside the next and none cross.
+        /// The pavement runs on past the lane ends far enough to turn on.
         /// </summary>
-        private void BuildTurningPlace(Node node)
+        private void BuildRoadEnd(Node node)
         {
             Approach arm = node.Arms[0];
             int pairs = Math.Min(arm.Inbound.Count, arm.Outbound.Count);
@@ -847,62 +851,53 @@ namespace Traffic.Sim
                 }
                 return;
             }
-            // The way round for the lanes nearest the middle of the road, worked out looking along the road toward its end:
-            // out to the right on a wide curve, round to the left on a tight one, and back in on a wide one.
-            Lane first = world.Lanes[arm.Inbound[0]], back = world.Lanes[arm.Outbound[0]];
-            PathPose a = first.Path.At(first.Length);
-            Vec b = back.Path.At(0).Point;
-            double half = Geo.Hypot(b.X - a.X, b.Y - a.Y) / 2;
-            double tight = Math.Max(5.5, half + 1.5), wide = 10 + (arm.Inbound.Count - 1) * LaneW;
-            double swing = Math.Acos((half + wide) / (tight + wide));
-            double ahead = (wide + tight) * Math.Sin(swing);
-            double fx = Math.Cos(a.H), fy = Math.Sin(a.H), lx = (b.X - a.X) / (2 * half), ly = (b.Y - a.Y) / (2 * half);
-            double ox = (a.X + b.X) / 2, oy = (a.Y + b.Y) / 2;
-            Func<double, double, Vec> at = (along, left) => new Vec(ox + fx * along + lx * left, oy + fy * along + ly * left);
-            var loop = new List<Vec>();
-            const int steps = 8;
-            for (int i = 0; i <= steps; i++)
-            {
-                double t = swing * i / steps;
-                loop.Add(at(wide * Math.Sin(t), -half - wide + wide * Math.Cos(t)));
-            }
-            double from = -Math.PI / 2 - swing, round = Math.PI + 2 * swing;
-            for (int i = 1; i <= 28; i++)
-            {
-                double t = from + round * i / 28;
-                loop.Add(at(ahead + tight * Math.Cos(t), tight * Math.Sin(t)));
-            }
-            for (int i = steps - 1; i >= 0; i--)
-            {
-                double t = swing * i / steps;
-                loop.Add(at(wide * Math.Sin(t), half + wide - wide * Math.Cos(t)));
-            }
-
             var conns = new List<Lane>();
+            double widestTurn = 0;
             for (int k = 0; k < arm.Inbound.Count; k++)
             {
                 Lane lane = world.Lanes[arm.Inbound[k]], home = world.Lanes[arm.Outbound[Math.Min(k, pairs - 1)]];
-                // Each lane further out follows the same way round, that much further out.
-                var path = new List<Vec>(k == 0 ? loop.ToArray() : Geo.Offset(loop, (lane.Slot - first.Slot) * LaneW));
-                path[0] = lane.Path.At(lane.Length).Point;
-                path[path.Count - 1] = home.Path.At(0).Point;
-                conns.Add(Connect(node, lane.Id, home.Id, Turn.Straight, path));
+                PathPose a = lane.Path.At(lane.Length);
+                Vec b = home.Path.At(0).Point;
+                widestTurn = Math.Max(widestTurn, Geo.Hypot(b.X - a.X, b.Y - a.Y) / 2);
+                // Going straight on is all there is to do here, so it counts as that, and a truck can do it too.
+                conns.Add(Connect(node, lane.Id, home.Id, Turn.Straight, SwingRound(a, b)));
             }
             Connectors.Link(conns);
             var offered = new bool[Lane.Turns];
             offered[(int)Turn.Straight] = true;
             foreach (Lane lane in world.Lanes) if (lane.Kind == LaneKind.Road && lane.ApproachNode == node.Id) lane.ApproachTurns = offered;
 
-            // The pavement: from the edges of the road out round the turning place and back.
-            double edge = (MaxLaneSlot(arm.Inbound) + 1) * LaneW + arm.Inner, far = tight + (arm.Inbound.Count - 1) * LaneW + LaneW / 2 + 1;
-            edge = Math.Max(edge, (MaxLaneSlot(arm.Outbound) + 1) * LaneW + arm.Inner);
+            // The pavement: straight on from the edges of the road, as far as the widest turn reaches. Its far side is the end of the road.
+            Lane first = world.Lanes[arm.Inbound[0]], back = world.Lanes[arm.Outbound[0]];
+            PathPose from = first.Path.At(first.Length);
+            Vec to = back.Path.At(0).Point;
+            double gap = Math.Max(Geo.Hypot(to.X - from.X, to.Y - from.Y), 1e-6);
+            double fx = Math.Cos(from.H), fy = Math.Sin(from.H), lx = (to.X - from.X) / gap, ly = (to.Y - from.Y) / gap;
+            double ox = (from.X + to.X) / 2, oy = (from.Y + to.Y) / 2;
+            double edge = Math.Max((MaxLaneSlot(arm.Inbound) + 1) * LaneW + arm.Inner, (MaxLaneSlot(arm.Outbound) + 1) * LaneW + arm.Inner);
+            double far = PullForward + widestTurn + 0.8;
+            Func<double, double, Vec> at = (along, left) => new Vec(ox + fx * along + lx * left, oy + fy * along + ly * left);
             node.Box.Add(at(0, -edge));
-            for (int i = 0; i <= 40; i++)
-            {
-                double t = -Math.PI * 0.72 + Math.PI * 1.44 * i / 40;
-                node.Box.Add(at(ahead + far * Math.Cos(t), far * Math.Sin(t)));
-            }
+            node.Box.Add(at(far, -edge));
+            node.Box.Add(at(far, edge));
             node.Box.Add(at(0, edge));
+        }
+
+        /// <summary>The path of a turn right round: pull forward, swing round to the left on a half circle, and come back to the lane alongside.</summary>
+        private static List<Vec> SwingRound(PathPose a, Vec b)
+        {
+            double r = Geo.Hypot(b.X - a.X, b.Y - a.Y) / 2;
+            double fx = Math.Cos(a.H), fy = Math.Sin(a.H);
+            double cx = a.X + fx * PullForward - fy * r;
+            double cy = a.Y + fy * PullForward + fx * r;
+            var pts = new List<Vec> { a.Point };
+            for (int i = 0; i <= 16; i++)
+            {
+                double ang = a.H - Math.PI / 2 + Math.PI * i / 16;
+                pts.Add(new Vec(cx + r * Math.Cos(ang), cy + r * Math.Sin(ang)));
+            }
+            pts.Add(b);
+            return pts;
         }
 
         private Lane Connect(Node node, int fromId, int toId, Turn turn, List<Vec> along = null)
@@ -914,22 +909,7 @@ namespace Traffic.Sim
             double chord = Geo.Hypot(b.X - a.X, b.Y - a.Y);
             var pts = new List<Vec>();
             if (along != null) pts.AddRange(along);
-            else if (turn == Turn.UTurn)
-            {
-                // Pull forward, swing round to the left, and come back.
-                const double forward = 2.5;
-                double r = chord / 2;
-                double fx = Math.Cos(a.H), fy = Math.Sin(a.H);
-                double cx = a.X + fx * forward - fy * r;
-                double cy = a.Y + fy * forward + fx * r;
-                pts.Add(a.Point);
-                for (int i = 0; i <= 16; i++)
-                {
-                    double ang = a.H - Math.PI / 2 + Math.PI * i / 16;
-                    pts.Add(new Vec(cx + r * Math.Cos(ang), cy + r * Math.Sin(ang)));
-                }
-                pts.Add(b.Point);
-            }
+            else if (turn == Turn.UTurn) pts.AddRange(SwingRound(a, b.Point));
             else if (Math.Abs(Wrap(b.H - a.H)) < 0.05)
             {
                 double sideways = Math.Abs(Math.Cos(a.H) * (b.Y - a.Y) - Math.Sin(a.H) * (b.X - a.X));

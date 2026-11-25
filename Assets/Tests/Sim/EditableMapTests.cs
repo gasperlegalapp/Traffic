@@ -1185,7 +1185,7 @@ namespace Traffic.Tests
         // ---------------------------------------------------------------- the edge of the map, and dead ends
 
         [Test]
-        public void ARoadThatStopsShortOfTheEdgeIsADeadEndWhereTrafficTurnsRound()
+        public void ARoadThatStopsShortOfTheEdgeJustEndsAndTrafficTurnsRoundThere()
         {
             var map = new EditableMap { Bound = 300 };
             Assert.IsNull(map.TryAdd(P(-300, 0), P(120, 0), T("s2"), true));
@@ -1198,11 +1198,17 @@ namespace Traffic.Tests
             Lane arriving = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Node == end.Id);
             Assert.IsTrue(arriving.Allows(Turn.Straight), "the way on is round the turning place");
             Lane round = world.Lanes[arriving.Connectors[(int)Turn.Straight]];
-            Assert.Greater(round.Length, 25, "a proper loop, not a turn on the spot");
-            double tightest = double.PositiveInfinity;
-            for (double d = 2; d + 2 <= round.Length; d += 1) tightest = Math.Min(tightest, Geo.Circumradius(round.Path.At(d - 2).Point, round.Path.At(d).Point, round.Path.At(d + 2).Point));
-            Assert.Greater(tightest, 5, "nowhere tighter than a car can turn");
-            Assert.Greater(end.Box.Count, 10, "with pavement under it");
+            // It turns within the road: no wider than the road is, and not far past where the lanes stop.
+            double furthest = 0, widest = 0;
+            for (double d = 0; d <= round.Length; d += 0.5)
+            {
+                furthest = Math.Max(furthest, round.Path.At(d).X);
+                widest = Math.Max(widest, Math.Abs(round.Path.At(d).Y));
+            }
+            Assert.Less(widest, NetworkBuilder.LaneW, "across the double yellow line and back, not out onto the grass");
+            Assert.Less(furthest, 120.5, "and no further than the end of the road");
+            Assert.AreEqual(4, end.Box.Count, "the pavement just stops, square");
+            Assert.AreEqual(120, end.Box[1].X, 0.6);
 
             var sim = new Simulation(world, 3);
             sim.ArrivalsPerMinute = 8;
@@ -1223,11 +1229,11 @@ namespace Traffic.Tests
         }
 
         [Test]
-        public void AWideRoadAndAShortStubCanBothEndInATurningPlace()
+        public void AWideRoadAndAShortStubCanBothBeDeadEnds()
         {
             var map = new EditableMap { Bound = 300 };
             Assert.IsNull(map.TryAdd(P(-300, 0), P(150, 0), T("a4"), true));
-            // A stub too short to give up any room: its turning place goes beyond its end.
+            // A stub too short to give up any room: its traffic turns just beyond its end.
             Assert.IsNull(map.TryAdd(P(0, 0), P(0, 40), T("s2"), true));
             World world = map.ToWorld();
             Assert.AreEqual(2, world.Nodes.Count(n => n.DeadEnd));
@@ -1235,7 +1241,11 @@ namespace Traffic.Tests
             Assert.AreEqual(2, world.Lanes.Count(l => l.Kind == LaneKind.Connector && l.Node == wide.Id), "each lane has its own way round");
             var sim = new Simulation(world, 5);
             sim.ArrivalsPerMinute = 14;
-            Grid.Run(sim, 400);
+            // There is a light where the stub meets the avenue: have everyone obey it, so that any crash is the dead ends' doing.
+            Grid.Run(sim, 400, () =>
+            {
+                foreach (Car c in sim.Cars) c.Drv.Compliance = 1;
+            });
             Assert.AreEqual(0, sim.Crashes);
             Assert.Greater(sim.Left, 20);
         }

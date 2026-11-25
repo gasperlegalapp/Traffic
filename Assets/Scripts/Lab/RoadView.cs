@@ -275,6 +275,32 @@ namespace Traffic.Lab
                 lines.Add(view);
             }
 
+            // A dead end is marked the way road crews mark one: a red and white board across the end of the pavement.
+            Material boardRed = null, boardWhite = null;
+            foreach (Node node in world.Nodes)
+            {
+                if (!node.DeadEnd || node.Box.Count != 4) continue;
+                if (boardRed == null)
+                {
+                    boardRed = MeshKit.Lit(MeshKit.Hex(0xd23a2e), 0.1f);
+                    boardWhite = MeshKit.Lit(MeshKit.Hex(0xf1f1ec), 0.1f);
+                }
+                Vec a = node.Box[1], b = node.Box[2];
+                double across = Geo.Hypot(b.X - a.X, b.Y - a.Y), heading = System.Math.Atan2(b.Y - a.Y, b.X - a.X);
+                int boards = System.Math.Max(3, (int)System.Math.Round(across / 1.1)) | 1;
+                for (int i = 0; i < boards; i++)
+                {
+                    double t = (i + 0.5) / boards;
+                    Transform board = MeshKit.Spawn("End of road", MeshKit.Box((float)(across / boards), 0.5f, 0.22f), i % 2 == 0 ? boardRed : boardWhite, root).transform;
+                    board.position = MeshKit.ToWorld(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, 0.95f);
+                    board.rotation = MeshKit.Heading(heading);
+                }
+                foreach (double t in new[] { 0.04, 0.96 })
+                {
+                    MeshKit.Spawn("Post", MeshKit.Box(0.16f, 1.2f, 0.16f), boardWhite, root).transform.position = MeshKit.ToWorld(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, 0.6f);
+                }
+            }
+
             Material dark = MeshKit.Lit(MeshKit.Hex(0x15181c), 0.3f);
             foreach (Node node in world.Nodes)
             {
