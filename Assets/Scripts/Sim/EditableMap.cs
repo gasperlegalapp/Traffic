@@ -1302,15 +1302,92 @@ namespace Traffic.Sim
             if (headings.Count > MaxArms) return "No more than " + MaxArms + " roads can meet at one point.";
             // A one-way road may run in alongside another road, or peel off it: that is a merge, not an intersection.
             if (JoinAt(node) != null) return null;
+            // Where one-way roads split or come together they may lie much closer: the lanes just part, or close up.
+            double least = FlowsThrough(node) ? ForkAngle : MinAngle;
             for (int i = 0; i < headings.Count; i++)
             {
                 for (int k = i + 1; k < headings.Count; k++)
                 {
                     double between = Math.Abs(Math.Atan2(Math.Sin(headings[i] - headings[k]), Math.Cos(headings[i] - headings[k])));
-                    if (between < MinAngle) return "Too sharp an angle. Only a one-way road can join that closely, on the right of the traffic it joins.";
+                    if (between < least) return least < MinAngle ? "Too close together: the roads need to part a little more widely."
+                        : "Too sharp an angle. Only one-way roads can join that closely.";
                 }
             }
             return null;
+        }
+
+        /// <summary>The least angle between two one-way roads where they split or come together, and the most any of them may turn from the way the traffic is flowing there.</summary>
+        public const double ForkAngle = 14 * Math.PI / 180, ForkSpread = 50 * Math.PI / 180;
+
+        /// <summary>The way a one-way road's traffic is heading as it passes a point at one of its ends.</summary>
+        private double FlowOf(EditSegment s, int node)
+        {
+            return HeadingFrom(s, node) + (s.B == node ? Math.PI : 0);
+        }
+
+        /// <summary>
+        /// Whether the roads at a point are all one-way and all run through it nearly the same
+        /// way, some arriving and some leaving: a fork, or roads coming together. There the
+        /// lanes carry straight on from road to road, with no light and no stop sign.
+        /// </summary>
+        private bool FlowsThrough(int node)
+        {
+            List<EditSegment> here = RoadsAt(node);
+            if (here.Count < 3 || JoinAt(node) != null) return false;
+            double x = 0, y = 0;
+            int arriving = 0;
+            foreach (EditSegment s in here)
+            {
+                if (!s.Type.OneWay || s.Ring) return false;
+                double way = FlowOf(s, node);
+                x += Math.Cos(way);
+                y += Math.Sin(way);
+                if (s.B == node) arriving++;
+            }
+            if (arriving == 0 || arriving == here.Count) return false;
+            double flow = Math.Atan2(y, x);
+            foreach (EditSegment s in here)
+            {
+                double off = FlowOf(s, node) - flow;
+                if (Math.Abs(Math.Atan2(Math.Sin(off), Math.Cos(off))) > ForkSpread) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Where one road arrives at a fork, which of the roads that leave each of its lanes
+        /// carries on along: the lanes are dealt out from left to right among those roads, from
+        /// left to right, by how many lanes each has. Null if the point is not a fork of that kind.
+        /// </summary>
+        private List<EditSegment>[] ForkLanes(int node, EditSegment arriving)
+        {
+            if (arriving.B != node || !FlowsThrough(node)) return null;
+            var leaving = new List<EditSegment>();
+            foreach (EditSegment s in RoadsAt(node))
+            {
+                if (s == arriving) continue;
+                if (s.B == node) return null; // more than one road arrives: they are left to sort themselves out
+                leaving.Add(s);
+            }
+            if (leaving.Count < 2) return null;
+            double way = FlowOf(arriving, node);
+            Func<EditSegment, double> off = s => Math.Atan2(Math.Sin(FlowOf(s, node) - way), Math.Cos(FlowOf(s, node) - way));
+            leaving.Sort((a, b) => off(b).CompareTo(off(a)));
+            int lanes = arriving.Type.Forward, total = 0;
+            foreach (EditSegment s in leaving) total += s.Type.Forward;
+            var given = new List<EditSegment>[lanes];
+            for (int lane = 0; lane < lanes; lane++)
+            {
+                double from = (double)lane * total / lanes, to = (double)(lane + 1) * total / lanes;
+                given[lane] = new List<EditSegment>();
+                int before = 0;
+                foreach (EditSegment s in leaving)
+                {
+                    if (before + s.Type.Forward > from + 1e-9 && before < to - 1e-9) given[lane].Add(s);
+                    before += s.Type.Forward;
+                }
+            }
+            return given;
         }
 
         /// <summary>
@@ -2017,7 +2094,7 @@ namespace Traffic.Sim
                 // On a roundabout nobody stops for a light or a sign: whoever is going round goes first.
                 bool onRing = false;
                 foreach (EditSegment s in Segments) if (s.Ring && (s.A == i || s.B == i)) onRing = true;
-                JunctionMode mode = arms <= 2 || joins[i] != null || onRing ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
+                JunctionMode mode = arms <= 2 || joins[i] != null || onRing || FlowsThrough(i) ? JunctionMode.Free : fastest <= 25 ? JunctionMode.AllWay : JunctionMode.Signal;
                 built[i] = b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
                 if (arms == 1 && DeadEndAt(i)) b.DeadEnd(built[i]);
             }
@@ -2028,10 +2105,23 @@ namespace Traffic.Sim
                 double length = LengthOf(run.Trace);
                 // The lanes that run from the start of the run to its end, and those that run back.
                 bool withFirst = !run.Turned[0];
-                TrackSpec[] fwd = Tracks(withFirst ? type.Forward : type.Backward, joins[run.To], last, joins[run.From], first, length);
-                TrackSpec[] back = type.OneWay ? null : Tracks(withFirst ? type.Backward : type.Forward, joins[run.From], first, joins[run.To], last, length);
-                fwd = WithExtras(fwd, run, true, joins[run.To] != null && !joins[run.To].Merge && joins[run.To].Up == last);
-                if (back != null) back = WithExtras(back, run, false, joins[run.From] != null && !joins[run.From].Merge && joins[run.From].Up == first);
+                // Where the run arrives at an exit, its lanes are told which roads they lead on to: the road ahead, and the ramp.
+                Func<Join, EditSegment, int[]> exitRoads = (join, arriving) => join == null || join.Merge || join.Up != arriving ? null
+                    : new[] { runs.FindIndex(r => r.Pieces.Contains(join.Down)), runs.FindIndex(r => r.Pieces.Contains(join.Ramp)) };
+                int[] exitAtTo = exitRoads(joins[run.To], last), exitAtFrom = exitRoads(joins[run.From], first);
+                TrackSpec[] fwd = Tracks(withFirst ? type.Forward : type.Backward, joins[run.To], last, joins[run.From], first, length, exitAtTo);
+                // At a fork each lane is told which of the roads ahead it carries on along.
+                List<EditSegment>[] fork = type.OneWay && joins[run.To] == null ? ForkLanes(run.To, last) : null;
+                for (int i = 0; fork != null && i < fwd.Length; i++)
+                {
+                    if (fwd[i].Slot >= fork.Length || fwd[i].To != 1) continue;
+                    var onto = new List<int>();
+                    foreach (EditSegment s in fork[fwd[i].Slot]) onto.Add(runs.FindIndex(r => r.Pieces.Contains(s)));
+                    fwd[i].Onto = onto.ToArray();
+                }
+                TrackSpec[] back = type.OneWay ? null : Tracks(withFirst ? type.Backward : type.Forward, joins[run.From], first, joins[run.To], last, length, exitAtFrom);
+                fwd = WithExtras(fwd, run, true, exitAtTo);
+                if (back != null) back = WithExtras(back, run, false, exitAtFrom);
                 double speed = type.Mph * 0.44704;
                 bool rampAtFrom = joins[run.From] != null && joins[run.From].Ramp == first, rampAtTo = joins[run.To] != null && joins[run.To].Ramp == last;
                 if (rampAtFrom || rampAtTo)
@@ -2123,9 +2213,10 @@ namespace Traffic.Sim
         /// The lanes of one direction of a run, with its extra lanes added outside them. Two
         /// cases tie an extra lane to a ramp. One that starts where a ramp merges in is the
         /// ramp's own lane carrying on, so its traffic need not move over. One that runs up to an
-        /// exit (exitAhead) is a lane for the exit alone, and the lane inside it then only goes straight on.
+        /// exit (whose road ahead and ramp are given) is a lane for the exit alone, and the lane
+        /// inside it then only goes on along the road.
         /// </summary>
-        private TrackSpec[] WithExtras(TrackSpec[] tracks, Run run, bool withRun, bool exitAhead)
+        private TrackSpec[] WithExtras(TrackSpec[] tracks, Run run, bool withRun, int[] exit)
         {
             List<double[]> spans = ExtrasAlong(run, withRun);
             if (spans.Count == 0) return tracks;
@@ -2151,10 +2242,10 @@ namespace Traffic.Sim
                     merged = -1;
                 }
                 if (to - from <= 0.01) continue;
-                if (to == 1 && exitAhead)
+                if (to == 1 && exit != null)
                 {
-                    all.Add(new TrackSpec(slot, from, 1, Turn.Right));
-                    for (int i = 0; i < all.Count; i++) if (all[i].Slot == slot - 1 && all[i].To == 1) all[i] = new TrackSpec(all[i].Slot, all[i].From, 1, Turn.Straight);
+                    all.Add(new TrackSpec(slot, from, 1) { Onto = new[] { exit[1] } });
+                    for (int i = 0; i < all.Count; i++) if (all[i].Slot == slot - 1 && all[i].To == 1) all[i] = new TrackSpec(all[i].Slot, all[i].From, 1) { Onto = new[] { exit[0] } };
                 }
                 else all.Add(new TrackSpec(slot, from, to));
             }
@@ -2168,14 +2259,15 @@ namespace Traffic.Sim
         /// join ahead is the one this direction arrives at, with the piece of the road that
         /// touches it; the join behind is the one it sets off from.
         /// </summary>
-        private static TrackSpec[] Tracks(int count, Join ahead, EditSegment atAhead, Join behind, EditSegment atBehind, double length)
+        private static TrackSpec[] Tracks(int count, Join ahead, EditSegment atAhead, Join behind, EditSegment atBehind, double length, int[] exit)
         {
             var tracks = new List<TrackSpec>();
             for (int i = 0; i < count; i++)
             {
                 if (ahead == null) tracks.Add(new TrackSpec(i));
-                // Traffic arriving at an exit may take it from the outside lane; nobody else may turn there.
-                else if (!ahead.Merge && atAhead == ahead.Up && i == count - 1) tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight, Turn.Right));
+                // Traffic arriving at an exit may take it from the outside lane; the other lanes only carry on along the road.
+                // The lanes are told the roads, not "straight on" and "right": where the road bends at the exit, the ramp can be the straighter of the two.
+                else if (exit != null) tracks.Add(new TrackSpec(i) { Onto = i == count - 1 ? exit : new[] { exit[0] } });
                 else tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight));
             }
             if (behind != null && behind.Merge && atBehind == behind.Down)

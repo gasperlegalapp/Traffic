@@ -15,6 +15,12 @@ namespace Traffic.Sim
         public double To;
         /// <summary>Turns allowed from this lane at the far end. Null means work it out.</summary>
         public Turn[] Turns;
+        /// <summary>
+        /// The roads this lane may carry on along at the far end, by the order the roads were
+        /// added (0 for the first). Null means work it out. Naming the roads is surer than naming
+        /// turns where two ways on are nearly alike, as at a fork.
+        /// </summary>
+        public int[] Onto;
 
         public TrackSpec(int slot, double from = 0, double to = 1, params Turn[] turns)
         {
@@ -22,6 +28,7 @@ namespace Traffic.Sim
             From = from;
             To = to;
             Turns = turns != null && turns.Length > 0 ? turns : null;
+            Onto = null;
         }
     }
 
@@ -75,6 +82,7 @@ namespace Traffic.Sim
 
         private World world;
         private readonly Dictionary<int, Turn[]> explicitTurns = new Dictionary<int, Turn[]>();
+        private readonly Dictionary<int, int[]> explicitRoads = new Dictionary<int, int[]>();
 
         public int AddNode(double x, double y, JunctionMode mode)
         {
@@ -324,6 +332,7 @@ namespace Traffic.Sim
 
                 Approach armA = AddArm(r.A, Math.Atan2(ay, ax), r.B);
                 Approach armB = AddArm(r.B, Math.Atan2(-by, -bx), r.A);
+                armA.Road = armB.Road = roads.IndexOf(r);
                 armA.Shift = r.ShiftA;
                 armB.Shift = -r.ShiftB;
                 armA.Inner = armB.Inner = r.Inner;
@@ -420,6 +429,7 @@ namespace Traffic.Sim
                     to.Inbound.Add(lane.Id);
                     maxReaching = Math.Max(maxReaching, spec.Slot);
                     if (spec.Turns != null) explicitTurns[lane.Id] = spec.Turns;
+                    if (spec.Onto != null) explicitRoads[lane.Id] = spec.Onto;
                 }
                 if (fromSt[k] <= 1e-6) from.Outbound.Add(lane.Id);
             }
@@ -696,6 +706,7 @@ namespace Traffic.Sim
                 }
             }
             Connectors.Link(conns);
+            if (!node.Controlled) MarkGiveWay(conns);
             BuildBox(node);
             if (node.Arms.Count == 2) PaintBend(node);
             else if (!node.Controlled) PaintJunction(conns);
@@ -803,6 +814,14 @@ namespace Traffic.Sim
                     foreach (Turn t in given) if (target[(int)t] >= 0) set.Add(t);
                     if (set.Count > 0) continue;
                 }
+                int[] onto;
+                if (explicitRoads.TryGetValue(arm.Inbound[i], out onto))
+                {
+                    // Whichever turns lead onto the roads it was given.
+                    List<Approach> arms = world.Nodes[arm.Node].Arms;
+                    for (int t = 0; t < Lane.Turns; t++) if (target[t] >= 0 && Array.IndexOf(onto, arms[target[t]].Road) >= 0) set.Add((Turn)t);
+                    if (set.Count > 0) continue;
+                }
                 bool first = i == 0;
                 bool last = i == n - 1;
                 if (n == 1)
@@ -881,6 +900,29 @@ namespace Traffic.Sim
             node.Box.Add(at(far, -edge));
             node.Box.Add(at(far, edge));
             node.Box.Add(at(0, edge));
+        }
+
+        /// <summary>
+        /// Where two or more paths through a junction with no light or signs end in the same
+        /// lane, one has the right of way and the rest give way to it: the one that bends least,
+        /// and of two that bend alike, the one from the lane nearer the middle of its road.
+        /// </summary>
+        private void MarkGiveWay(List<Lane> conns)
+        {
+            Func<Lane, double> bend = c =>
+            {
+                Lane from = world.Lanes[c.From], to = world.Lanes[c.Next];
+                return Math.Abs(Wrap(to.Path.At(0).H - from.Path.At(from.Length).H));
+            };
+            foreach (Lane c in conns)
+            {
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.Next != c.Next || o.From == c.From) continue;
+                    double mine = bend(c), other = bend(o);
+                    if (mine > other + 0.02 || (Math.Abs(mine - other) <= 0.02 && world.Lanes[c.From].Slot > world.Lanes[o.From].Slot)) c.GiveWay = true;
+                }
+            }
         }
 
         /// <summary>The path of a turn right round: pull forward, swing round to the left on a half circle, and come back to the lane alongside.</summary>

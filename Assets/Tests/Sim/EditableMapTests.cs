@@ -411,17 +411,41 @@ namespace Traffic.Tests
         }
 
         [Test]
-        public void ARampOnTheWrongSideOrAgainstTheFlowIsRefused()
+        public void ARoadRunningInAgainstTheFlowIsRefusedAndATwoWayRoadCannotMerge()
         {
             var map = new EditableMap();
             Assert.IsNull(map.TryAdd(P(-420, 0), P(420, 0), T("h2"), true));
-            // Joining an eastbound highway from the north would mean merging from the left.
-            Assert.IsNotNull(map.TryAdd(P(-380, 150), P(-150, 0), T("h1"), true, P(-250, 45)));
             // Running in against the traffic.
             Assert.IsNotNull(map.TryAdd(P(380, -150), P(150, 0), T("h1"), true, P(250, -45)));
             // A two-way road cannot merge at all.
             Assert.IsNotNull(map.TryAdd(P(-380, -150), P(-150, 0), T("s2"), true, P(-250, -45)));
             Assert.AreEqual(1, map.Segments.Count);
+        }
+
+        [Test]
+        public void ARoadCanJoinFromTheLeftAndItsTrafficGivesWay()
+        {
+            // An eastbound highway, and a one-lane road that comes down from the north to join it on its left.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-420, 0), P(420, 0), T("h2"), true));
+            Assert.IsNull(map.TryAdd(P(-380, 150), P(-150, 0), T("h1"), true, P(-250, 45)));
+            Assert.AreEqual(0, map.Faults().Count);
+            World world = map.ToWorld();
+            Assert.AreEqual(0, world.Nodes.Count(n => n.Controlled), "no light: the roads just come together");
+            Node join = world.Nodes.Single(n => n.Arms.Count == 3);
+            var paths = world.Lanes.Where(l => l.Kind == LaneKind.Connector && l.Node == join.Id).ToList();
+            Assert.AreEqual(3, paths.Count);
+            Lane fromSide = paths.Single(c => world.Lanes[c.From].Path.At(0).Y > 50);
+            Assert.IsTrue(fromSide.GiveWay, "the road joining gives way");
+            Assert.AreEqual(0, paths.Count(c => c != fromSide && c.GiveWay), "and the highway does not");
+            Lane leftLane = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Path.At(0).X > join.Pos.X && l.Preds.Count > 0).OrderByDescending(l => l.Path.At(0).Y).First();
+            Assert.AreEqual(leftLane.Id, fromSide.Next, "it comes into the left lane, the one on its own side");
+
+            var sim = new Simulation(world, 2);
+            sim.ArrivalsPerMinute = 26;
+            Grid.Run(sim, 420);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 80);
         }
 
         [Test]
@@ -1259,6 +1283,104 @@ namespace Traffic.Tests
             Lane lane = map.ToWorld().Lanes.Single(l => l.Kind == LaneKind.Road && l.Slot == 1);
             Assert.AreEqual(275, lane.Length, 3);
             Assert.IsNotNull(map.TryAddLane(P(150, -5), P(160, -5), true), "by itself it is still too short");
+        }
+
+        // ---------------------------------------------------------------- forks, and roads coming together
+
+        /// <summary>A two-lane one-way road that splits into two single lanes, which go their own ways and come back together.</summary>
+        public static EditableMap SplitAndRejoin(string wide = "a1x2", string narrow = "a1")
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-320, 0), P(-110, 0), T(wide), true));
+            Assert.IsNull(map.TryAdd(P(-110, 0), P(0, 46), T(narrow), true), "the left branch out");
+            Assert.IsNull(map.TryAdd(P(-110, 0), P(0, -46), T(narrow), true), "the right branch out");
+            Assert.IsNull(map.TryAdd(P(0, 46), P(110, 0), T(narrow), true), "the left branch back");
+            Assert.IsNull(map.TryAdd(P(0, -46), P(110, 0), T(narrow), true), "the right branch back");
+            Assert.IsNull(map.TryAdd(P(110, 0), P(320, 0), T(wide), true));
+            return map;
+        }
+
+        [Test]
+        public void ATwoLaneRoadSplitsIntoTwoLanesThatGoTheirOwnWaysAndComeBack()
+        {
+            EditableMap map = SplitAndRejoin();
+            Assert.AreEqual(0, map.Faults().Count);
+            World world = map.ToWorld();
+            Assert.AreEqual(0, world.Nodes.Count(n => n.Controlled), "no light and no stop sign: the lanes just part and close up");
+            Node fork = world.Nodes.Single(n => n.Arms.Count == 3 && n.Pos.X < 0), join = world.Nodes.Single(n => n.Arms.Count == 3 && n.Pos.X > 0);
+
+            // At the fork the left lane can only take the left branch and the right lane the right one.
+            var arriving = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Node == fork.Id).OrderByDescending(l => l.Path.At(l.Length).Y).ToList();
+            Assert.AreEqual(2, arriving.Count);
+            foreach (Lane lane in arriving)
+            {
+                var ways = Enumerable.Range(0, Lane.Turns).Where(t => lane.Connectors[t] >= 0).ToList();
+                Assert.AreEqual(1, ways.Count, "each lane has one way to go");
+                Lane onto = world.Lanes[world.Lanes[lane.Connectors[ways[0]]].Next];
+                Assert.AreEqual(lane == arriving[0], onto.Path.At(onto.Length / 2).Y > 0, "and it is the branch on its own side");
+            }
+            // Where they come back, each branch has a lane of the wide road to itself.
+            var feeding = world.Lanes.Where(l => l.Kind == LaneKind.Connector && l.Node == join.Id).ToList();
+            Assert.AreEqual(2, feeding.Count);
+            Assert.AreNotEqual(feeding[0].Next, feeding[1].Next);
+            foreach (Lane c in feeding)
+            {
+                Lane from = world.Lanes[c.From], onto = world.Lanes[c.Next];
+                Assert.AreEqual(from.Path.At(from.Length - 30).Y > 0, onto.Path.At(5).Y > 0, "the left branch feeds the left lane");
+            }
+
+            var sim = new Simulation(world, 4);
+            sim.ArrivalsPerMinute = 24;
+            int left = 0, right = 0;
+            Grid.Run(sim, 400, () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    if (Math.Abs(c.X) < 20 && c.Y > 30) left++;
+                    if (Math.Abs(c.X) < 20 && c.Y < -30) right++;
+                }
+            });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(left, 0, "traffic uses the left branch");
+            Assert.Greater(right, 0, "and the right one");
+            Assert.Greater(sim.Left, 80);
+        }
+
+        [Test]
+        public void OneLaneCanForkIntoTwoRoadsAndRoadsMayPartNarrowly()
+        {
+            // One lane in, two roads out only 28 degrees apart: closer than roads may meet at an intersection.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(0, 0), T("h1"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(290, 72), T("h1"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(290, -72), T("h1"), true));
+            World world = map.ToWorld();
+            Assert.AreEqual(0, world.Nodes.Count(n => n.Controlled));
+            Lane arriving = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Node == world.Nodes.Single(n => n.Arms.Count == 3).Id);
+            Assert.AreEqual(2, Enumerable.Range(0, Lane.Turns).Count(t => arriving.Connectors[t] >= 0), "the one lane serves both roads");
+            // Two lanes parting into two roads must part by more than a few degrees.
+            var tight = new EditableMap();
+            Assert.IsNull(tight.TryAdd(P(-300, 0), P(0, 0), T("a1x2"), true));
+            Assert.IsNull(tight.TryAdd(P(0, 0), P(300, 15), T("a1"), true));
+            Assert.IsNotNull(tight.TryAdd(P(0, 0), P(300, -15), T("a1"), true));
+
+            var sim = new Simulation(world, 6);
+            sim.ArrivalsPerMinute = 16;
+            Grid.Run(sim, 300);
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 40);
+        }
+
+        [Test]
+        public void TwoWayRoadsThatMeetAtAnAngleAreStillAnIntersection()
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(0, 0), T("a2p"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(250, 130), T("a2p"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(250, -130), T("a2p"), true));
+            Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Controlled), "a light, as before");
+            // And two-way roads still may not meet as closely as a fork may.
+            Assert.IsNotNull(map.TryAdd(P(0, 0), P(300, -40), T("a2p"), true));
         }
 
         // ---------------------------------------------------------------- the edge of the map, and dead ends

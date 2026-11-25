@@ -90,6 +90,11 @@ namespace Traffic.Sim
         public int Next = -1;
         public Turn Turn;
         public int FromArm = -1;
+        /// <summary>
+        /// For a path through a junction with no light or signs: it ends in the same lane as
+        /// another path that runs straighter, so whoever is on it gives way to traffic on that one.
+        /// </summary>
+        public bool GiveWay;
         public List<Conflict> Conflicts;
         /// <summary>Connectors that start from the same lane, and where they split apart.</summary>
         public List<Sibling> Siblings;
@@ -130,6 +135,8 @@ namespace Traffic.Sim
         public List<int> Inbound = new List<int>();
         public List<int> Outbound = new List<int>();
         public bool AllowUTurn;
+        /// <summary>Which road this is the end of, by the order the roads were added to the builder.</summary>
+        public int Road;
         /// <summary>Heading of arriving traffic, and a roadside spot for the signal or stop sign.</summary>
         public double H;
         public Vec Post;
