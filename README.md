@@ -16,12 +16,13 @@ The sun is low and warm, so trees, lamp posts and trucks throw long shadows. Roa
 
 ## Puzzles
 
-Four so far. Each starts with roads coming in at the edges of an empty square, traffic that wants to get from some of them to others, and a budget. Build roads to join every route, press Drive, and the level is solved once enough journeys have been finished. Stars go by how little the traffic was held up.
+Five so far. Each starts with roads coming in at the edges of an empty square, traffic that wants to get from some of them to others, and a budget. Build roads to join every route, press Drive, and the level is solved once enough journeys have been finished. Stars go by how little the traffic was held up.
 
 - **First Link:** join two streets.
 - **Four Corners:** four roads, everyone going everywhere. A crossroads works; a roundabout works better.
 - **On and Off:** get traffic between a highway and a side road with an exit and a merge.
 - **Over or Through:** join two roads across a busy avenue without stopping it.
+- **The River:** a river down the middle and everyone wants to cross. A road drawn across water becomes a bridge, at twice the price.
 
 ## Driver Lab
 
@@ -45,6 +46,7 @@ Every car drives itself:
 Special drivers stand out in a loud color and upset everyone around them:
 
 - **Maniac:** speeds, tailgates, weaves, and pushes through red lights. Drivers with a green brake hard and freeze for a moment.
+- **School bus:** stops along quieter streets to take children on. Traffic behind it waits, and so does traffic coming the other way, unless the road has four lanes or more.
 - **Left-lane camper:** sits in the left lane a few mph under the limit. Everyone else has to go round on the right. Ordinary drivers do the opposite: slower traffic keeps right, and moves over when someone faster comes up behind.
 - **Slowpoke:** far under the limit with a huge gap.
 - **On phone:** keeps looking away, so reacts very late and sits at green lights.
@@ -54,7 +56,7 @@ Controls: add cars, pick or tune the driver for new cars, click a car to inspect
 
 ## Art
 
-The cars, trucks and rocks are from [Kenney's](https://www.kenney.nl) Car Kit and Nature Kit, and the ground, asphalt, concrete and gravel textures are built from photo scans by [ambientCG](https://ambientcg.com). All are public domain (CC0). Trees and bushes are shaped in code and covered with a foliage texture. The sources are in `Art/`; `Tools/BakeArt/bake.py` converts them into the one file the game loads. Motorcycles, roads, signals and the interface are drawn by code.
+The motorcycle, the big box truck, the semi with its box and tank trailers, and the school bus are built in code from boxes and drums; the trucks carry the names and slogans of made-up companies. The cars, delivery trucks and rocks are from [Kenney's](https://www.kenney.nl) Car Kit and Nature Kit, and the ground, asphalt, concrete and gravel textures are built from photo scans by [ambientCG](https://ambientcg.com). All are public domain (CC0). Trees and bushes are shaped in code and covered with a foliage texture. The sources are in `Art/`; `Tools/BakeArt/bake.py` converts them into the one file the game loads. Motorcycles, roads, signals and the interface are drawn by code.
 
 ## Run it
 

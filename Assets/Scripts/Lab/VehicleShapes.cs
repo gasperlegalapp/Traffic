@@ -19,7 +19,7 @@ namespace Traffic.Lab
         /// <summary>Where its ends are, how far out its lamps sit from the middle, and how high they are.</summary>
         public float Front, Back, LampOut, LampY;
 
-        private static VehicleShape motorcycle, boxTruck, tractor, boxTrailer, tankTrailer;
+        private static VehicleShape motorcycle, boxTruck, tractor, boxTrailer, tankTrailer, schoolBus;
 
         private sealed class Parts
         {
@@ -135,6 +135,36 @@ namespace Traffic.Lab
                 Box(p.Pale, -0.85f, 2.2f, 0, 5.8f, 2.7f, 2.4f);
                 Box(p.Metal, -3.76f, 0.72f, 0, 0.1f, 0.14f, 2.2f);
                 return boxTruck = p.Build(3.8f, -3.8f, 0.85f, 1.0f, SidePanels(-3.55f, 1.85f, 2.3f, 1.35f, 1.215f));
+            }
+        }
+
+        /// <summary>
+        /// A school bus, in the yellow that is its paint: a short hood, a long body with a row of
+        /// windows down each side and a black stripe under them, a pale roof, and dark bumpers.
+        /// </summary>
+        public static VehicleShape SchoolBus
+        {
+            get
+            {
+                if (schoolBus != null && schoolBus.Dark != null) return schoolBus;
+                var p = new Parts();
+                Box(p.Dark, 0, 0.62f, 0, 8.4f, 0.2f, 1.0f);
+                Axle(p, 2.9f, 0.48f, 1.0f, 0.32f);
+                Axle(p, -2.6f, 0.48f, 0.94f, 0.54f);
+                Box(p.Paint, 3.85f, 1.25f, 0, 1.3f, 1.0f, 2.1f);
+                Box(p.Paint, -0.65f, 1.85f, 0, 7.7f, 2.2f, 2.36f);
+                Box(p.Pale, -0.65f, 2.98f, 0, 7.5f, 0.08f, 2.1f);
+                Box(p.Glass, 3.22f, 2.3f, 0, 0.06f, 0.75f, 2.0f);
+                Box(p.Glass, -4.52f, 2.35f, 0, 0.06f, 0.6f, 1.5f);
+                foreach (float z in new[] { 1.19f, -1.19f })
+                {
+                    Box(p.Glass, -0.7f, 2.35f, z, 6.9f, 0.6f, 0.04f);
+                    Box(p.Dark, -0.65f, 1.55f, z, 7.7f, 0.12f, 0.04f);
+                    Box(p.Dark, -0.65f, 1.15f, z, 7.7f, 0.06f, 0.04f);
+                }
+                Box(p.Dark, 4.5f, 0.7f, 0, 0.14f, 0.3f, 2.3f);
+                Box(p.Dark, -4.5f, 0.7f, 0, 0.14f, 0.3f, 2.36f);
+                return schoolBus = p.Build(4.5f, -4.5f, 0.85f, 1.0f);
             }
         }
 

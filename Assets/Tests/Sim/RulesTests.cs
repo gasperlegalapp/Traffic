@@ -144,6 +144,145 @@ namespace Traffic.Tests
             Assert.IsFalse(junction.Failed);
         }
 
+        /// <summary>A road running east with a school bus on it that has a stop halfway along: the simulation, the bus, and the lanes each way (the outside one first).</summary>
+        private static Simulation BusOn(string road, out Car bus, out List<Lane> east, out List<Lane> west)
+        {
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-400, 0), P(400, 0), RoadType.ById(road), true));
+            World world = map.ToWorld();
+            east = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Path.At(l.Length).X > l.Path.At(0).X).OrderBy(l => l.Path.At(10).Y).ToList();
+            west = world.Lanes.Where(l => l.Kind == LaneKind.Road && l.Path.At(l.Length).X < l.Path.At(0).X).OrderByDescending(l => l.Path.At(10).Y).ToList();
+            var sim = new Simulation(world, 5);
+            sim.ArrivalsPerMinute = 0;
+            bus = sim.AddCar(east[0].Id, 300, 9, DriverParams.Normal, null, VehicleKind.SchoolBus);
+            bus.BusLane = east[0].Id;
+            bus.BusStop = 400;
+            return sim;
+        }
+
+        [Test]
+        public void TrafficStopsBothWaysForASchoolBusOnATwoLaneRoad()
+        {
+            // Ohio Revised Code 4511.75(A): stop at least ten feet from a school bus that is taking children on, and wait until it moves off.
+            Car bus;
+            List<Lane> east, west;
+            Simulation sim = BusOn("s2", out bus, out east, out west);
+            Car behind = sim.AddCar(east[0].Id, 240, 9);
+            // Coming the other way, timed to meet the bus while it is stopped.
+            Car oncoming = sim.AddCar(west[0].Id, 180, 9);
+            bool loaded = false, passedWhileLoading = false;
+            double nearestBehind = 99, nearestOncoming = 99, stoodFor = 0;
+            Car busCar = bus;
+            Grid.Run(sim, 60, () =>
+            {
+                if (!busCar.Loading) return;
+                loaded = true;
+                stoodFor += Simulation.Dt;
+                Assert.Less(busCar.V, 0.5, "the bus stands still while it loads");
+                nearestBehind = Math.Min(nearestBehind, busCar.X - busCar.Len / 2 - (behind.X + behind.Len / 2));
+                nearestOncoming = Math.Min(nearestOncoming, oncoming.X - oncoming.Len / 2 - (busCar.X + busCar.Len / 2));
+                if (oncoming.X < busCar.X) passedWhileLoading = true;
+            });
+            Assert.IsTrue(loaded, "the bus made its stop");
+            Assert.Greater(stoodFor, 7);
+            Assert.Less(stoodFor, 14);
+            Assert.GreaterOrEqual(nearestBehind, Simulation.BusClearance - 0.2, "the car behind kept ten feet back");
+            Assert.IsFalse(passedWhileLoading, "the car coming the other way waited");
+            Assert.GreaterOrEqual(nearestOncoming, Simulation.BusClearance - 0.2);
+            // Then everyone moves off.
+            Assert.IsFalse(bus.Loading);
+            Assert.Greater(bus.V + (bus.X > 150 ? 5 : 0), 3);
+            Assert.Less(oncoming.X, bus.X, "and the two have passed each other since");
+            Assert.AreEqual(0, sim.Crashes);
+        }
+
+        [Test]
+        public void OnAFourLaneRoadOnlyTrafficBehindTheBusStops()
+        {
+            // 4511.75(C): on a road of four or more lanes, traffic coming the other way need not stop. Traffic overtaking the bus still must.
+            Car bus;
+            List<Lane> east, west;
+            Simulation sim = BusOn("a4", out bus, out east, out west);
+            Assert.AreEqual(4, east[0].RoadLanes);
+            // One in the next lane, far enough back to come up on the bus once it has stopped; one the other way, timed to go by while it stands.
+            Car inside = sim.AddCar(east[1].Id, 60, 12);
+            Car oncoming = sim.AddCar(west[0].Id, 120, 12);
+            bool loaded = false, overtook = false, oncomingPassed = false;
+            double slowestOncoming = 99;
+            Car busCar = bus;
+            Grid.Run(sim, 45, () =>
+            {
+                if (!busCar.Loading) return;
+                loaded = true;
+                if (inside.X - inside.Len / 2 > busCar.X - busCar.Len / 2 + 1) overtook = true;
+                if (oncoming.X < busCar.X) oncomingPassed = true;
+                if (Math.Abs(oncoming.X - busCar.X) < 60) slowestOncoming = Math.Min(slowestOncoming, oncoming.V);
+            });
+            Assert.IsTrue(loaded);
+            Assert.IsFalse(overtook, "the car in the next lane did not pass the bus");
+            Assert.IsTrue(oncomingPassed, "the car coming the other way drove by");
+            Assert.Greater(slowestOncoming, 8, "without slowing for it");
+        }
+
+        [Test]
+        public void SomeoneWhoRunsRedLightsRunsTheBusToo()
+        {
+            Car bus;
+            List<Lane> east, west;
+            Simulation sim = BusOn("s2", out bus, out east, out west);
+            Car maniac = sim.AddCar(west[0].Id, 250, 12, SpecialDriver.All[0].Make());
+            bool passedWhileLoading = false;
+            Car busCar = bus;
+            Grid.Run(sim, 40, () => passedWhileLoading |= busCar.Loading && maniac.X < busCar.X - busCar.Len);
+            Assert.IsTrue(passedWhileLoading);
+        }
+
+        [Test]
+        public void SchoolBusesMakeTheirStopsAndTheGridKeepsMoving()
+        {
+            var sim = new Simulation(LabWorld.Build(), 13);
+            for (int i = 0; i < 40; i++) sim.Spawn(DriverParams.Normal, 0.3);
+            var buses = new List<Car>();
+            for (int i = 0; i < 4; i++) buses.Add(sim.Spawn(DriverParams.Normal, 0, VehicleKind.SchoolBus));
+            Assert.IsTrue(buses.All(b => b != null));
+            int stops = 0;
+            var wasLoading = new HashSet<int>();
+            var stopped = new Dictionary<int, double>();
+            double longestStop = 0;
+            Grid.Run(sim, 600, () =>
+            {
+                foreach (Car c in sim.Cars)
+                {
+                    c.Drv.Compliance = 1;
+                    if (c.Loading && wasLoading.Add(c.Id)) stops++;
+                    if (!c.Loading) wasLoading.Remove(c.Id);
+                    double t;
+                    stopped.TryGetValue(c.Id, out t);
+                    t = c.V < 0.1 && !c.Crashed ? t + Simulation.Dt : 0;
+                    stopped[c.Id] = t;
+                    longestStop = Math.Max(longestStop, t);
+                }
+            });
+            Assert.Greater(stops, 6, "the buses made their stops");
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Passes, 450);
+            Assert.Less(longestStop, 90);
+
+            // They arrive from the edge of the map when asked for, and not otherwise.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-400, 0), P(400, 0), RoadType.ById("s2"), true));
+            var edge = new Simulation(map.ToWorld(), 3);
+            edge.ArrivalsPerMinute = 10;
+            edge.ArrivalTrucks = 0;
+            edge.ArrivalMotorcycles = 0;
+            edge.ArrivalBuses = 0.3;
+            bool any = false;
+            Grid.Run(edge, 200, () => any |= edge.Cars.Any(c => c.Vehicle.Kind == VehicleKind.SchoolBus));
+            Assert.IsTrue(any);
+            Assert.AreEqual(0, edge.Crashes);
+            Assert.Greater(edge.Left, 15);
+        }
+
         [Test]
         public void ASlowerDriverMovesRightForAFasterOne()
         {

@@ -520,7 +520,7 @@ namespace Traffic.Ui
             }
             Vec[] built;
             List<Vec> meets;
-            refused = map.TryAdd(start, end, type, true, curved ? via : (Vec?)null, level, out built, out meets);
+            refused = map.TryAdd(start, end, type, true, curved ? via : (Vec?)null, Over(end, curved, via), out built, out meets);
             if (refused != null) return false;
             // Carry on from where this stretch ended (which may be a corner or junction close by that it was taken to), heading the way it arrived.
             Vec arrived = built[built.Length - 1], before = built[built.Length - 2];
@@ -535,13 +535,23 @@ namespace Traffic.Ui
 
         private const string TooSharp = "The road cannot double back on itself. Right-click to point it another way.";
 
+        /// <summary>
+        /// The level the road in hand will be built at if it ends at a point: the one chosen on
+        /// the toolbar, except that a road drawn on the ground across water becomes a bridge,
+        /// which is what anyone drawing it means.
+        /// </summary>
+        private int Over(Vec end, bool curved, Vec via)
+        {
+            return map.LevelOver(start, end, type, curved ? via : (Vec?)null, level);
+        }
+
         /// <summary>Whether a road from the start to a point could be built, given the way a curve sets off: null if it could, or the reason.</summary>
         private string Attempt(Vec end, double heading)
         {
             Vec via = default(Vec);
             bool curved = shape == Curve && EditableMap.Bend(start, heading, end, out via);
             if (shape == Curve && !curved && Behind(heading, end)) return TooSharp;
-            return map.TryAdd(start, end, type, false, curved ? via : (Vec?)null, level);
+            return map.TryAdd(start, end, type, false, curved ? via : (Vec?)null, Over(end, curved, via));
         }
 
         private int easedStamp = -1;
@@ -1210,6 +1220,8 @@ namespace Traffic.Ui
             bool behind = shape == Curve && !curved && Behind(heading, end);
             // The line the road will really follow, and where it will meet other roads: not always quite the line
             // pointed out, since a road that crosses close beside a corner or a junction goes through it.
+            // Across water, a road asked for on the ground is a bridge.
+            int level = Over(end, curved, via);
             string problem = behind ? TooSharp : Checked(end, () => map.TryAdd(start, end, type, false, curved ? via : (Vec?)null, level, out checkedLine, out checkedMeets));
             bool good = problem == null;
 

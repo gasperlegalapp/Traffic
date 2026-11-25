@@ -163,6 +163,74 @@ namespace Traffic.Sim
             return u * u * (3 - 2 * u);
         }
 
+        /// <summary>Whether a point is inside a shape given by its corners in order, either way round.</summary>
+        public static bool Inside(Vec p, IReadOnlyList<Vec> shape)
+        {
+            bool inside = false;
+            for (int i = 0, j = shape.Count - 1; i < shape.Count; j = i++)
+            {
+                Vec a = shape[i], b = shape[j];
+                if ((a.Y > p.Y) != (b.Y > p.Y) && p.X < (b.X - a.X) * (p.Y - a.Y) / (b.Y - a.Y) + a.X) inside = !inside;
+            }
+            return inside;
+        }
+
+        /// <summary>Twice the area of a shape: positive if its corners run counter-clockwise.</summary>
+        public static double Area2(IReadOnlyList<Vec> shape)
+        {
+            double sum = 0;
+            for (int i = 0, j = shape.Count - 1; i < shape.Count; j = i++) sum += shape[j].X * shape[i].Y - shape[i].X * shape[j].Y;
+            return sum;
+        }
+
+        /// <summary>
+        /// Cut a shape with no holes into triangles, for drawing it: the corners of each, three
+        /// at a time, as places in the list. It clips off one ear at a time, which is slow for
+        /// a shape of thousands of corners and fine for a lake.
+        /// </summary>
+        public static List<int> Triangulate(IReadOnlyList<Vec> shape)
+        {
+            var left = new List<int>();
+            bool ccw = Area2(shape) > 0;
+            for (int i = 0; i < shape.Count; i++) left.Add(ccw ? i : shape.Count - 1 - i);
+            var tris = new List<int>();
+            int guard = shape.Count * shape.Count + 8;
+            while (left.Count > 3 && guard-- > 0)
+            {
+                bool clipped = false;
+                for (int i = 0; i < left.Count; i++)
+                {
+                    int a = left[(i + left.Count - 1) % left.Count], b = left[i], c = left[(i + 1) % left.Count];
+                    Vec pa = shape[a], pb = shape[b], pc = shape[c];
+                    // An ear is a corner that turns left, with no other corner inside its triangle.
+                    if ((pb.X - pa.X) * (pc.Y - pa.Y) - (pb.Y - pa.Y) * (pc.X - pa.X) <= 1e-12) continue;
+                    bool empty = true;
+                    var ear = new[] { pa, pb, pc };
+                    foreach (int k in left)
+                    {
+                        if (k == a || k == b || k == c) continue;
+                        if (Inside(shape[k], ear))
+                        {
+                            empty = false;
+                            break;
+                        }
+                    }
+                    if (!empty) continue;
+                    tris.Add(a); tris.Add(b); tris.Add(c);
+                    left.RemoveAt(i);
+                    clipped = true;
+                    break;
+                }
+                // A shape that crosses itself has no ear to give: stop rather than go round for ever.
+                if (!clipped) break;
+            }
+            if (left.Count == 3)
+            {
+                tris.Add(left[0]); tris.Add(left[1]); tris.Add(left[2]);
+            }
+            return tris;
+        }
+
         public static double Clamp(double x, double lo, double hi)
         {
             return x < lo ? lo : x > hi ? hi : x;

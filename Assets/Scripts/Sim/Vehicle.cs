@@ -9,6 +9,8 @@ namespace Traffic.Sim
         BoxTruck,
         /// <summary>A tractor pulling a trailer, which may be a box or a tank: it bends in the middle.</summary>
         Semi,
+        /// <summary>A school bus: it stops along the way to take children on, and while it does the traffic round it has to stop too.</summary>
+        SchoolBus,
     }
 
     /// <summary>What a kind of vehicle can do, as multiples of what the driver would do in a car.</summary>
@@ -70,6 +72,12 @@ namespace Traffic.Sim
                 Kind = VehicleKind.Semi, Name = "Semi", Len = 14, Wid = 2.5, Trailer = 9.6,
                 Accel = 0.32, Brake = 0.7, Speed = 0.88, Corner = 0.42, LaneChange = 2.0, CanUTurn = false,
                 Colors = new[] { 0xc1121f, 0x1d3557, 0x2a9d8f, 0xe9ecef, 0xf77f00, 0x33363b, 0x6a4c93 },
+            },
+            new VehicleSpec
+            {
+                Kind = VehicleKind.SchoolBus, Name = "School bus", Len = 9, Wid = 2.4,
+                Accel = 0.4, Brake = 0.75, Speed = 0.85, Corner = 0.5, LaneChange = 1.8, CanUTurn = false,
+                Colors = new[] { 0xf6b200 },
             },
         };
 

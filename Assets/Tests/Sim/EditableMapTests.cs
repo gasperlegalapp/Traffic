@@ -2414,6 +2414,14 @@ namespace Traffic.Tests
                 case 3:
                     add(P(-60, -260), P(60, 260), "s2", null, 1);
                     break;
+                case 4:
+                    // One bridge over the river, a street each side of it, and the two side roads run up to those.
+                    add(P(-260, 40), P(-80, 10), "s2", null, 0);
+                    add(P(-80, 10), P(80, -10), "s2", null, 1);
+                    add(P(80, -10), P(260, -30), "s2", null, 0);
+                    add(P(-120, -260), P(-120, 16.7), "s2", null, 0);
+                    add(P(130, 260), P(130, -15.6), "s2", null, 0);
+                    break;
             }
         }
 
@@ -2449,6 +2457,7 @@ namespace Traffic.Tests
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]
+        [TestCase(4)]
         public void ASolvedLevelCarriesItsTrafficToTheEnd(int index)
         {
             Level level = Levels.All[index];
@@ -2467,6 +2476,60 @@ namespace Traffic.Tests
             Assert.GreaterOrEqual(sim.Arrived, level.TripsToFinish, level.Name + ": not enough journeys finished in twelve minutes");
             Assert.GreaterOrEqual(level.Stars(sim, map.Cost(), world), 1, level.Name);
             TestContext.WriteLine(level.Name + ": cost " + map.Cost().ToString("F0") + " of " + level.Budget + ", slowdown " + (sim.TripSeconds / sim.TripIdeal).ToString("F2") + ", stars " + level.Stars(sim, map.Cost(), world) + ", time " + sim.Time.ToString("F0") + ", strays " + sim.Strays);
+        }
+
+        [Test]
+        public void ARoadCrossesWaterOnlyOnABridge()
+        {
+            // A river running north and south, 40 m wide, and a lake off to the east.
+            var map = new EditableMap();
+            map.Waters.Add(EditableMap.River(new[] { P(0, -400), P(0, 400) }, 40));
+            map.Waters.Add(EditableMap.Lake(P(250, 150), 60));
+            Assert.IsTrue(map.OverWater(P(5, 100)));
+            Assert.IsTrue(map.OverWater(P(250, 150)));
+            Assert.IsFalse(map.OverWater(P(60, 100)));
+
+            // On the ground: refused, with the reason, whether it crosses the water or only ends in it.
+            Assert.AreEqual(EditableMap.InWater, map.TryAdd(P(-150, 0), P(150, 0), T("s2"), true));
+            Assert.AreEqual(EditableMap.InWater, map.TryAdd(P(-150, 60), P(-5, 60), T("s2"), true));
+            Assert.AreEqual(EditableMap.InWater, map.TryAdd(P(150, 150), P(350, 150), T("s2"), true), "nor across the lake");
+            Assert.AreEqual(0, map.Segments.Count);
+            // Alongside it, on dry land, is fine: but not with an edge of the road in the water.
+            Assert.IsNull(map.TryAdd(P(-60, -200), P(-60, 200), T("s2"), true));
+            Assert.AreEqual(EditableMap.InWater, map.TryAdd(P(22, -200), P(22, 200), T("s2"), true));
+
+            // As a bridge it may cross, if it is long enough to be up before the water and down after it.
+            Assert.AreEqual(1, map.LevelOver(P(-150, 0), P(150, 0), T("s2"), null, 0), "a road drawn across water is taken for a bridge");
+            Assert.AreEqual(0, map.LevelOver(P(-150, 0), P(-90, 0), T("s2"), null, 0), "and one that stays on land is not");
+            Assert.AreEqual(2, map.LevelOver(P(-150, 0), P(150, 0), T("s2"), null, 2), "a height that was asked for is kept");
+            Assert.AreEqual(EditableMap.RampInWater, map.TryAdd(P(-30, 100), P(80, 100), T("s2"), true, null, 1), "started too near the bank: still climbing when it reaches the water");
+            Assert.IsNull(map.TryAdd(P(-150, 0), P(150, 0), T("s2"), true, null, 1));
+            // A tunnel under it too.
+            Assert.IsNull(map.TryAdd(P(-200, -150), P(200, -150), T("s2"), true, null, -1));
+            World world = map.ToWorld();
+            Assert.AreEqual(2, world.Waters.Count);
+            // A road that is there cannot be dragged into the water, nor widened into it.
+            Assert.IsNull(map.TryAdd(P(60, 250), P(60, 380), T("s2"), true));
+            int node = map.NodeAt(P(60, 250), 5);
+            Assert.AreEqual(EditableMap.InWater, map.TryMove(node, P(5, 250), true));
+            // Water is not part of what is saved: it comes with the level.
+            Assert.AreEqual(0, EditableMap.Parse(map.Serialize()).Waters.Count);
+            // The shape cuts into triangles that cover it: as many as its corners less two.
+            Vec[] lake = map.Waters[1];
+            Assert.AreEqual((lake.Length - 2) * 3, Geo.Triangulate(lake).Count);
+            Vec[] river = map.Waters[0];
+            Assert.AreEqual((river.Length - 2) * 3, Geo.Triangulate(river).Count);
+        }
+
+        [Test]
+        public void ThePenTurnsARoadAcrossWaterIntoABridge()
+        {
+            Level level = Levels.All[4];
+            EditableMap map = level.Start();
+            Assert.AreEqual(1, map.Waters.Count);
+            Assert.AreEqual(EditableMap.InWater, map.TryAdd(P(-200, 100), P(200, 100), T("s2"), false));
+            // Its own roads do not stand in the water.
+            foreach (EditSegment s in map.Segments) foreach (Vec q in map.Trace(s)) Assert.IsFalse(map.OverWater(q));
         }
 
         /// <summary>A small drawn town: roads at odd angles, every lane count, a one-way street, quiet and fast roads.</summary>

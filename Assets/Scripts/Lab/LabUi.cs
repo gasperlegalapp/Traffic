@@ -629,9 +629,15 @@ namespace Traffic.Lab
             if (GUILayout.Button("+ Box truck", button) && Sim.Spawn(newDriver, variation, VehicleKind.BoxTruck) == null) Toast("The road is full.");
             if (GUILayout.Button("+ Semi", button) && Sim.Spawn(newDriver, variation, VehicleKind.Semi) == null) Toast("The road is full.");
             GUILayout.EndHorizontal();
+            if (GUILayout.Button("+ School bus", button))
+            {
+                if (Sim.Spawn(newDriver, 0, VehicleKind.SchoolBus) == null) Toast("The road is full.");
+                else Toast("A school bus stops along quieter streets. Traffic behind it waits, and traffic the other way too, unless the road has four lanes or more.");
+            }
             truckShare = Slider("Trucks among new vehicles", Mathf.RoundToInt(truckShare * 100) + "%", truckShare, 0, 0.6f);
             bigTruckShare = Slider("Box trucks and semis among trucks", Mathf.RoundToInt(bigTruckShare * 100) + "%", bigTruckShare, 0, 1);
             bikeShare = Slider("Motorcycles among new vehicles", Mathf.RoundToInt(bikeShare * 100) + "%", bikeShare, 0, 0.6f);
+            busShare = Slider("School buses among new vehicles", Mathf.RoundToInt(busShare * 100) + "%", busShare, 0, 0.2f);
             camperShare = Slider("Left-lane campers among new drivers", Mathf.RoundToInt(camperShare * 100) + "%", camperShare, 0, 0.3f);
 
             GUILayout.Space(10);

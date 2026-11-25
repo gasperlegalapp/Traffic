@@ -386,8 +386,18 @@ namespace Traffic.Sim
                 armB.Shift = -r.ShiftB;
                 armA.Inner = armB.Inner = r.Inner;
                 double peak = r.Bridge ? BridgeHeight : r.Height;
+                int laneBefore = world.Lanes.Count;
                 BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak, r.Inner, r.RampLen);
                 BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak, r.Inner, r.RampLen);
+                // Each lane knows its road, and how many lanes run the length of it (a turning lane down the middle counts as one).
+                int through = r.PavedMiddle ? 1 : 0;
+                foreach (TrackSpec t in r.Fwd) if (t.Slot >= 0 && t.From <= 0 && t.To >= 1) through++;
+                foreach (TrackSpec t in r.Back) if (t.Slot >= 0 && t.From <= 0 && t.To >= 1) through++;
+                for (int i = laneBefore; i < world.Lanes.Count; i++)
+                {
+                    world.Lanes[i].Road = roads.IndexOf(r);
+                    world.Lanes[i].RoadLanes = through;
+                }
                 // A divided road has a strip of ground down the middle, a little narrower than the gap between its yellow lines.
                 if (r.Inner > 0.5 && r.Fwd.Length > 0 && r.Back.Length > 0 && !r.PavedMiddle)
                 {

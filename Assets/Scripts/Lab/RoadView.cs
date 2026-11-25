@@ -63,6 +63,7 @@ namespace Traffic.Lab
             root.SetParent(parent, false);
 
             MeshKit.Spawn("Ground", GroundMesh(3000), GroundMaterial(), root, false);
+            AddWater(world, root);
 
             // What the roads are made of. Asphalt and gravel take their texture from where they lie
             // on the map; a sidewalk takes it from along its own length, a slab at a time.
@@ -590,6 +591,51 @@ namespace Traffic.Lab
             return mesh;
         }
 
+        // ------------------------------------------------------------ water
+
+        /// <summary>
+        /// Lakes and rivers: flat water lying just above the ground, with a strip of sand round
+        /// the shore. The land has no height, so the water has no depth to show: it is a sheet
+        /// of blue that roads go over on bridges.
+        /// </summary>
+        private static void AddWater(World world, Transform root)
+        {
+            if (world.Waters.Count == 0) return;
+            var verts = new List<Vector3>();
+            var normals = new List<Vector3>();
+            var tris = new List<int>();
+            var sand = new FlatBuilder();
+            foreach (Vec[] shape in world.Waters)
+            {
+                int first = verts.Count;
+                foreach (Vec p in shape)
+                {
+                    verts.Add(MeshKit.ToWorld(p.X, p.Y, 0.018f));
+                    normals.Add(Vector3.up);
+                }
+                List<int> cut = Geo.Triangulate(shape);
+                for (int i = 0; i + 2 < cut.Count; i += 3)
+                {
+                    // Both ways round, so it shows whichever way the pipeline counts a face.
+                    tris.Add(first + cut[i]); tris.Add(first + cut[i + 1]); tris.Add(first + cut[i + 2]);
+                    tris.Add(first + cut[i]); tris.Add(first + cut[i + 2]); tris.Add(first + cut[i + 1]);
+                }
+                // The shore: round the outside of the shape, which is to the right of its corners if they run counter-clockwise.
+                var round = new List<Vec>(shape) { shape[0] };
+                sand.Strip(round, Outward(round, Geo.Area2(shape) > 0 ? ShoreWidth : -ShoreWidth), 0.01f);
+            }
+            var mesh = new Mesh();
+            if (verts.Count > 65000) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.SetVertices(verts);
+            mesh.SetNormals(normals);
+            mesh.SetTriangles(tris, 0);
+            mesh.RecalculateBounds();
+            MeshKit.Spawn("Shore", sand.Build(), MeshKit.Lit(MeshKit.Hex(0xc9bb8e), 0.05f), root, false);
+            MeshKit.Spawn("Water", mesh, MeshKit.Lit(MeshKit.Hex(0x3f8fc9), 0.85f), root, false);
+        }
+
+        private const double ShoreWidth = 2.5;
+
         // ------------------------------------------------------------ scenery
 
         private sealed class Patch
@@ -702,6 +748,26 @@ namespace Traffic.Lab
                 }
             }
             foreach (Node node in world.Nodes) Block(node.Pos.X, node.Pos.Y, node.Radius + 7);
+            // Nothing grows in the water, or on the sand beside it.
+            foreach (Vec[] water in world.Waters)
+            {
+                double x0 = double.PositiveInfinity, x1 = double.NegativeInfinity, y0 = double.PositiveInfinity, y1 = double.NegativeInfinity;
+                foreach (Vec p in water)
+                {
+                    x0 = System.Math.Min(x0, p.X);
+                    x1 = System.Math.Max(x1, p.X);
+                    y0 = System.Math.Min(y0, p.Y);
+                    y1 = System.Math.Max(y1, p.Y);
+                    Block(p.X, p.Y, ShoreWidth + 3);
+                }
+                for (int i = (int)System.Math.Floor(x0 / cell); i <= (int)System.Math.Floor(x1 / cell); i++)
+                {
+                    for (int j = (int)System.Math.Floor(y0 / cell); j <= (int)System.Math.Floor(y1 / cell); j++)
+                    {
+                        if (Geo.Inside(new Vec((i + 0.5) * cell, (j + 0.5) * cell), water)) Block((i + 0.5) * cell, (j + 0.5) * cell, cell * 0.6);
+                    }
+                }
+            }
 
             var holder = new GameObject("Scenery").transform;
             holder.SetParent(root, false);

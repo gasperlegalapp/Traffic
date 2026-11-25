@@ -174,6 +174,23 @@ namespace Traffic.Sim
                 Blurb = "A busy avenue lies between North Road and South Road. A crossing with a traffic light would join them, and hold everybody up. A bridge or a tunnel costs more and stops nobody.",
                 Budget = 2600, TripsToFinish = 120, Arrivals = 6,
             }.Between("West Ave", "East Ave", 4).Between("North Rd", "South Rd"),
+
+            new Level(map =>
+            {
+                // A river from the north edge to the south, winding a little, with two roads arriving on each bank.
+                var course = new List<Vec>();
+                for (double y = 380; y >= -380; y -= 20) course.Add(new Vec(28 * Math.Sin(y / 110), y));
+                map.Waters.Add(EditableMap.River(course, 46));
+                Level.End(map, "West St", -260, 40, "s2");
+                Level.End(map, "East St", 260, -30, "s2");
+                Level.End(map, "Mill Ln", -120, -260, "s2");
+                Level.End(map, "Quarry Rd", 130, 260, "s2");
+            })
+            {
+                Name = "The River",
+                Blurb = "A river runs down the middle, and everyone wants to be on the other side. A road cannot cross water on the ground: draw one across and it becomes a bridge, which costs twice as much and needs dry land at each end to climb from.",
+                Budget = 3000, TripsToFinish = 90, Arrivals = 5,
+            }.Between("West St", "East St", 2).Between("Mill Ln", "Quarry Rd").Between("West St", "Quarry Rd").Between("Mill Ln", "East St"),
         };
     }
 }

@@ -53,6 +53,8 @@ namespace Traffic.Lab
         private float bikeShare = 0.06f;
         /// <summary>Of the trucks, the share that are big: box trucks and semis, half and half.</summary>
         private float bigTruckShare = 0.4f;
+        /// <summary>The share of arriving vehicles that are school buses.</summary>
+        private float busShare = 0.02f;
         /// <summary>The share of arriving drivers who camp in the left lane under the speed limit. None in a puzzle, where the score depends on the traffic.</summary>
         private float camperShare = 0.04f;
         private bool showSensors = true;
@@ -163,6 +165,7 @@ namespace Traffic.Lab
             if (own < fresh.Segments.Count) drawing = fresh;
             drawing.Ends = fresh.Ends;
             drawing.Bound = fresh.Bound;
+            drawing.Waters = fresh.Waters;
             undo.Clear();
             redo.Clear();
             building = true;
@@ -273,6 +276,7 @@ namespace Traffic.Lab
             EditableMap earlier = EditableMap.Parse(from[from.Count - 1]);
             earlier.Ends = drawing.Ends;
             earlier.Bound = drawing.Bound;
+            earlier.Waters = drawing.Waters;
             drawing = earlier;
             from.RemoveAt(from.Count - 1);
             StopDrawing();
@@ -671,6 +675,7 @@ namespace Traffic.Lab
             float r = Random.value;
             if (r < truckShare) return r >= truckShare * bigTruckShare ? VehicleKind.Truck : r < truckShare * bigTruckShare / 2 ? VehicleKind.Semi : VehicleKind.BoxTruck;
             if (r < truckShare + bikeShare) return VehicleKind.Motorcycle;
+            if (r < truckShare + bikeShare + busShare) return VehicleKind.SchoolBus;
             return VehicleKind.Car;
         }
 
@@ -741,7 +746,9 @@ namespace Traffic.Lab
             Sim.ArrivalVariation = variation;
             Sim.ArrivalTrucks = truckShare;
             Sim.ArrivalMotorcycles = bikeShare;
-            Sim.BigTrucks = bigTruckShare;
+            // A puzzle is scored on its traffic, so it gets none of the things that hold traffic up by chance.
+            Sim.BigTrucks = level != null ? 0 : bigTruckShare;
+            Sim.ArrivalBuses = building || level != null ? 0 : busShare;
             Sim.ArrivalCampers = building || level != null ? 0 : camperShare;
 
             if (building || !paused)

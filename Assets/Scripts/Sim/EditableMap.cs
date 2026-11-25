@@ -306,6 +306,7 @@ namespace Traffic.Sim
             copy.Nodes.AddRange(Nodes);
             copy.Ends = Ends;
             copy.Bound = Bound;
+            copy.Waters = Waters;
             foreach (EditSegment s in Segments)
             {
                 var piece = new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked, Limit = s.Limit, ControlAtA = s.ControlAtA, ControlAtB = s.ControlAtB };
@@ -2626,8 +2627,110 @@ namespace Traffic.Sim
         /// Why the map as it now stands cannot be built, given the map it was changed from: a
         /// corner the change has made too sharp, or junctions with no room between them. Null if it can be.
         /// </summary>
+        // ---------------------------------------------------------------- water
+
+        /// <summary>
+        /// Lakes and rivers: each the corners of its shape, in order. The land is flat, and so
+        /// is the water. A road on the ground cannot cross it; a bridge can, once it has
+        /// climbed, and so can a tunnel, once it is down. Water comes with a level, like its
+        /// roads and its edge, and is not saved with the drawing.
+        /// </summary>
+        public List<Vec[]> Waters = new List<Vec[]>();
+        /// <summary>How high a bridge has to be over water, or how deep a tunnel under it, meters.</summary>
+        public const double WaterClearance = 3;
+        public const string InWater = "A road cannot cross water on the ground. It needs a bridge.";
+        public const string RampInWater = "A bridge has to climb on dry land: start it further back from the water, and end it further on.";
+
+        /// <summary>A river as a shape: so wide, along a line.</summary>
+        public static Vec[] River(IReadOnlyList<Vec> line, double width)
+        {
+            Vec[] one = Geo.Offset(line, width / 2), other = Geo.Offset(line, -width / 2);
+            var shape = new List<Vec>(one);
+            for (int i = other.Length - 1; i >= 0; i--) shape.Add(other[i]);
+            return shape.ToArray();
+        }
+
+        /// <summary>A lake as a shape: round, more or less, about a point. The bumps give it a shore that is not a circle.</summary>
+        public static Vec[] Lake(Vec middle, double radius, int seed = 1)
+        {
+            const int sides = 28;
+            var shape = new Vec[sides];
+            for (int i = 0; i < sides; i++)
+            {
+                double a = i * 2 * Math.PI / sides;
+                double r = radius * (1 + 0.14 * Math.Sin(a * 2 + seed) + 0.08 * Math.Sin(a * 3 + seed * 2.3) + 0.05 * Math.Sin(a * 5 + seed * 0.7));
+                shape[i] = new Vec(middle.X + Math.Cos(a) * r, middle.Y + Math.Sin(a) * r);
+            }
+            return shape;
+        }
+
+        public bool OverWater(Vec p)
+        {
+            foreach (Vec[] water in Waters) if (Geo.Inside(p, water)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// What is wrong with a road along a line as far as water goes, at a level: nothing
+        /// (null), or it is on the ground in the water, or it is a bridge or tunnel still
+        /// near the ground where the water is.
+        /// </summary>
+        private string WaterProblem(Vec[] line, double width, int level)
+        {
+            if (Waters.Count == 0) return null;
+            double total = LengthOf(line), along = 0;
+            for (int i = 0; i + 1 < line.Length; i++)
+            {
+                double dx = line[i + 1].X - line[i].X, dy = line[i + 1].Y - line[i].Y, len = Geo.Hypot(dx, dy);
+                if (len < 1e-9) continue;
+                int steps = Math.Max(1, (int)Math.Ceiling(len / 3));
+                for (int k = 0; k <= steps; k++)
+                {
+                    double f = (double)k / steps, x = line[i].X + dx * f, y = line[i].Y + dy * f;
+                    // The middle of the road and both its edges.
+                    bool wet = false;
+                    foreach (double side in new[] { 0, width / 2, -width / 2 })
+                    {
+                        if (OverWater(new Vec(x + dy / len * side, y - dx / len * side))) wet = true;
+                    }
+                    if (!wet) continue;
+                    if (level == 0) return InWater;
+                    if (Math.Abs(HeightAlong(level, along + len * f, total)) < WaterClearance) return RampInWater;
+                }
+                along += len;
+            }
+            return null;
+        }
+
+        /// <summary>The first thing wrong with the roads as far as water goes, or null. Roads that came with a level are taken as they are.</summary>
+        private string WaterProblem()
+        {
+            if (Waters.Count == 0) return null;
+            foreach (EditSegment s in Segments)
+            {
+                if (s.Locked) continue;
+                string problem = WaterProblem(Trace(s), s.Type.Width, s.Level);
+                if (problem != null) return problem;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The level a road drawn from one point to another should be built at: the one asked
+        /// for, except that a road asked for on the ground which would cross water is a bridge.
+        /// (Whether a bridge can be built there is for TryAdd to say.)
+        /// </summary>
+        public int LevelOver(Vec p, Vec q, RoadType type, Vec? through, int level)
+        {
+            if (level != 0 || Waters.Count == 0) return level;
+            Vec[] line = Trace(p, q, through.HasValue, through ?? default(Vec), 48);
+            return WaterProblem(line, type.Width, 0) != null ? 1 : 0;
+        }
+
         private string Unbuildable(EditableMap before, string noRoom = NoRoom)
         {
+            string wet = WaterProblem();
+            if (wet != null) return wet;
             var already = new HashSet<int>(before.SharpCorners());
             foreach (int node in SharpCorners())
             {
@@ -2749,6 +2852,7 @@ namespace Traffic.Sim
             World world = b.Build();
             // Keep the surroundings the same size however much has been drawn.
             world.Extent = Math.Max(world.Extent, 400);
+            world.Waters.AddRange(Waters);
             // Name the places at the edge of the map.
             foreach (MapEnd end in Ends)
             {

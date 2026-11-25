@@ -169,6 +169,14 @@ namespace Traffic.Sim
         /// which is what the rest of the simulation goes by.)
         /// </summary>
         public double CabX, CabY, CabH, TowX, TowY, TowH;
+        /// <summary>
+        /// A school bus that has stopped to take children on, its red lights flashing: traffic
+        /// behind it, and on most roads traffic coming the other way, has to stop until it moves off.
+        /// </summary>
+        public bool Loading;
+        /// <summary>For a school bus: when it will move off; the lane it has looked at for a stop; and how far along that lane the stop is, or -1.</summary>
+        public double LoadUntil, BusStop = -1;
+        public int BusLane = -1;
 
         // Readouts for the overlay and inspector.
         public CarState State;
@@ -249,6 +257,12 @@ namespace Traffic.Sim
         /// half semis. None unless asked for, so that traffic without them is as it was.
         /// </summary>
         public double BigTrucks;
+        /// <summary>The share of arriving vehicles that are school buses. None unless asked for.</summary>
+        public double ArrivalBuses;
+        /// <summary>How likely a school bus is to have a stop on a street it turns on to, when the street is fit for one.</summary>
+        public double BusStopChance = 0.7;
+        /// <summary>How far short of a stopped school bus traffic has to stop: Ohio says at least ten feet.</summary>
+        public const double BusClearance = 3.05;
         /// <summary>The share of arriving drivers who are left-lane campers (see SpecialDriver.Camper). None unless asked for.</summary>
         public double ArrivalCampers;
         /// <summary>No new arrivals while this many vehicles are on the map.</summary>
@@ -287,6 +301,7 @@ namespace Traffic.Sim
         public readonly List<Accident> Accidents = new List<Accident>();
         public Action<Accident> OnAccident;
         private readonly List<Car> wrecks = new List<Car>();
+        private readonly List<Car> loadingBuses = new List<Car>();
 
         private int nextId = 1;
         private readonly List<Entry>[] laneCars;
@@ -434,6 +449,7 @@ namespace Traffic.Sim
                         kind = within >= BigTrucks ? VehicleKind.Truck : within < BigTrucks / 2 ? VehicleKind.Semi : VehicleKind.BoxTruck;
                     }
                     else if (pick < ArrivalTrucks + ArrivalMotorcycles) kind = VehicleKind.Motorcycle;
+                    else if (pick < ArrivalTrucks + ArrivalMotorcycles + ArrivalBuses) kind = VehicleKind.SchoolBus;
                     double length = VehicleSpec.Of(kind).Len;
                     // Wait for the mouth of the lane to clear.
                     Car ahead = null;
@@ -687,6 +703,8 @@ namespace Traffic.Sim
             }
             active.Clear();
             wrecks.Clear();
+            loadingBuses.Clear();
+            foreach (var car in Cars) if (car.Loading && !car.Crashed) loadingBuses.Add(car);
             foreach (var car in Cars) if (car.Crashed) wrecks.Add(car);
             foreach (var car in Cars)
             {
@@ -1001,6 +1019,67 @@ namespace Traffic.Sim
             Binding jsKind;
             scareSeen = false;
             if (JunctionStop(car, lane, d, v0, out jsDist, out jsKind)) StopFor(jsDist, jsKind);
+
+            // School buses (Ohio Revised Code 4511.75).
+            if (car.Vehicle.Kind == VehicleKind.SchoolBus)
+            {
+                if (lane.Kind == LaneKind.Road && car.BusLane != lane.Id)
+                {
+                    // A new street. Is there a stop on it? Only on a street slow enough to stand in, long enough
+                    // for the stop to be well clear of both ends, on the ground, and with room still to stop for it.
+                    car.BusLane = lane.Id;
+                    car.BusStop = -1;
+                    bool fit = lane.SpeedLimit <= 18.5 && lane.Length >= 110 && lane.Peak == 0 && (lane.Connectors != null || lane.IsExit);
+                    if (fit && Rng.Next() < BusStopChance)
+                    {
+                        double at = lane.Length * (0.35 + 0.3 * Rng.Next());
+                        if (at - car.S > 30) car.BusStop = at;
+                    }
+                }
+                if (car.Loading)
+                {
+                    if (Time >= car.LoadUntil)
+                    {
+                        car.Loading = false;
+                        car.BusStop = -1;
+                    }
+                    else StopFor(0, Binding.Line);
+                }
+                else if (car.BusStop >= 0 && lane.Id == car.BusLane)
+                {
+                    double to = car.BusStop - car.S;
+                    // It stops at the curb or not at all.
+                    if ((lane.Rights.Count > 0 && to < 60) || to < -3) car.BusStop = -1;
+                    else
+                    {
+                        StopFor(to, Binding.Line);
+                        if (to < 1.5 && car.V < 0.3 && !car.ChangingLanes)
+                        {
+                            car.Loading = true;
+                            car.LoadUntil = Time + 8 + 5 * Rng.Next();
+                        }
+                    }
+                }
+            }
+            // Everyone else stops for a school bus that is taking children on: at least ten feet short of it, and
+            // stays there until it moves off. That goes for traffic behind it in any lane, and for traffic coming the
+            // other way too, unless the road has four lanes or more. Someone already alongside it, or too close to
+            // stop without standing on the brakes, carries on. The drivers who run red lights run this as well.
+            if (loadingBuses.Count > 0 && lane.Kind == LaneKind.Road && !car.Loading && drv.Compliance >= 0.5)
+            {
+                foreach (Car bus in loadingBuses)
+                {
+                    if (bus == car || Math.Abs(bus.Height - car.Height) > 2.5) continue;
+                    Lane busLane = Lanes[bus.Lane];
+                    if (busLane.Road < 0 || busLane.Road != lane.Road) continue;
+                    if (busLane.ApproachNode != lane.ApproachNode && lane.RoadLanes >= 4) continue;
+                    Projection beside = lane.Path.Project(bus.X, bus.Y);
+                    if (beside.D > 30) continue;
+                    double gap = beside.S - bus.Len / 2 - BusClearance - (car.S + half);
+                    if (gap < -1 || car.V * car.V / (2 * Math.Max(gap, 0.5)) > 4.5) continue;
+                    StopFor(gap, Binding.Line);
+                }
+            }
 
             // Someone pushing through a red light inches into the intersection rather than charging it.
             if (car.Junc.Run && (lane.Kind == LaneKind.Connector || (lane.Connectors != null && lane.Length - car.S - half < 12)))

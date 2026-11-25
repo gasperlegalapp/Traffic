@@ -26,6 +26,9 @@ namespace Traffic.Lab
             public MeshRenderer BrakeGlow, Beam;
             /// <summary>The trailer, for a vehicle that pulls one: it is placed by itself, behind the tractor.</summary>
             public Transform Tow;
+            /// <summary>For a school bus: the stop sign that swings out from its side, and the red lamps high on its ends that flash in turn, while it is taking children on.</summary>
+            public GameObject StopArm;
+            public MeshRenderer[] Flashers;
             /// <summary>True for a modeled vehicle. It has lamps of its own, so the added ones only show while lit.</summary>
             public bool Modeled;
             /// <summary>The brake lights are on. They stay on until the driver has all but stopped slowing, so they do not flicker.</summary>
@@ -49,6 +52,7 @@ namespace Traffic.Lab
         private readonly Mesh truckBox = MeshKit.Box(6.1f, 2.7f, 2.5f);
         private readonly Mesh truckGlass = MeshKit.Box(0.5f, 0.7f, 2.2f);
         private readonly Mesh bikeLamp = MeshKit.Box(0.08f, 0.12f, 0.16f);
+        private readonly Mesh stopArm = StopArmMesh();
         private readonly Material tire = MeshKit.Lit(MeshKit.Hex(0x1c1e22), 0.15f);
         private readonly Material metal = MeshKit.Lit(MeshKit.Hex(0xa3aab2), 0.6f);
         private readonly Material pale = MeshKit.Lit(MeshKit.Hex(0xe9ecef), 0.25f);
@@ -142,6 +146,20 @@ namespace Traffic.Lab
             return made;
         }
 
+        /// <summary>The eight-sided stop sign a school bus swings out, lying flat until it is stood up.</summary>
+        private static Mesh StopArmMesh()
+        {
+            var ring = new List<Vec>();
+            for (int i = 0; i < 8; i++)
+            {
+                double a = System.Math.PI / 8 + System.Math.PI / 4 * i;
+                ring.Add(new Vec(System.Math.Cos(a) * 0.45, System.Math.Sin(a) * 0.45));
+            }
+            var b = new FlatBuilder();
+            b.Fan(new Vec(0, 0), ring, 0);
+            return b.Build();
+        }
+
         /// <summary>Put a built shape under a parent, each of its parts in what it is made of.</summary>
         private void Dress(Transform parent, VehicleShape shape, Material paint, Material rider, Material livery)
         {
@@ -182,6 +200,30 @@ namespace Traffic.Lab
                 back = -halfLen + 0.01f;
                 inset = halfWid * 0.5f;
                 edge = halfWid - 0.14f;
+            }
+            else if (kind == VehicleKind.SchoolBus)
+            {
+                v.Modeled = true;
+                VehicleShape bus = VehicleShape.SchoolBus;
+                Dress(go.transform, bus, v.Paint, leather, null);
+                front = bus.Front - 0.01f;
+                back = bus.Back + 0.01f;
+                lampY = backLampY = bus.LampY;
+                inset = bus.LampOut;
+                edge = halfWid - 0.16f;
+                // The stop sign on the driver's side, facing the traffic ahead and behind; and two red lamps high on each end.
+                v.StopArm = MeshKit.Spawn("Stop arm", stopArm, brakeOn, go.transform, false);
+                v.StopArm.transform.localPosition = new Vector3(1.6f, 1.9f, halfWid + 0.5f);
+                v.StopArm.transform.localRotation = Quaternion.Euler(0, 0, 90);
+                v.StopArm.SetActive(false);
+                v.Flashers = new MeshRenderer[4];
+                for (int i = 0; i < 4; i++)
+                {
+                    GameObject flasher = MeshKit.Spawn("Flasher", lamp, brakeOn, go.transform, false);
+                    flasher.transform.localPosition = new Vector3(i < 2 ? front - 1.25f : back, 2.82f, i % 2 == 0 ? 0.8f : -0.8f);
+                    v.Flashers[i] = flasher.GetComponent<MeshRenderer>();
+                    v.Flashers[i].enabled = false;
+                }
             }
             else if (kind == VehicleKind.Motorcycle || kind == VehicleKind.BoxTruck || kind == VehicleKind.Semi)
             {
@@ -277,7 +319,7 @@ namespace Traffic.Lab
             Object.Destroy(root.gameObject);
             // The lamps and their light belong to this view alone; the glow shapes and the built vehicles are shared and kept.
             foreach (Material m in new[] { cargo, leather, glass, tire, metal, pale, brakeOn, brakeOff, tailOn, blinkOn, blinkOff, headlight, headlightOff, brakeGlow, tailGlow, beamGlow }) Object.Destroy(m);
-            foreach (Mesh m in new[] { body, cabin, truckCab, truckBox, truckGlass, bikeLamp, lamp, corner }) Object.Destroy(m);
+            foreach (Mesh m in new[] { body, cabin, truckCab, truckBox, truckGlass, bikeLamp, lamp, corner, stopArm }) Object.Destroy(m);
         }
 
         public void Sync(List<Car> cars, double time, int selectedId)
@@ -323,6 +365,14 @@ namespace Traffic.Lab
                 bool left = hazard || (car.Blinker < 0 && blink), right = hazard || (car.Blinker > 0 && blink);
                 SetLamps(v, v.Left, left, blinkOn, blinkOff);
                 SetLamps(v, v.Right, right, blinkOn, blinkOff);
+
+                // A school bus taking children on: its stop sign is out, and its red lamps flash, one side and then the other.
+                if (v.StopArm != null)
+                {
+                    if (v.StopArm.activeSelf != car.Loading) v.StopArm.SetActive(car.Loading);
+                    bool one = time * 1.1 % 1 < 0.5;
+                    for (int i = 0; i < v.Flashers.Length; i++) Show(v.Flashers[i], car.Loading && (i % 2 == 0) == one, brakeOn);
+                }
 
                 // Headlights after dark. A wreck's are out.
                 bool lit = dark && !(car.Crashed && car.CrashMajor);

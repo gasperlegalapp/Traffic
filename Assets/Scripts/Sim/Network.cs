@@ -46,6 +46,8 @@ namespace Traffic.Sim
         public double SpeedLimit;
         /// <summary>Sideways position on its road: 0 is next to the centerline, counting up to the right.</summary>
         public int Slot;
+        /// <summary>For a lane of a road: which road it belongs to (the same number for both directions), and how many lanes that road has in all. -1 and 0 for a path through an intersection.</summary>
+        public int Road = -1, RoadLanes;
         /// <summary>Neighbor lanes going the same way. A lane can have several along its length.</summary>
         public List<int> Lefts = new List<int>();
         public List<int> Rights = new List<int>();
@@ -252,6 +254,8 @@ namespace Traffic.Sim
         public List<Marking> Markings = new List<Marking>();
         /// <summary>The strips of ground between the two directions of a divided road.</summary>
         public List<Strip> Medians = new List<Strip>();
+        /// <summary>Lakes and rivers, each as the corners of its shape. Roads cross them only on bridges or in tunnels.</summary>
+        public List<Vec[]> Waters = new List<Vec[]>();
         public List<StopLine> StopLines = new List<StopLine>();
         public List<ArrowMark> Arrows = new List<ArrowMark>();
         /// <summary>Roads that come in from the edge of the map, where new vehicles arrive.</summary>
