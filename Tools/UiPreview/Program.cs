@@ -129,26 +129,17 @@ internal static class Program
     private static void Main(string[] args)
     {
         const double w = 1280, h = 380;
-        // The same list the game makes from its road types (see LabApp.RoadTiles).
+        // The same list the game makes from its road types (see LabApp.RoadTiles), with shorter words.
         var roads = new List<DockRoad>();
-        Action<string, int, int, bool, string> road = (group, fwd, back, median, body) => roads.Add(new DockRoad
+        foreach (RoadType t in RoadType.Toolbar)
         {
-            Group = group, Forward = fwd, Backward = back, Median = median, Body = body,
-            Title = group + ", " + (fwd == 1 ? "1 lane" : fwd + " lanes") + (back == 0 ? " one-way" : " each way"),
-        });
-        road("Street", 1, 1, false, "25 mph.  $2 a meter.  24 ft wide.\nA double yellow line divides the two directions.\nWhere only streets meet, drivers get stop signs all round.\nCurves no tighter than 70 ft.");
-        road("Street", 1, 0, false, "25 mph.  $1 a meter.  12 ft wide.\nTraffic runs the way you draw it, from the first click to the last.");
-        road("Avenue", 1, 1, false, "40 mph.  $2.50 a meter.  24 ft wide.\nA double yellow line divides the two directions.");
-        road("Avenue", 1, 1, true, "40 mph.  $3 a meter.  34 ft wide.\nA grass median divides the two directions.");
-        road("Avenue", 2, 2, true, "40 mph.  $6 a meter.  58 ft wide.\nA grass median divides the two directions.\nWhere it meets another road it gets a traffic light.\nCurves no tighter than 100 ft.");
-        road("Avenue", 1, 0, false, "40 mph.  $2 a meter.");
-        road("Avenue", 2, 0, false, "40 mph.  $4 a meter.");
-        roads.Add(new DockRoad { Group = "Avenue", Forward = 2, Backward = 2, Turn = true, Title = "Avenue, 2 lanes each way, with a turning lane in the middle", Body = "40 mph.  $7.50 a meter.  60 ft wide.\nA turning lane runs down the middle: traffic about to turn left waits there, out of the way of the rest." });
-        roads.Add(new DockRoad { Group = "Avenue", Forward = 2, Backward = 2, Median = true, Bays = true, Title = "Avenue, 2 lanes each way, with a median and left-turn lanes", Body = "40 mph.  $7.50 a meter.  60 ft wide.\nA grass median divides the two directions, and makes way for a left-turn lane on the way into each intersection." });
-        road("Highway", 1, 0, false, "65 mph.  $3 a meter.");
-        road("Highway", 2, 0, false, "65 mph.  $6 a meter.");
-        road("Highway", 3, 0, false, "65 mph.  $9 a meter.  36 ft wide.\nTraffic runs the way you draw it, from the first click to the last.\nWhere it meets another road it gets a traffic light.\nCurves no tighter than 200 ft.");
-        road("Highway", 4, 0, false, "65 mph.  $12 a meter.");
+            roads.Add(new DockRoad
+            {
+                Group = RoadType.GroupNames[t.Group], Title = t.Name, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0, Turn = t.CenterLane, Bays = t.Bays,
+                Body = t.Mph + " mph.  $" + t.CostPerMeter.ToString(CultureInfo.InvariantCulture) + " a meter.  " + Math.Round(t.Width * 3.28084) + " ft wide.\n"
+                    + (t.OneWay ? "Traffic runs the way you draw it." : t.CenterLane ? "A turning lane runs down the middle." : t.Median > 0 ? "A grass median divides the two directions." : "A double yellow line divides the two directions."),
+            });
+        }
         var s = new HtmlSurface();
         // Each row is one state of the toolbar, with the pointer resting on something.
         var states = new (string Name, Action<Dock> Set, DockKind Point, int Index)[]
@@ -460,6 +451,33 @@ internal static class PenScenes
         pen.Press(P(20, 14.5));
         pen.Drag(P(95, 12));
         add("Move tool: sliding the end of an added lane along its road", pen, 95, 12, 0, 0, z);
+
+        // Building off lanes. Roads already there are passed as: kind, from x, y, to x, y.
+        Func<string, string, double[], RoadPen> lanes = (tool, kind, road) =>
+        {
+            var p = new RoadPen { Map = new EditableMap(), Type = RoadType.ById(tool) };
+            for (int i = 0; i + 3 < road.Length; i += 4) p.Map.TryAdd(P(road[i], road[i + 1]), P(road[i + 2], road[i + 3]), RoadType.ById(kind), true);
+            return p;
+        };
+        pen = lanes("a1", "a4", new double[] { -200, 0, 40, 0 });
+        add("Every lane at a road end has its own arrow (lanes that leave) or will show a ring (lanes that set out)", pen, 90, 60, 0, 0, 2.6);
+
+        pen = lanes("a1", "a1x2", new double[] { -200, 0, -20, 0 });
+        pen.Shape = RoadPen.Curve;
+        EditableMap.LaneEnd rightLane = pen.Map.LaneEnds().FindAll(e => e.Leaving && e.Node.X > -100)[1];
+        Click(pen, rightLane.At.X, rightLane.At.Y, 1 / 2.6);
+        add("Built on from the right lane's arrow with a one-lane road: that lane carries on", pen, 80, -45, 0, 0, 2.6);
+
+        pen = lanes("a1", "a1x2", new double[] { -200, 0, 200, 0 });
+        add("Partway along a road, the lane under the pointer shows its arrow", pen, -40, -1.6, 0, 0, 2.6);
+
+        pen = lanes("a1", "a1x2", new double[] { -200, 0, 200, 0 });
+        Click(pen, -60, -1.6, 1 / 2.6);
+        add("Started on that lane and drawn ahead: it peels off along the lane, as an exit", pen, 50, -50, 0, 0, 2.6);
+
+        pen = lanes("a1", "a1x2", new double[] { -200, 0, 200, 0 });
+        Click(pen, -70, -60, 1 / 2.6);
+        add("Brought in to a lane: a ring on the lane it will join, and it sweeps in alongside", pen, 40, -1.6, 0, 0, 2.6);
 
         // The same curve from far out, where a meter is a fraction of a pixel: the outlines and pins keep their size on screen.
         pen = New("s2", -500, -200, 500, -200);

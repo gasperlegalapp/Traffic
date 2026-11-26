@@ -153,6 +153,17 @@ namespace Traffic.Ui
         /// <summary>The way a road arriving at the start is heading, if there is one to carry on from.</summary>
         private bool hasFlow;
         private double flow;
+        /// <summary>
+        /// The road being drawn was started on a lane partway along a road: it leaves along
+        /// that lane, as an exit does, if it is then drawn the way the lane runs.
+        /// </summary>
+        private bool laneStart;
+        private double laneFlow;
+        /// <summary>
+        /// The road being drawn was started from one lane's arrow at the end of a road: which
+        /// lane that was (0 at the left of the traffic) and how many lanes leave that end. -1 if not.
+        /// </summary>
+        private int fromLane = -1, fromLanes;
         /// <summary>The way the player has pointed a curve to set off, when they have.</summary>
         private bool hasAim;
         private double aim;
@@ -429,7 +440,8 @@ namespace Traffic.Ui
                 if (shape == Roundabout) return hasStart ? "Pull out to the size you want, then click. Right-click to go back." : "Click where the middle of the roundabout should be.";
                 if (!hasStart)
                 {
-                    if (map != null && map.Segments.Count > 0) return "Click where the road starts. Touch or cross another road to make an intersection.";
+                    if (map != null && map.Segments.Count > 0) return type.OneWay ? "Click where the road starts. Click a lane's blue arrow, or a lane along a road, to build off that lane."
+                        : "Click where the road starts, or a lane's blue arrow to build on from it. Touch or cross another road to make an intersection.";
                     return map != null && map.Bound > 0 ? "Click where the road starts. Run a road to the edge of the map, the broken line, to bring traffic in."
                         : "Click where the road starts. An open road end is where traffic comes in.";
                 }
@@ -494,7 +506,27 @@ namespace Traffic.Ui
                 hasStart = true;
                 hasAim = false;
                 ownAim = false;
+                laneStart = false;
+                fromLane = -1;
+                // Started on a lane's arrow at the end of a road: the road is built on from that lane.
+                EditableMap.LaneEnd knob;
+                if (LaneEndAt(p, true, out knob))
+                {
+                    start = knob.Node;
+                    fromLane = knob.Lane;
+                    fromLanes = knob.Lanes;
+                }
                 hasFlow = map.FlowAt(start, out flow);
+                // Started on a lane partway along a road, with a one-way road in hand: it leaves along that lane.
+                Vec on;
+                int lane, lanes;
+                Snap at = map.SnapTo(start);
+                if (!hasFlow && type.OneWay && at.Node < 0 && at.Segment >= 0 && map.LaneAt(p, out on, out laneFlow, out lane, out lanes))
+                {
+                    laneStart = true;
+                    hasFlow = true;
+                    flow = laneFlow;
+                }
                 return false;
             }
             double heading = 0;
@@ -507,21 +539,28 @@ namespace Traffic.Ui
                 return false;
             }
             end = Eased(end, heading);
-            Vec via = default(Vec);
-            bool curved = false;
-            if (shape == Curve)
+            Vec via;
+            bool behind;
+            bool curved = Sweep(end, heading, out via, out behind);
+            if (behind)
             {
-                curved = EditableMap.Bend(start, heading, end, out via);
-                if (!curved && Behind(heading, end))
-                {
-                    refused = TooSharp;
-                    return false;
-                }
+                refused = TooSharp;
+                return false;
             }
             Vec[] built;
             List<Vec> meets;
+            int tie = LaneTie(end);
+            Vec from = start;
+            // Ended on one lane's ring at the start of a wider one-way road: it is brought in to that lane.
+            EditableMap.LaneEnd ring = default(EditableMap.LaneEnd);
+            bool onRing = type.OneWay && LaneEndAt(p, false, out ring) && ring.Lanes > type.Forward;
             refused = map.TryAdd(start, end, type, true, curved ? via : (Vec?)null, Over(end, curved, via), out built, out meets);
             if (refused != null) return false;
+            // Built on from one lane of a road with more lanes or fewer: say which lane lines up with which.
+            if (tie >= 0) map.SetLaneTie(from, tie);
+            if (onRing) map.SetLaneTie(ring.Node, Math.Min(ring.Lane, ring.Lanes - type.Forward));
+            laneStart = false;
+            fromLane = -1;
             // Carry on from where this stretch ended (which may be a corner or junction close by that it was taken to), heading the way it arrived.
             Vec arrived = built[built.Length - 1], before = built[built.Length - 2];
             bool asPointed = Dist(arrived, end) < 0.5;
@@ -548,10 +587,96 @@ namespace Traffic.Ui
         /// <summary>Whether a road from the start to a point could be built, given the way a curve sets off: null if it could, or the reason.</summary>
         private string Attempt(Vec end, double heading)
         {
-            Vec via = default(Vec);
-            bool curved = shape == Curve && EditableMap.Bend(start, heading, end, out via);
-            if (shape == Curve && !curved && Behind(heading, end)) return TooSharp;
+            Vec via;
+            bool behind;
+            bool curved = Sweep(end, heading, out via, out behind);
+            if (behind) return TooSharp;
             return map.TryAdd(start, end, type, false, curved ? via : (Vec?)null, Over(end, curved, via));
+        }
+
+        /// <summary>
+        /// The shape of the piece from the start to a point: true if it is swept round, through
+        /// the point given, and false if it is straight. With the curve tool it sweeps from the
+        /// way the road is heading. With the straight tool it is straight, with two exceptions
+        /// that make a one-way road leave or join a lane as a ramp does, along the lane and not
+        /// across it: a road started on a lane and drawn the way that lane runs sweeps away from
+        /// it, and a road ended on a lane it is already heading along sweeps in to it.
+        /// </summary>
+        private bool Sweep(Vec end, double heading, out Vec via, out bool behind)
+        {
+            via = default(Vec);
+            behind = false;
+            if (shape == Curve)
+            {
+                bool swept = EditableMap.Bend(start, heading, end, out via);
+                behind = !swept && Behind(heading, end);
+                return swept;
+            }
+            double along = Math.Atan2(end.Y - start.Y, end.X - start.X);
+            if (laneStart && Math.Cos(along - laneFlow) > 0.3)
+            {
+                // To the right it leaves along the lane, as a ramp does. To the left it can only do so from a one-way road,
+                // where it makes a fork, and the two ways on have to part by a few degrees from the first.
+                bool toLeft = Math.Sin(along - laneFlow) > 0;
+                if (!toLeft) return EditableMap.Bend(start, laneFlow, end, out via);
+                RoadType under = map.RoadAt(start);
+                return under != null && under.OneWay && EditableMap.Bend(start, laneFlow + ForkAngle, end, out via);
+            }
+            double joins;
+            if (!laneStart && !hasFlow && type.OneWay && JoinsLane(end, out joins) && Math.Cos(along - joins) > 0.3)
+            {
+                // The same curve drawn from the far end: it leaves the lane backward and comes round to the start.
+                bool fromLeft = Math.Sin(along - joins) < 0;
+                if (!fromLeft) return EditableMap.Bend(end, joins + Math.PI, start, out via);
+                RoadType under = map.RoadAt(end);
+                return under != null && under.OneWay && EditableMap.Bend(end, joins - ForkAngle + Math.PI, start, out via);
+            }
+            return false;
+        }
+
+        /// <summary>How far apart, in radians, two one-way roads set off where one leaves the other on its left: a little more than the least a fork allows.</summary>
+        private const double ForkAngle = 0.3;
+
+        /// <summary>Whether a point where the road in hand would end is partway along a road, and if so the way the lane under the pointer there runs.</summary>
+        private bool JoinsLane(Vec end, out double heading)
+        {
+            heading = 0;
+            Snap at = map.SnapTo(end);
+            Vec on;
+            int lane, lanes;
+            return at.Node < 0 && at.Segment >= 0 && map.LaneAt(pointer, out on, out heading, out lane, out lanes);
+        }
+
+        /// <summary>The lane's end within reach of a point, at an open end of a road: one that traffic leaves by, to build on from, or one it sets out from, to bring a road in to.</summary>
+        private bool LaneEndAt(Vec p, bool leaving, out EditableMap.LaneEnd found)
+        {
+            found = default(EditableMap.LaneEnd);
+            double nearest = Math.Max(NetworkBuilder.LaneW * 0.6, Ghost.Pixel * 10);
+            bool any = false;
+            foreach (EditableMap.LaneEnd end in map.LaneEnds())
+            {
+                if (end.Leaving != leaving || Dist(end.At, p) >= nearest) continue;
+                nearest = Dist(end.At, p);
+                found = end;
+                any = true;
+            }
+            return any;
+        }
+
+        /// <summary>
+        /// Which lane lines up with which, for a one-way road built on from a lane's arrow at the
+        /// end of a one-way road with more lanes or fewer, to a point: the number of the wider
+        /// road's lane (0 at the left) that the narrower road's first lane meets. -1 if the road
+        /// in hand was not started that way, or the two have the same number of lanes.
+        /// A narrower road carries on from the lane that was picked. A wider road gains its new
+        /// lanes on the side it is drawn toward, or on the left if it is drawn straight on.
+        /// </summary>
+        private int LaneTie(Vec end)
+        {
+            if (fromLane < 0 || !type.OneWay || type.Forward == fromLanes) return -1;
+            if (type.Forward < fromLanes) return Math.Min(fromLane, fromLanes - type.Forward);
+            double side = Math.Cos(flow) * (end.Y - start.Y) - Math.Sin(flow) * (end.X - start.X);
+            return side < -2 ? 0 : type.Forward - fromLanes;
         }
 
         private int easedStamp = -1;
@@ -976,6 +1101,18 @@ namespace Traffic.Ui
                     Ghost.Dot(map.Nodes[i], 1.1, 3.5, Ghost.Faint);
                 }
             }
+            if (tool != Road || shape == Roundabout) return;
+            // At each open end of a road, every lane by itself: an arrow on each lane that traffic leaves by, to build on
+            // from, before a road is started; and once one is, a ring on each lane that sets out from an end, to bring it in to.
+            EditableMap.LaneEnd near = default(EditableMap.LaneEnd);
+            bool over = hasPointer && LaneEndAt(pointer, !hasStart, out near);
+            foreach (EditableMap.LaneEnd end in map.LaneEnds())
+            {
+                if (end.Leaving == hasStart) continue;
+                bool hot = over && Dist(end.At, near.At) < 0.01;
+                if (end.Leaving) Ghost.Knob(end.At, end.Heading, hot);
+                else Ghost.Socket(end.At, hot);
+            }
         }
 
         /// <summary>The road under the pointer, as the bulldozer or the replace tool would leave it.</summary>
@@ -1181,6 +1318,17 @@ namespace Traffic.Ui
             bool caught = snap.Node >= 0 || snap.Segment >= 0;
             if (!hasStart)
             {
+                // Over a lane partway along a road, with a one-way road in hand: that lane's arrow, to build off it.
+                Vec lanePoint;
+                double laneWay;
+                int lane, lanes;
+                EditableMap.LaneEnd knob;
+                if (LaneEndAt(pointer, true, out knob)) return;
+                if (type.OneWay && snap.Node < 0 && snap.Segment >= 0 && map.LaneAt(pointer, out lanePoint, out laneWay, out lane, out lanes))
+                {
+                    Ghost.Knob(lanePoint, laneWay, true);
+                    return;
+                }
                 Ghost.Pin(end, true, caught);
                 Ghost.Stand(end, true, true);
                 return;
@@ -1215,9 +1363,9 @@ namespace Traffic.Ui
                 return;
             }
 
-            Vec via = default(Vec), from = start;
-            bool curved = shape == Curve && EditableMap.Bend(start, heading, end, out via);
-            bool behind = shape == Curve && !curved && Behind(heading, end);
+            Vec via, from = start;
+            bool behind;
+            bool curved = Sweep(end, heading, out via, out behind);
             // The line the road will really follow, and where it will meet other roads: not always quite the line
             // pointed out, since a road that crosses close beside a corner or a junction goes through it.
             // Across water, a road asked for on the ground is a bridge.
@@ -1292,6 +1440,11 @@ namespace Traffic.Ui
             Ghost.Pin(end, good || reach <= 1, caught);
             Ghost.Stand(from, good || reach <= 1, false);
             Ghost.Stand(end, good || reach <= 1, true);
+            // Ending on a lane partway along a road, with a one-way road in hand: a ring on the lane it will join.
+            double joinWay;
+            Vec joinPoint;
+            int joinLane, joinLanes;
+            if (type.OneWay && JoinsLane(end, out joinWay) && map.LaneAt(pointer, out joinPoint, out joinWay, out joinLane, out joinLanes)) Ghost.Socket(joinPoint, true);
             // The price rides on the end in hand.
             TagAt = end;
             TagPlaced = Price.Length > 0;

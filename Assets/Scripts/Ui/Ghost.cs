@@ -253,6 +253,41 @@ namespace Traffic.Ui
             Ring(at, radius, AtLeast(0.5, 2.4), good ? GoodEdge : BadEdge);
         }
 
+        /// <summary>The blue of a lane that can be built on from.</summary>
+        public const uint LaneBlue = 0xFF2F86FF;
+
+        /// <summary>
+        /// The mark on a lane that can be built on from: a blue disc with an arrowhead showing
+        /// the way the lane's traffic runs. Under the pointer it is drawn the other way about,
+        /// white with a blue arrow, and a little larger.
+        /// </summary>
+        public void Knob(Vec at, double heading, bool hot)
+        {
+            // No wider than its lane, so that the arrows of lanes side by side stand clear of each other, until from far out it would vanish.
+            double r = Math.Max(Math.Min(AtLeast(1.4, 6), 1.55), Pixel * 3.5) * (hot ? 1.2 : 1);
+            Disc(at, r + Math.Min(AtLeast(0.3, 1.4), 0.3), hot ? LaneBlue : White);
+            Disc(at, r, hot ? White : LaneBlue);
+            Arrowhead(new Vec(at.X + Math.Cos(heading) * r * 0.55, at.Y + Math.Sin(heading) * r * 0.55), heading, r * 0.95, hot ? LaneBlue : White);
+        }
+
+        /// <summary>The mark on a lane that a road can be brought in to: a broken blue ring.</summary>
+        public void Socket(Vec at, bool hot)
+        {
+            double r = Math.Max(Math.Min(AtLeast(1.5, 6.5), 1.6), Pixel * 3.5) * (hot ? 1.2 : 1), width = Math.Max(Math.Min(AtLeast(0.4, 2), 0.45), Pixel);
+            const int pieces = 8, steps = 4;
+            for (int i = 0; i < pieces; i++)
+            {
+                var arc = new List<Vec>();
+                for (int k = 0; k <= steps; k++)
+                {
+                    double a = (i + 0.62 * k / steps) * 2 * Math.PI / pieces;
+                    arc.Add(new Vec(at.X + Math.Cos(a) * r, at.Y + Math.Sin(a) * r));
+                }
+                Stroke(arc, width, hot ? White : LaneBlue);
+            }
+            if (hot) Disc(at, r * 0.35, LaneBlue);
+        }
+
         /// <summary>Stand a marker up at an end of the road being drawn.</summary>
         public void Stand(Vec at, bool good, bool held)
         {

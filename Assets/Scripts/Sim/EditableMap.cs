@@ -97,11 +97,21 @@ namespace Traffic.Sim
             return one;
         }
 
-        /// <summary>The roads on offer, in the order the toolbar shows them.</summary>
+        /// <summary>
+        /// Every road that has a short code of its own. The toolbar offers some of them (see
+        /// Toolbar); the rest are reached by changing a road's lanes or its middle, or are kept
+        /// so that older drawings still load.
+        /// </summary>
         public static readonly RoadType[] All =
         {
             new RoadType { Id = "s2", Group = Street, Forward = 1, Backward = 1, Mph = 25, MinRadius = 22, CostPerMeter = 2 },
             new RoadType { Id = "s1", Group = Street, Forward = 1, Mph = 25, MinRadius = 22, CostPerMeter = 1 },
+            new RoadType { Id = "s1x2", Group = Street, Forward = 2, Mph = 25, MinRadius = 22, CostPerMeter = 2 },
+            new RoadType { Id = "s4", Group = Street, Forward = 2, Backward = 2, Mph = 25, MinRadius = 22, CostPerMeter = 4 },
+            new RoadType { Id = "s4t", Group = Street, Forward = 2, Backward = 2, CenterLane = true, Mph = 25, MinRadius = 22, CostPerMeter = 5 },
+            new RoadType { Id = "s4m", Group = Street, Forward = 2, Backward = 2, Median = 3, Mph = 25, MinRadius = 22, CostPerMeter = 4.5 },
+            new RoadType { Id = "a4p", Group = Avenue, Forward = 2, Backward = 2, Mph = 40, MinRadius = 30, CostPerMeter = 5 },
+            new RoadType { Id = "h4d", Group = Highway, Forward = 2, Backward = 2, Median = 3, Mph = 65, MinRadius = 60, CostPerMeter = 13 },
             new RoadType { Id = "a2p", Group = Avenue, Forward = 1, Backward = 1, Mph = 40, MinRadius = 30, CostPerMeter = 2.5 },
             new RoadType { Id = "a2", Group = Avenue, Forward = 1, Backward = 1, Median = 3, Mph = 40, MinRadius = 30, CostPerMeter = 3 },
             new RoadType { Id = "a4", Group = Avenue, Forward = 2, Backward = 2, Median = 3, Mph = 40, MinRadius = 30, CostPerMeter = 6 },
@@ -114,6 +124,27 @@ namespace Traffic.Sim
             new RoadType { Id = "h3", Group = Highway, Forward = 3, Mph = 65, MinRadius = 60, CostPerMeter = 9 },
             new RoadType { Id = "h4", Group = Highway, Forward = 4, Mph = 65, MinRadius = 60, CostPerMeter = 12 },
         };
+
+        private static RoadType[] toolbar;
+
+        /// <summary>
+        /// The roads on offer, in the order the toolbar shows them. A street and an avenue each
+        /// come as one lane one-way, two lanes one-way, one lane each way, and two lanes each
+        /// way with a painted line, a turning lane or a grass median between them, which is the
+        /// list the player asked for. A highway comes one-way with one to four lanes, and as two
+        /// lanes each way with a median. Everything else is made by changing a road's lanes.
+        /// </summary>
+        public static RoadType[] Toolbar
+        {
+            get
+            {
+                if (toolbar != null) return toolbar;
+                string[] ids = { "s1", "s1x2", "s2", "s4", "s4t", "s4m", "a1", "a1x2", "a2p", "a4p", "a4t", "a4", "h1", "h2", "h3", "h4", "h4d" };
+                toolbar = new RoadType[ids.Length];
+                for (int i = 0; i < ids.Length; i++) toolbar[i] = ById(ids[i]);
+                return toolbar;
+            }
+        }
 
         public static RoadType ById(string id)
         {
@@ -185,6 +216,14 @@ namespace Traffic.Sim
         /// EditableMap.AsLight, AsArrows, AsStop, AsYield or AsNoSign. 0 leaves it to be worked out.
         /// </summary>
         public int ControlAtA, ControlAtB;
+        /// <summary>
+        /// Where a one-way road carries on as a one-way road with more lanes or fewer, which of
+        /// the wider road's lanes the narrower road's lanes line up with: the number of the
+        /// first of them, counting from 1 at the left of the traffic. It is kept on the end of a
+        /// piece at the place where the two meet; 0 leaves it to be worked out (the leftmost).
+        /// This is how a road is built on from one lane of another.
+        /// </summary>
+        public int LaneAtA, LaneAtB;
     }
 
     /// <summary>
@@ -309,7 +348,7 @@ namespace Traffic.Sim
             copy.Waters = Waters;
             foreach (EditSegment s in Segments)
             {
-                var piece = new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked, Limit = s.Limit, ControlAtA = s.ControlAtA, ControlAtB = s.ControlAtB };
+                var piece = new EditSegment { A = s.A, B = s.B, Type = s.Type, Curved = s.Curved, Mid = s.Mid, Ring = s.Ring, Level = s.Level, Locked = s.Locked, Limit = s.Limit, ControlAtA = s.ControlAtA, ControlAtB = s.ControlAtB, LaneAtA = s.LaneAtA, LaneAtB = s.LaneAtB };
                 foreach (ExtraLane x in s.Extras) piece.Extras.Add(new ExtraLane { Forward = x.Forward, From = x.From, To = x.To });
                 piece.TurnsAtA = s.TurnsAtA == null ? null : (int[])s.TurnsAtA.Clone();
                 piece.TurnsAtB = s.TurnsAtB == null ? null : (int[])s.TurnsAtB.Clone();
@@ -1023,6 +1062,9 @@ namespace Traffic.Sim
             int control = s.ControlAtA;
             s.ControlAtA = s.ControlAtB;
             s.ControlAtB = control;
+            int tie = s.LaneAtA;
+            s.LaneAtA = s.LaneAtB;
+            s.LaneAtB = tie;
             foreach (ExtraLane x in s.Extras)
             {
                 double from = x.From;
@@ -1926,6 +1968,8 @@ namespace Traffic.Sim
             s.TurnsAtB = null;
             rest.ControlAtB = s.ControlAtB;
             s.ControlAtB = 0;
+            rest.LaneAtB = s.LaneAtB;
+            s.LaneAtB = 0;
             Segments.Add(rest);
             s.B = mid;
             return mid;
@@ -2813,6 +2857,7 @@ namespace Traffic.Sim
                 if (back != null) back = WithExtras(back, run, false, exitAtFrom);
                 fwd = Narrowed(fwd, run.To, last, length);
                 if (back != null) back = Narrowed(back, run.From, first, length);
+                if (type.OneWay) fwd = Widened(fwd, run.From, first, length);
                 if (type.CenterLane || type.Bays)
                 {
                     // The turning lane is used at each end of the road by the traffic arriving there, where there is a left to take.
@@ -2875,12 +2920,169 @@ namespace Traffic.Sim
             int room = onward.A == node ? onward.Type.Forward : onward.Type.Backward;
             if (room < 1) return tracks;
             double until = 1 - Math.Min(70 / Math.Max(length, 1), 0.45);
+            // The lanes that carry on are the leftmost, unless the narrower road was built on from one lane in particular.
+            int first = LaneTie(node, arriving.Type.Forward - room);
             var result = (TrackSpec[])tracks.Clone();
             for (int i = 0; i < result.Length; i++)
             {
-                if (result[i].Slot >= room && result[i].To >= 1 && result[i].From < until - 0.2) result[i].To = until;
+                if ((result[i].Slot < first || result[i].Slot >= first + room) && result[i].Slot >= 0 && result[i].To >= 1 && result[i].From < until - 0.2) result[i].To = until;
             }
             return result;
+        }
+
+        /// <summary>
+        /// Where two one-way roads meet end to end and one has more lanes than the other, the
+        /// number of the wider road's lane (0 at the left) that the narrower road's first lane
+        /// lines up with: what the player chose, kept within what there is room for, or 0.
+        /// </summary>
+        private int LaneTie(int node, int spare)
+        {
+            if (spare <= 0) return 0;
+            int tie = 0;
+            foreach (EditSegment s in RoadsAt(node))
+            {
+                if (!s.Type.OneWay) return 0;
+                tie = Math.Max(tie, s.A == node ? s.LaneAtA : s.LaneAtB);
+            }
+            return Math.Max(0, Math.Min(tie - 1, spare));
+        }
+
+        /// <summary>
+        /// Where a one-way road carries on from a narrower one, the lanes the narrower road
+        /// does not lead into start a little way along: the road widens there, as at any place
+        /// where a lane is gained, and traffic moves over into the new lane.
+        /// </summary>
+        private TrackSpec[] Widened(TrackSpec[] tracks, int node, EditSegment leaving, double length)
+        {
+            List<EditSegment> here = RoadsAt(node);
+            if (here.Count != 2 || JoinAt(node) != null) return tracks;
+            EditSegment before = here[0] == leaving ? here[1] : here[0];
+            if (!before.Type.OneWay || before.B != node || leaving.A != node) return tracks;
+            int fed = before.Type.Forward, spare = leaving.Type.Forward - fed;
+            if (spare <= 0) return tracks;
+            int first = LaneTie(node, spare);
+            double from = Math.Min(14 / Math.Max(length, 1), 0.3);
+            var result = (TrackSpec[])tracks.Clone();
+            for (int i = 0; i < result.Length; i++)
+            {
+                if ((result[i].Slot < first || result[i].Slot >= first + fed) && result[i].Slot >= 0 && result[i].From <= 0 && result[i].To > from + 0.2) result[i].From = from;
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Say which lane a road built on from another lines up with, at the place where the two
+        /// meet end to end (see EditSegment.LaneAtA): 0 for the wider road's leftmost lane.
+        /// It only matters where two one-way roads with different numbers of lanes meet. Returns
+        /// false if no two roads meet at that point.
+        /// </summary>
+        public bool SetLaneTie(Vec at, int lane)
+        {
+            Snap snap = SnapTo(at);
+            if (snap.Node < 0) return false;
+            List<EditSegment> here = RoadsAt(snap.Node);
+            if (here.Count != 2) return false;
+            foreach (EditSegment s in here)
+            {
+                // Kept on the road that leaves; the other's end there is cleared so the two cannot disagree.
+                if (s.A == snap.Node) s.LaneAtA = lane + 1;
+                if (s.B == snap.Node) s.LaneAtB = 0;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// The end of one lane at an open end of a road, for building on from it: where the
+        /// middle of the lane is, which way its traffic is heading there, and whether that
+        /// traffic is leaving the road through this end or setting out along the road from it.
+        /// </summary>
+        public struct LaneEnd
+        {
+            public Vec At, Node;
+            public double Heading;
+            public bool Leaving;
+            /// <summary>Which lane it is among those going its way, counting from 0 at the left of the traffic, and how many there are.</summary>
+            public int Lane, Lanes;
+        }
+
+        /// <summary>
+        /// Every lane at every open road end: a road end that nothing else is joined to and that
+        /// is not on the edge of the map. A road is built on from the lanes that leave, and
+        /// brought in to the lanes that set out.
+        /// </summary>
+        public List<LaneEnd> LaneEnds()
+        {
+            var ends = new List<LaneEnd>();
+            for (int node = 0; node < Nodes.Count; node++)
+            {
+                List<EditSegment> here = RoadsAt(node);
+                if (here.Count != 1 || OnEdge(Nodes[node])) continue;
+                EditSegment s = here[0];
+                if (s.Ring || s.A == s.B) continue;
+                // The way out of the road through this end, and the lanes going each way past it.
+                double outward = HeadingFrom(s, node) + Math.PI;
+                int leaving = s.B == node ? s.Type.Forward : s.Type.Backward, setting = s.B == node ? s.Type.Backward : s.Type.Forward;
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    bool leaves = pass == 0;
+                    int count = leaves ? leaving : setting;
+                    double way = leaves ? outward : outward + Math.PI;
+                    for (int k = 0; k < count; k++)
+                    {
+                        // A lane lies to the right of the line its road is drawn along, as its traffic sees it.
+                        double off = s.Type.Inner + (k + 0.5) * NetworkBuilder.LaneW;
+                        ends.Add(new LaneEnd
+                        {
+                            At = new Vec(Nodes[node].X + Math.Sin(way) * off, Nodes[node].Y - Math.Cos(way) * off), Node = Nodes[node],
+                            Heading = way, Leaving = leaves, Lane = k, Lanes = count,
+                        });
+                    }
+                }
+            }
+            return ends;
+        }
+
+        /// <summary>The kind of road a point is on, or null on open ground.</summary>
+        public RoadType RoadAt(Vec p)
+        {
+            Vec on;
+            int seg = NearestSegment(p, SnapRoad * 2.2, out on);
+            return seg < 0 ? null : Segments[seg].Type;
+        }
+
+        /// <summary>
+        /// The lane under a point partway along a road: where its middle is beside that point,
+        /// which way its traffic runs, which lane it is among those going its way (0 at the
+        /// left) and how many there are. False if the point is not on a road.
+        /// </summary>
+        public bool LaneAt(Vec p, out Vec at, out double heading, out int lane, out int lanes)
+        {
+            at = p;
+            heading = 0;
+            lane = lanes = 0;
+            int seg;
+            double t, across;
+            bool forward;
+            if (!OnRoad(p, out seg, out t, out forward, out across)) return false;
+            EditSegment s = Segments[seg];
+            lanes = s.Type.OneWay || forward ? s.Type.Forward : s.Type.Backward;
+            if (lanes < 1) return false;
+            Vec a = PointAt(s, Math.Max(t - 0.01, 0)), b = PointAt(s, Math.Min(t + 0.01, 1)), on = PointAt(s, t);
+            heading = Math.Atan2(b.Y - a.Y, b.X - a.X) + (forward ? 0 : Math.PI);
+            lane = (int)Geo.Clamp(Math.Floor((across - s.Type.Inner) / NetworkBuilder.LaneW), 0, lanes - 1);
+            double off = s.Type.Inner + (lane + 0.5) * NetworkBuilder.LaneW;
+            at = new Vec(on.X + Math.Sin(heading) * off, on.Y - Math.Cos(heading) * off);
+            return true;
+        }
+
+        /// <summary>The lane of the wider road that the narrower one lines up with where two one-way roads meet end to end at a point: 0 at the left.</summary>
+        public int LaneTieAt(Vec at)
+        {
+            Snap snap = SnapTo(at);
+            if (snap.Node < 0) return 0;
+            List<EditSegment> here = RoadsAt(snap.Node);
+            if (here.Count != 2 || !here[0].Type.OneWay || !here[1].Type.OneWay) return 0;
+            return LaneTie(snap.Node, Math.Abs(here[0].Type.Forward - here[1].Type.Forward));
         }
 
         private static TrackSpec[] Plus(TrackSpec[] tracks, TrackSpec one)
@@ -3443,6 +3645,8 @@ namespace Traffic.Sim
                 if (s.ControlAtA != 0) sb.Append(",CA:").Append(s.ControlAtA);
                 if (s.ControlAtB != 0) sb.Append(",CB:").Append(s.ControlAtB);
                 if (s.Limit > 0) sb.Append(",S").Append(s.Limit);
+                if (s.LaneAtA != 0) sb.Append(",LA:").Append(s.LaneAtA);
+                if (s.LaneAtB != 0) sb.Append(",LB:").Append(s.LaneAtB);
                 sb.Append(';');
             }
             return sb.ToString();
@@ -3465,7 +3669,14 @@ namespace Traffic.Sim
                 {
                     string[] f = item.Split(',');
                     var s = new EditSegment { A = int.Parse(f[0]), B = int.Parse(f[1]) };
-                    // Last of all: a speed limit posted on it (S), and what its traffic meets at the intersection at each end (CA, CB).
+                    // Last of all, the lane of the next road that each end lines up with (LA, LB).
+                    while (f.Length > 3 && (f[f.Length - 1].StartsWith("LA:") || f[f.Length - 1].StartsWith("LB:")))
+                    {
+                        if (f[f.Length - 1][1] == 'A') s.LaneAtA = int.Parse(f[f.Length - 1].Substring(3));
+                        else s.LaneAtB = int.Parse(f[f.Length - 1].Substring(3));
+                        Array.Resize(ref f, f.Length - 1);
+                    }
+                    // Before that: a speed limit posted on it (S), and what its traffic meets at the intersection at each end (CA, CB).
                     while (f.Length > 3 && (f[f.Length - 1].StartsWith("CA:") || f[f.Length - 1].StartsWith("CB:") || (f[f.Length - 1].Length > 1 && f[f.Length - 1][0] == 'S' && char.IsDigit(f[f.Length - 1][1]))))
                     {
                         string last = f[f.Length - 1];

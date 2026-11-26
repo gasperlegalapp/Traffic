@@ -341,7 +341,7 @@ namespace Traffic.Lab
                     break;
                 case DockKind.Road:
                     roadChoice = item.Index;
-                    pen.Type = RoadType.All[roadChoice];
+                    pen.Type = RoadType.Toolbar[roadChoice];
                     break;
                 case DockKind.Height:
                     levelChoice = item.Index;

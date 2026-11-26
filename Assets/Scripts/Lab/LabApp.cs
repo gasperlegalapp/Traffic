@@ -141,8 +141,8 @@ namespace Traffic.Lab
         }
         /// <summary>True while laying out roads; traffic only runs once this is off.</summary>
         private bool building;
-        /// <summary>Which of RoadType.All is being drawn.</summary>
-        private int roadChoice;
+        /// <summary>Which of RoadType.Toolbar is being drawn.</summary>
+        private int roadChoice = System.Array.IndexOf(RoadType.Toolbar, RoadType.All[0]);
         /// <summary>Which of Dock.HeightLevels is being drawn at: the ground, a bridge or a tunnel.</summary>
         private int levelChoice;
         private Vector2 hoverPixel;
@@ -597,10 +597,10 @@ namespace Traffic.Lab
         /// <summary>What the toolbar needs to know about each kind of road: its picture and its explanation.</summary>
         private static DockRoad[] RoadTiles()
         {
-            var tiles = new DockRoad[RoadType.All.Length];
+            var tiles = new DockRoad[RoadType.Toolbar.Length];
             for (int i = 0; i < tiles.Length; i++)
             {
-                RoadType t = RoadType.All[i];
+                RoadType t = RoadType.Toolbar[i];
                 string body = t.Mph + " mph.  $" + t.CostPerMeter.ToString(t.CostPerMeter % 1 == 0 ? "0" : "0.00", System.Globalization.CultureInfo.InvariantCulture) + " a meter.  " + Mathf.RoundToInt((float)t.Width * Feet) + " ft wide.\n";
                 body += t.CenterLane ? "A turning lane runs down the middle: traffic about to turn left waits there, out of the way of the rest.\n" : "";
                 body += t.CenterLane ? "" : t.OneWay ? "Traffic runs the way you draw it. Bring it in alongside another road, on the right of that road's traffic, and it merges in; start it on one the same way and it peels off."

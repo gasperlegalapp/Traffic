@@ -1967,6 +1967,140 @@ namespace Traffic.Tests
         }
 
         [Test]
+        public void TheToolbarOffersEveryRoadThePlayerAskedFor()
+        {
+            // A street and an avenue each: one lane one-way, two lanes one-way, one lane each way,
+            // and two lanes each way with a line, a turning lane, or a grass median between them.
+            foreach (int group in new[] { RoadType.Street, RoadType.Avenue })
+            {
+                List<RoadType> some = RoadType.Toolbar.Where(t => t.Group == group).ToList();
+                Assert.AreEqual(6, some.Count);
+                Assert.AreEqual(1, some.Count(t => t.OneWay && t.Forward == 1), "a single lane, one-way");
+                Assert.AreEqual(1, some.Count(t => t.OneWay && t.Forward == 2), "two lanes, both the same way");
+                Assert.AreEqual(1, some.Count(t => t.Forward == 1 && t.Backward == 1));
+                Assert.AreEqual(1, some.Count(t => t.Forward == 2 && t.Backward == 2 && t.Middle == RoadType.Line));
+                Assert.AreEqual(1, some.Count(t => t.Forward == 2 && t.Backward == 2 && t.Middle == RoadType.TurnLane));
+                Assert.AreEqual(1, some.Count(t => t.Forward == 2 && t.Backward == 2 && t.Middle == RoadType.Grass));
+            }
+            // A highway: one to four lanes one-way, and two lanes each way.
+            List<RoadType> highways = RoadType.Toolbar.Where(t => t.Group == RoadType.Highway).ToList();
+            for (int lanes = 1; lanes <= 4; lanes++) Assert.AreEqual(1, highways.Count(t => t.OneWay && t.Forward == lanes));
+            Assert.AreEqual(1, highways.Count(t => t.Forward == 2 && t.Backward == 2));
+            Assert.AreEqual(5, highways.Count);
+            // Each of them can be drawn, crossed by a street, built, saved and read back.
+            foreach (RoadType type in RoadType.Toolbar)
+            {
+                var map = new EditableMap();
+                Assert.IsNull(map.TryAdd(P(-300, 0), P(300, 0), type, true), type.Id);
+                Assert.IsNull(map.TryAdd(P(0, -250), P(0, 250), T("s2"), true), type.Id);
+                World world = map.ToWorld();
+                Assert.AreEqual(type.Lanes * 2 + 4, world.Lanes.Count(l => l.Kind == LaneKind.Road && l.Slot >= 0), type.Id);
+                Assert.AreEqual(map.Serialize(), EditableMap.Parse(map.Serialize()).Serialize(), type.Id);
+                Assert.IsTrue(RoadType.All.Contains(type));
+            }
+            // The roads that left the toolbar still load from older drawings.
+            Assert.IsNotNull(RoadType.ById("a2"));
+            Assert.IsNotNull(RoadType.ById("a4b"));
+        }
+
+        [Test]
+        public void ARoadBuiltOnFromOneLaneCarriesThatLaneOn()
+        {
+            // Two lanes one-way, carrying on as one lane. Left to itself the left lane carries on and the right one ends.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(0, 0), T("a1x2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(300, 0), T("a1"), true));
+            Func<EditableMap, Lane> carriesOn = m => m.ToWorld().Lanes.Single(l => l.Kind == LaneKind.Road && l.Path.At(0).X < -200 && l.Connectors != null);
+            Assert.AreEqual(0, map.LaneTieAt(P(0, 0)));
+            Assert.AreEqual(0, carriesOn(map).Slot);
+            // Built on from the right lane, it is the right lane that carries on, and the left one that ends and moves over.
+            Assert.IsTrue(map.SetLaneTie(P(0, 0), 1));
+            Assert.AreEqual(1, map.LaneTieAt(P(0, 0)));
+            World world = map.ToWorld();
+            Assert.AreEqual(1, carriesOn(map).Slot);
+            Lane ends = world.Lanes.Single(l => l.Kind == LaneKind.Road && l.Path.At(0).X < -200 && l.Connectors == null);
+            Assert.AreEqual(0, ends.Slot);
+            Assert.AreEqual(1, ends.MergeSide, "it merges to its right");
+            Assert.Less(ends.Length, 280, "ending before the two roads meet");
+            // It is kept when the map is saved, copied and when the wider road is cut by another.
+            EditableMap loaded = EditableMap.Parse(map.Serialize());
+            Assert.AreEqual(1, loaded.LaneTieAt(P(0, 0)));
+            Assert.AreEqual(1, map.Clone().LaneTieAt(P(0, 0)));
+            // Traffic gets through, the left lane's cars moving over in good time.
+            var sim = new Simulation(world, 4);
+            sim.ArrivalsPerMinute = 10;
+            Grid.Run(sim, 240, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 40);
+
+            // The other way about: one lane carrying on as two. The lane it leads into starts where they meet, and the other a little way on.
+            var wider = new EditableMap();
+            Assert.IsNull(wider.TryAdd(P(-300, 0), P(0, 0), T("a1"), true));
+            Assert.IsNull(wider.TryAdd(P(0, 0), P(300, 0), T("a1x2"), true));
+            foreach (int tie in new[] { 0, 1 })
+            {
+                Assert.IsTrue(wider.SetLaneTie(P(0, 0), tie));
+                World w = wider.ToWorld();
+                List<Lane> two = w.Lanes.Where(l => l.Kind == LaneKind.Road && l.Path.At(l.Length).X > 200).ToList();
+                Assert.AreEqual(2, two.Count);
+                Lane fed = two.Single(l => l.Path.At(0).X < 20), gained = two.Single(l => l.Path.At(0).X >= 20);
+                Assert.AreEqual(tie, fed.Slot, "the lane the single lane leads into");
+                Assert.AreEqual(1 - tie, gained.Slot);
+                Assert.Less(gained.Path.At(0).X, 60, "the new lane opens just past the join");
+                var run = new Simulation(w, 5);
+                run.ArrivalsPerMinute = 10;
+                bool used = false;
+                Grid.Run(run, 200, () => { foreach (Car c in run.Cars) { c.Drv.Compliance = 1; used |= c.Lane == gained.Id; } });
+                Assert.AreEqual(0, run.Crashes);
+                Assert.Greater(run.Left, 30);
+                Assert.IsTrue(used, "traffic spreads into the new lane");
+            }
+        }
+
+        [Test]
+        public void EveryLaneAtAnOpenRoadEndCanBeFound()
+        {
+            // Two lanes each way with a median, ending in open ground at the east. Two lanes leave there, on the south side; two set out, on the north.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(100, 0), T("a4"), true));
+            List<EditableMap.LaneEnd> east = map.LaneEnds().Where(e => e.Node.X > 0).ToList();
+            Assert.AreEqual(4, east.Count);
+            List<EditableMap.LaneEnd> leave = east.Where(e => e.Leaving).OrderBy(e => e.Lane).ToList(), setOut = east.Where(e => !e.Leaving).OrderBy(e => e.Lane).ToList();
+            Assert.AreEqual(2, leave.Count);
+            Assert.AreEqual(-(1.5 + NetworkBuilder.LaneW / 2), leave[0].At.Y, 0.01, "the lane next to the median");
+            Assert.AreEqual(-(1.5 + NetworkBuilder.LaneW * 1.5), leave[1].At.Y, 0.01);
+            Assert.AreEqual(0, Math.Sin(leave[0].Heading), 1e-6);
+            Assert.Greater(Math.Cos(leave[0].Heading), 0.99, "heading east, out of the road");
+            Assert.AreEqual(1.5 + NetworkBuilder.LaneW / 2, setOut[0].At.Y, 0.01);
+            Assert.Less(Math.Cos(setOut[0].Heading), -0.99, "heading west, into it");
+            Assert.AreEqual(2, leave[0].Lanes);
+            // They agree with the lanes the network builds.
+            World world = map.ToWorld();
+            foreach (EditableMap.LaneEnd end in leave) Assert.IsTrue(world.Lanes.Any(l => l.Kind == LaneKind.Road && Math.Abs(l.Path.At(l.Length / 2).Y - end.At.Y) < 0.05));
+            // On the edge of a map with an edge, a road end is where traffic comes and goes, not somewhere to build on from.
+            map.Bound = 300;
+            Assert.IsTrue(map.LaneEnds().All(e => e.Node.X > 0));
+            // A one-way road sits across its line: both its lanes leave from its far end.
+            var oneWay = new EditableMap();
+            Assert.IsNull(oneWay.TryAdd(P(-200, 0), P(0, 0), T("a1x2"), true));
+            List<EditableMap.LaneEnd> far = oneWay.LaneEnds().Where(e => e.Node.X > -100).OrderBy(e => e.Lane).ToList();
+            Assert.IsTrue(far.Count == 2 && far.All(e => e.Leaving));
+            Assert.AreEqual(NetworkBuilder.LaneW / 2, far[0].At.Y, 0.01, "the left lane is on the left");
+            Assert.AreEqual(-NetworkBuilder.LaneW / 2, far[1].At.Y, 0.01);
+            // And partway along, the lane under a point.
+            Vec at;
+            double heading;
+            int lane, lanes;
+            Assert.IsTrue(oneWay.LaneAt(P(-100, -1.5), out at, out heading, out lane, out lanes));
+            Assert.AreEqual(1, lane);
+            Assert.AreEqual(2, lanes);
+            Assert.AreEqual(-NetworkBuilder.LaneW / 2, at.Y, 0.01);
+            Assert.IsTrue(map.LaneAt(P(0, 4), out at, out heading, out lane, out lanes));
+            Assert.Less(Math.Cos(heading), -0.99, "north of the median the traffic runs west");
+            Assert.IsFalse(map.LaneAt(P(0, 150), out at, out heading, out lane, out lanes));
+        }
+
+        [Test]
         public void ALaneCanBeTurnedRound()
         {
             // A one-way street with a single lane, drawn west to east. Turned round it runs east to west, where it lay.

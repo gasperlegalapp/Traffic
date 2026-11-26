@@ -166,7 +166,8 @@ namespace Traffic.Ui
             if (tray)
             {
                 // The shapes in a column, then each group of roads in two rows under its heading.
-                const double tile = 84, high = 44, between = 18;
+                const double high = 44, between = 18;
+                double tile = 84;
                 var groups = new List<KeyValuePair<string, List<int>>>();
                 for (int i = 0; i < Roads.Length; i++)
                 {
@@ -174,6 +175,12 @@ namespace Traffic.Ui
                     groups[groups.Count - 1].Value.Add(i);
                 }
                 int shapeColumns = (ShapeNames.Length + 1) / 2;
+                // The road tiles narrow, down to a point, so that the whole tray fits across the screen.
+                int roadColumns = 0;
+                foreach (KeyValuePair<string, List<int>> g in groups) roadColumns += (g.Value.Count + 1) / 2;
+                double fixedW = 14 + shapeColumns * high + (shapeColumns - 1) * Gap + 14 + groups.Count * between + (roadColumns - groups.Count) * Gap
+                    + between + 4 * high + 3 * Gap + between + high + between + 3 * high + 2 * Gap;
+                if (roadColumns > 0) tile = Math.Max(56, Math.Min(84, Math.Floor((w - 16 - fixedW) / roadColumns)));
                 trayW = 14 + shapeColumns * high + (shapeColumns - 1) * Gap + 14;
                 foreach (KeyValuePair<string, List<int>> g in groups)
                 {
