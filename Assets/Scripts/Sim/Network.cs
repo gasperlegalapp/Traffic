@@ -164,6 +164,8 @@ namespace Traffic.Sim
         public double InLeft, InRight, OutLeft, OutRight;
         /// <summary>How far this road's centerline is moved sideways where it meets the node, toward the clockwise side looking outward. Used to hang a ramp off the edge of a highway.</summary>
         public double Shift;
+        /// <summary>Where the road's own line meets the junction: the middle of the road at its stop line, which a shift moves to one side of the node.</summary>
+        public Vec Mouth;
         /// <summary>How far the pavement reaches either side of the road's line where it meets the intersection: to the right and to the left, looking away from it.</summary>
         public double EdgeCw, EdgeCcw;
         /// <summary>How far the innermost lane's left edge is from the road's centerline: half a median, or negative on a one-way road centered on its line.</summary>
@@ -211,6 +213,8 @@ namespace Traffic.Sim
         public double Speed;
         /// <summary>True when the left side is the edge of the road too (a one-way road), not its centerline.</summary>
         public bool LeftIsEdge;
+        /// <summary>For a median: it has a row of trees along it.</summary>
+        public bool Planted;
     }
 
     public sealed class Marking

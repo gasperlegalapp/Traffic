@@ -17,7 +17,7 @@ namespace Traffic.Ui
         void Text(string text, double x, double y, double w, double h, int size, bool bold, int align, uint color);
     }
 
-    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Snap, Grid, Pause, Step, Rate, Night }
+    public enum DockKind { None, Tool, Undo, Redo, Clear, Drive, Build, Shape, Road, Height, Snap, Grid, Pause, Step, Rate, Night, Middle, MiddleChoice }
 
     /// <summary>A kind of road on offer in the tray: enough to draw its picture and explain it.</summary>
     public sealed class DockRoad
@@ -32,6 +32,14 @@ namespace Traffic.Ui
         public bool Turn;
         /// <summary>The median makes way for a left-turn lane at each intersection.</summary>
         public bool Bays;
+        /// <summary>The median has trees along it.</summary>
+        public bool Trees;
+        /// <summary>
+        /// Which class of road it is (0 for the first heading), and whether what lies between its
+        /// two directions is not its own but whatever has been chosen for that class (Dock.Middle).
+        /// </summary>
+        public int Class;
+        public bool Chooses;
     }
 
     /// <summary>One thing on the toolbar that can be pointed at and clicked.</summary>
@@ -81,6 +89,14 @@ namespace Traffic.Ui
         /// <summary>True after dark: lamps, headlights and signals do the lighting.</summary>
         public bool Night;
         public int Shape, Road, Rate;
+        /// <summary>
+        /// What lies between the two directions of the two-way roads of each class, as an index
+        /// into MiddleNames: the player picks it from a list that opens above the class's heading.
+        /// MiddleOpen is the class whose list is open, or -1.
+        /// </summary>
+        public int[] Middle = new int[8];
+        public int MiddleOpen = -1;
+        public static readonly string[] MiddleNames = { "Painted line", "Turning lane", "Grass", "Trees" };
         /// <summary>Snapping: pull new roads into line with the roads they start from.</summary>
         public bool SnapAngles;
         /// <summary>The grid new points are kept to, by the spacing of its lines in feet (one of RoadPen.GridFeet); 0 for none.</summary>
@@ -102,7 +118,8 @@ namespace Traffic.Ui
         /// <summary>Where each heading over the road tiles goes.</summary>
         private readonly List<KeyValuePair<string, double>> headings = new List<KeyValuePair<string, double>>();
         private double barX, barY, barW, trayX, trayY, trayW, trayH, noteX, noteY, noteW, width;
-        private bool tray, note;
+        private double listX, listY, listW, listH;
+        private bool tray, note, list;
 
         /// <summary>The tools that need the tray of road kinds: drawing, and replacing.</summary>
         private bool RoadTool => Building && (Tool == 0 || Tool == 2);
@@ -195,11 +212,31 @@ namespace Traffic.Ui
                 headings.Add(new KeyValuePair<string, double>("SHAPE", tx));
                 for (int i = 0; i < ShapeNames.Length; i++) Items.Add(new DockItem { Kind = DockKind.Shape, Index = i, X = tx + (i / 2) * (high + Gap), Y = ty + (i % 2) * (high + Gap), W = high, H = high });
                 tx += shapeColumns * high + (shapeColumns - 1) * Gap;
+                list = false;
                 foreach (KeyValuePair<string, List<int>> g in groups)
                 {
                     tx += between;
                     headings.Add(new KeyValuePair<string, double>(g.Key.ToUpperInvariant(), tx));
                     int columns = (g.Value.Count + 1) / 2;
+                    // A class whose two-way roads take their middle from a list gets a button for it beside the heading, at the right.
+                    DockRoad chooser = null;
+                    foreach (int k in g.Value) if (Roads[k].Chooses) chooser = Roads[k];
+                    if (chooser != null)
+                    {
+                        double groupW = columns * tile + (columns - 1) * Gap, chipW = Math.Min(104, groupW - g.Key.Length * 7.5 - 8);
+                        var chip = new DockItem { Kind = DockKind.Middle, Index = chooser.Class, X = tx + groupW - chipW, Y = trayY + 7, W = chipW, H = 20 };
+                        Items.Add(chip);
+                        if (MiddleOpen == chooser.Class)
+                        {
+                            // The list opens above the tray, over the button.
+                            list = true;
+                            listW = 178;
+                            listH = 30 + MiddleNames.Length * (MiddleRow + 4) + 6;
+                            listX = Math.Max(6, Math.Min(w - listW - 6, chip.X + chip.W - listW));
+                            listY = trayY - 8 - listH;
+                            for (int m = 0; m < MiddleNames.Length; m++) Items.Add(new DockItem { Kind = DockKind.MiddleChoice, Index = m, X = listX + 6, Y = listY + 30 + m * (MiddleRow + 4), W = listW - 12, H = MiddleRow });
+                        }
+                    }
                     for (int k = 0; k < g.Value.Count; k++)
                     {
                         Items.Add(new DockItem { Kind = DockKind.Road, Index = g.Value[k], X = tx + (k % columns) * (tile + Gap), Y = ty + (k / columns) * (high + Gap), W = tile, H = high });
@@ -221,7 +258,7 @@ namespace Traffic.Ui
                 tx += high + between;
                 headings.Add(new KeyValuePair<string, double>("GRID, FT", tx));
                 for (int i = 0; i < RoadPen.GridFeet.Length; i++) Items.Add(new DockItem { Kind = DockKind.Grid, Index = i, X = tx + (i % 3) * (high + Gap), Y = ty + (i / 3) * (high + Gap), W = high, H = high });
-                Top = trayY;
+                Top = list ? listY : trayY;
             }
             else if (note)
             {
@@ -243,7 +280,18 @@ namespace Traffic.Ui
         public bool Contains(double x, double y)
         {
             if (x >= barX && x < barX + barW && y >= barY && y < barY + BarHeight) return true;
+            if (tray && list && x >= listX && x < listX + listW && y >= listY && y < trayY) return true;
             return tray && x >= trayX && x < trayX + trayW && y >= trayY && y < barY;
+        }
+
+        private const double MiddleRow = 36;
+
+        /// <summary>A road tile as it is shown: with the middle chosen for its class, if it takes that.</summary>
+        private DockRoad Shown(DockRoad road)
+        {
+            if (!road.Chooses) return road;
+            int m = Middle[road.Class];
+            return new DockRoad { Forward = road.Forward, Backward = road.Backward, Turn = m == 1, Median = m >= 2, Trees = m == 3 };
         }
 
         private bool Enabled(DockItem item)
@@ -269,11 +317,33 @@ namespace Traffic.Ui
                 s.Text(Hint, noteX, noteY, noteW, 34, 12, false, 1, Light);
             }
 
+            if (tray && list)
+            {
+                Card(s, listX, listY, listW, listH, 16);
+                s.Text("BETWEEN THE TWO DIRECTIONS", listX + 12, listY + 10, listW - 20, 14, 10, true, 0, Dim);
+            }
             foreach (DockItem item in Items)
             {
                 bool hot = item.Kind == over.Kind && item.Index == over.Index && Enabled(item);
                 switch (item.Kind)
                 {
+                    case DockKind.Middle:
+                        {
+                            bool open = MiddleOpen == item.Index;
+                            s.Fill(item.X, item.Y, item.W, item.H, 10, open ? Accent : hot ? Hover : Lift);
+                            s.Text(MiddleNames[Middle[item.Index]], item.X + 8, item.Y, item.W - 26, item.H, 11, true, 0, open ? Ink : Light);
+                            s.Icon("caret", item.X + item.W - 18, item.Y + 4, 12, open ? Ink : Light);
+                        }
+                        break;
+                    case DockKind.MiddleChoice:
+                        {
+                            bool on = MiddleOpen >= 0 && Middle[MiddleOpen] == item.Index;
+                            s.Fill(item.X, item.Y, item.W, item.H, 10, on ? 0x335EE0C0u : hot ? Hover : 0u);
+                            var picture = new DockItem { X = item.X + 4, Y = item.Y + 3, W = 58, H = item.H - 6 };
+                            RoadTile(s, picture, new DockRoad { Forward = 1, Backward = 1, Turn = item.Index == 1, Median = item.Index >= 2, Trees = item.Index == 3 }, false, false);
+                            s.Text(MiddleNames[item.Index], item.X + 72, item.Y, item.W - 76, item.H, 13, on, 0, on ? Accent : Light);
+                        }
+                        break;
                     case DockKind.Tool:
                         Labeled(s, item, ToolIcons[item.Index], ToolNames[item.Index], Tool == item.Index, hot, true);
                         break;
@@ -317,7 +387,7 @@ namespace Traffic.Ui
                         s.Text("Build", item.X + 52, item.Y, item.W - 60, item.H, 20, true, 0, Ink);
                         break;
                     case DockKind.Road:
-                        RoadTile(s, item, Roads[item.Index], Road == item.Index, hot);
+                        RoadTile(s, item, Shown(Roads[item.Index]), Road == item.Index, hot);
                         break;
                     case DockKind.Height:
                         HeightTile(s, item, HeightLevels[item.Index], Height == item.Index, hot);
@@ -343,7 +413,7 @@ namespace Traffic.Ui
                 }
             }
 
-            if (over.Kind != DockKind.None) Explain(s, over);
+            if (over.Kind != DockKind.None && over.Kind != DockKind.MiddleChoice && !(list && over.Kind == DockKind.Middle)) Explain(s, over);
         }
 
         /// <summary>The rounded dark back that every panel sits on.</summary>
@@ -405,6 +475,8 @@ namespace Traffic.Ui
                 // With left-turn lanes the grass stops short of the end of the tile, and an arrow lies in the gap.
                 double grass = road.Bays ? wide * 0.56 : wide;
                 s.Fill(left, y + 1.2, grass, gap - 2.4, 0, 0xFF7DB862);
+                // Trees along it: dark round tops, seen from above.
+                if (road.Trees) for (double x = left + 9; x < left + wide - 5; x += 14) s.Fill(x - 3.2, y + gap / 2 - 3.2, 6.4, 6.4, 3.2, 0xFF2F6B3A);
                 if (road.Bays) s.Icon("goleft", left + wide * 0.78 - 4.5, y + 0.8, gap - 1.4, Paint);
             }
             else if (twoWay)
@@ -539,6 +611,10 @@ namespace Traffic.Ui
                     title = Roads[item.Index].Title;
                     body = Roads[item.Index].Body;
                     break;
+                case DockKind.Middle:
+                    title = "Between the two directions";
+                    body = "What divides the two-way roads of this kind: a painted double yellow line, a turning lane down the middle, a grass median, or a median with trees. Click to choose; it shows on the tiles below.\nA road that is already built keeps what it has. The Replace tool changes it.";
+                    break;
                 case DockKind.Snap:
                     title = "Snap to angles";
                     body = "Pulls a straight road into line when it is nearly straight on from the roads it starts from, square to them, or halfway between. On open ground it lines up with the compass.\nJoining an existing road always comes first, and a grid, when one is on, comes before this.";
@@ -548,10 +624,11 @@ namespace Traffic.Ui
                         int feet = RoadPen.GridFeet[item.Index];
                         title = feet == 0 ? "No grid" : feet + " ft grid";
                         body = feet == 0 ? "New points go exactly where you click."
-                            : feet == 33 ? "Fine lines, half a surveyor's chain apart, for close work that still lines up."
-                            : feet == 165 ? "Half a block: for alleys, and short blocks."
-                            : feet == 330 ? "A city block, sixteen to the mile. Lay streets along the lines for a square grid of blocks."
-                            : "A long block, eight to the mile. With the 330 ft grid it gives the oblong blocks of many Midwestern cities.";
+                            : feet == 25 ? "Fine lines, about two lanes apart, for close work that still lines up."
+                            : feet == 50 ? "Four lanes apart: for ramps, turn lanes and short links."
+                            : feet == 100 ? "For alleys, and the short side of a small block."
+                            : feet == 250 ? "A city block. Lay streets along the lines for a square grid of blocks."
+                            : "A long block. With the 250 ft grid it gives the oblong blocks of many Midwestern cities.";
                         if (feet > 0) body += "\nThe grid shows on the ground, and every new point lands where two of its lines cross. Joining an existing road still comes first. Key G steps through the grids.";
                     }
                     break;

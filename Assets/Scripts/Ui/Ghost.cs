@@ -270,6 +270,18 @@ namespace Traffic.Ui
             Arrowhead(new Vec(at.X + Math.Cos(heading) * r * 0.55, at.Y + Math.Sin(heading) * r * 0.55), heading, r * 0.95, hot ? LaneBlue : White);
         }
 
+        /// <summary>
+        /// The mark just beyond the open end of a road with several lanes, for building on from
+        /// the road as a whole and not from one lane of it: a white ring, larger than a lane's arrow.
+        /// </summary>
+        public void Whole(Vec at, double radius, bool hot)
+        {
+            double width = Math.Max(Math.Min(AtLeast(0.45, 2.2), 0.6), Pixel);
+            Disc(at, radius, hot ? White : 0x66FFFFFF);
+            Ring(at, radius, width, hot ? LaneBlue : White);
+            Disc(at, radius * 0.3, hot ? LaneBlue : White);
+        }
+
         /// <summary>The mark on a lane that a road can be brought in to: a broken blue ring.</summary>
         public void Socket(Vec at, bool hot)
         {

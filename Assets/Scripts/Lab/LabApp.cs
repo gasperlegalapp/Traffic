@@ -143,6 +143,8 @@ namespace Traffic.Lab
         private bool building;
         /// <summary>Which of RoadType.Toolbar is being drawn.</summary>
         private int roadChoice = System.Array.IndexOf(RoadType.Toolbar, RoadType.All[0]);
+        /// <summary>What lies between the two directions of the two-way roads of each class the toolbar builds: an index into RoadType.ToolbarMiddles, for streets, avenues and highways.</summary>
+        private readonly int[] middleChoice = new int[3];
         /// <summary>Which of Dock.HeightLevels is being drawn at: the ground, a bridge or a tunnel.</summary>
         private int levelChoice;
         private Vector2 hoverPixel;
@@ -602,14 +604,16 @@ namespace Traffic.Lab
             {
                 RoadType t = RoadType.Toolbar[i];
                 string body = t.Mph + " mph.  $" + t.CostPerMeter.ToString(t.CostPerMeter % 1 == 0 ? "0" : "0.00", System.Globalization.CultureInfo.InvariantCulture) + " a meter.  " + Mathf.RoundToInt((float)t.Width * Feet) + " ft wide.\n";
+                bool chooses = !t.OneWay && t.Group != RoadType.Highway;
+                body += chooses ? "What divides the two directions is chosen from the list above the tiles: a painted line, a turning lane, grass, or trees.\n" : "";
                 body += t.CenterLane ? "A turning lane runs down the middle: traffic about to turn left waits there, out of the way of the rest.\n" : "";
-                body += t.CenterLane ? "" : t.OneWay ? "Traffic runs the way you draw it. Bring it in alongside another road, on the right of that road's traffic, and it merges in; start it on one the same way and it peels off."
+                body += t.CenterLane || chooses ? "" : t.OneWay ? "Traffic runs the way you draw it. Bring it in alongside another road, on the right of that road's traffic, and it merges in; start it on one the same way and it peels off."
                     : t.Bays ? "A grass median divides the two directions, and makes way for a left-turn lane on the way into each intersection, so traffic turning left waits out of the way of the rest."
                     : t.Median > 0 ? "A grass median divides the two directions."
                     : "A double yellow line divides the two directions.";
                 body += t.Group == RoadType.Street ? "\nWhere only streets meet, drivers get stop signs all round." : "\nWhere it meets another road it gets a traffic light.";
                 body += "\nCurves no tighter than " + Mathf.RoundToInt((float)t.MinRadius * Feet / 10) * 10 + " ft.";
-                tiles[i] = new DockRoad { Group = RoadType.GroupNames[t.Group], Title = t.Name, Body = body, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0, Turn = t.CenterLane, Bays = t.Bays };
+                tiles[i] = new DockRoad { Group = RoadType.GroupNames[t.Group], Title = t.Name, Body = body, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0, Turn = t.CenterLane, Bays = t.Bays, Class = t.Group, Chooses = chooses };
             }
             return tiles;
         }

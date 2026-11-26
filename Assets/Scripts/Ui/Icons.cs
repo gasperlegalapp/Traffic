@@ -5,7 +5,7 @@ namespace Traffic.Ui
     /// <summary>The icons on the toolbar, each drawn in code as a white shape that can be tinted.</summary>
     public static class Icons
     {
-        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star", "replace", "angle", "grid", "move", "lane", "plus", "minus", "goleft", "goahead", "goright", "sign", "sun", "moon" };
+        public static readonly string[] Names = { "road", "bulldoze", "trash", "undo", "redo", "play", "pause", "step", "cone", "straight", "curve", "roundabout", "arrow", "star", "replace", "angle", "grid", "move", "lane", "plus", "minus", "goleft", "goahead", "goright", "sign", "sun", "moon", "caret" };
 
         /// <summary>Draw an icon into a square of the given size. Returns coverage per pixel, rows from the top.</summary>
         public static float[] Draw(string name, int size)
@@ -186,6 +186,10 @@ namespace Traffic.Ui
                     p.Solid(50, 94, 34, 74, 66, 74);
                     p.Solid(6, 50, 26, 34, 26, 66);
                     p.Solid(94, 50, 74, 34, 74, 66);
+                    break;
+                case "caret": // a small chevron pointing up: a list opens above
+                    p.Line(20, 66, 50, 34, 14);
+                    p.Line(50, 34, 80, 66, 14);
                     break;
                 case "arrow": // pointing right
                     p.Line(12, 50, 64, 50, 16);

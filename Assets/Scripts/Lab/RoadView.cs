@@ -227,7 +227,7 @@ namespace Traffic.Lab
 
             if (world.Medians.Count > 0)
             {
-                // The strip down the middle of a divided road: grass behind a curb, with a row of bushes along it.
+                // The strip down the middle of a divided road: grass behind a curb, with a row of bushes along it, or of small trees where the player asked for trees.
                 var plants = new CanopyBuilder();
                 int planted = 0;
                 foreach (Strip m in world.Medians)
@@ -249,10 +249,12 @@ namespace Traffic.Lab
                         walks.Wall(new[] { l[l.Length - 1], r[r.Length - 1] }, 0.02f, CurbHeight, 1.6f, -1);
                     }
                     if (m.Heights != null) continue;
-                    for (int i = 9; i < m.Left.Length - 9; i += 11)
+                    for (int i = 9; i < m.Left.Length - 9; i += m.Planted ? 13 : 11)
                     {
                         var at = MeshKit.ToWorld((m.Left[i].X + m.Right[i].X) / 2, (m.Left[i].Y + m.Right[i].Y) / 2, CurbHeight);
-                        plants.Bush(at, 0.75f, planted % ArtKit.SummerLeaves, planted * 7 + 3);
+                        // Street trees: small enough that their tops stay over the median and clear of the lanes.
+                        if (m.Planted) plants.Tree(at, 1.35f, 4.6f, planted % ArtKit.SummerLeaves, planted * 7 + 3);
+                        else plants.Bush(at, 0.75f, planted % ArtKit.SummerLeaves, planted * 7 + 3);
                         planted++;
                     }
                 }
@@ -332,31 +334,8 @@ namespace Traffic.Lab
                 lines.Add(view);
             }
 
-            // A dead end is marked the way road crews mark one: a red and white board across the end of the pavement.
-            Material boardRed = null, boardWhite = null;
-            foreach (Node node in world.Nodes)
-            {
-                if (!node.DeadEnd || node.Box.Count != 4) continue;
-                if (boardRed == null)
-                {
-                    boardRed = MeshKit.Lit(MeshKit.Hex(0xd23a2e), 0.1f);
-                    boardWhite = MeshKit.Lit(MeshKit.Hex(0xf1f1ec), 0.1f);
-                }
-                Vec a = node.Box[1], b = node.Box[2];
-                double across = Geo.Hypot(b.X - a.X, b.Y - a.Y), heading = System.Math.Atan2(b.Y - a.Y, b.X - a.X);
-                int boards = System.Math.Max(3, (int)System.Math.Round(across / 1.1)) | 1;
-                for (int i = 0; i < boards; i++)
-                {
-                    double t = (i + 0.5) / boards;
-                    Transform board = MeshKit.Spawn("End of road", MeshKit.Box((float)(across / boards), 0.5f, 0.22f), i % 2 == 0 ? boardRed : boardWhite, root).transform;
-                    board.position = MeshKit.ToWorld(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, 0.95f);
-                    board.rotation = MeshKit.Heading(heading);
-                }
-                foreach (double t in new[] { 0.04, 0.96 })
-                {
-                    MeshKit.Spawn("Post", MeshKit.Box(0.16f, 1.2f, 0.16f), boardWhite, root).transform.position = MeshKit.ToWorld(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, 0.6f);
-                }
-            }
+            // A road that stops is not fenced off: it is a road nobody has carried on yet, and it looks like one.
+            // (The player had a red and white board across each end and asked for it to go.)
 
             Material dark = MeshKit.Lit(MeshKit.Hex(0x15181c), 0.3f);
             signWhite = MeshKit.Unlit(Color.white);

@@ -139,6 +139,7 @@ namespace Traffic.Lab
             dock.Shape = pen.Shape;
             if (dock.Roads.Length == 0) dock.Roads = RoadTiles();
             dock.Road = roadChoice;
+            for (int i = 0; i < middleChoice.Length; i++) dock.Middle[i] = middleChoice[i];
             dock.Height = levelChoice;
             if (dock.HeightNotes[1] == null) dock.HeightNotes = HeightNotes();
             dock.Rate = System.Array.IndexOf(Speeds, speed);
@@ -150,9 +151,12 @@ namespace Traffic.Lab
             if (e.type == EventType.MouseDown && e.button == 0 && overDock)
             {
                 DockItem hit = dock.ItemAt(mouse.x, mouse.y);
+                // The list of middles shuts on any click but the one that opens it.
+                if (hit.Kind != DockKind.Middle && hit.Kind != DockKind.MiddleChoice) dock.MiddleOpen = -1;
                 if (hit.Kind != DockKind.None) DockClick(hit);
                 e.Use();
             }
+            else if (e.type == EventType.MouseDown) dock.MiddleOpen = -1;
 
             // Beside a lane picked with the lane tool: what can be done with it.
             bool cardShown = false;
@@ -341,7 +345,15 @@ namespace Traffic.Lab
                     break;
                 case DockKind.Road:
                     roadChoice = item.Index;
-                    pen.Type = RoadType.Toolbar[roadChoice];
+                    pen.Type = RoadType.Offered(roadChoice, middleChoice[RoadType.Toolbar[roadChoice].Group]);
+                    break;
+                case DockKind.Middle:
+                    dock.MiddleOpen = dock.MiddleOpen == item.Index ? -1 : item.Index;
+                    break;
+                case DockKind.MiddleChoice:
+                    if (dock.MiddleOpen >= 0 && dock.MiddleOpen < middleChoice.Length) middleChoice[dock.MiddleOpen] = item.Index;
+                    dock.MiddleOpen = -1;
+                    pen.Type = RoadType.Offered(roadChoice, middleChoice[RoadType.Toolbar[roadChoice].Group]);
                     break;
                 case DockKind.Height:
                     levelChoice = item.Index;

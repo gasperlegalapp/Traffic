@@ -34,6 +34,8 @@ namespace Traffic.Sim
         /// over into the gap and waits there. The median is a lane wide to make room for it.
         /// </summary>
         public bool Bays;
+        /// <summary>The median has a row of trees along it.</summary>
+        public bool Planted;
         /// <summary>Speed limit in miles per hour.</summary>
         public int Mph;
         /// <summary>The tightest curve it may be drawn with, meters.</summary>
@@ -52,14 +54,15 @@ namespace Traffic.Sim
 
         public string Name => GroupNames[Group] + ", " + (OneWay
             ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " one-way"
-            : (Forward == Backward ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way" : Forward + " lanes one way and " + Backward + " the other") + (Bays ? ", with a median and left-turn lanes" : Median > 0 ? ", with a median" : CenterLane ? ", with a turning lane in the middle" : ""));
+            : (Forward == Backward ? (Forward == 1 ? "1 lane" : Forward + " lanes") + " each way" : Forward + " lanes one way and " + Backward + " the other") + (Bays ? ", with a median and left-turn lanes" : Planted ? ", with trees down the middle" : Median > 0 ? ", with a median" : CenterLane ? ", with a turning lane in the middle" : ""));
 
         /// <summary>
         /// What lies between the two directions of a two-way road: a painted line, a grass median,
-        /// a lane for turning left from, or a median that makes way for such a lane at each intersection.
+        /// a lane for turning left from, a median that makes way for such a lane at each
+        /// intersection, or a median with a row of trees along it.
         /// </summary>
-        public const int Line = 0, Grass = 1, TurnLane = 2, TurnBays = 3;
-        public int Middle => OneWay ? Line : CenterLane ? TurnLane : Bays ? TurnBays : Median > 0 ? Grass : Line;
+        public const int Line = 0, Grass = 1, TurnLane = 2, TurnBays = 3, Trees = 4;
+        public int Middle => OneWay ? Line : CenterLane ? TurnLane : Bays ? TurnBays : Planted ? Trees : Median > 0 ? Grass : Line;
 
         /// <summary>The most lanes a road may have in one direction.</summary>
         public const int MostLanes = 4;
@@ -84,14 +87,15 @@ namespace Traffic.Sim
             {
                 if (t.Group == group && t.Forward == forward && t.Backward == backward && t.Middle == middle) return t;
             }
-            string id = "G" + group + "-" + forward + "-" + backward + (middle == Grass ? "-m" : middle == TurnLane ? "-t" : middle == TurnBays ? "-b" : "");
+            string id = "G" + group + "-" + forward + "-" + backward + (middle == Grass ? "-m" : middle == TurnLane ? "-t" : middle == TurnBays ? "-b" : middle == Trees ? "-r" : "");
             RoadType one;
             if (made.TryGetValue(id, out one)) return one;
             one = new RoadType
             {
                 Id = id, Group = group, Forward = forward, Backward = backward, CenterLane = middle == TurnLane, Bays = middle == TurnBays,
-                Median = middle == Grass ? MedianWidth : middle == TurnBays ? NetworkBuilder.LaneW : 0,
-                Mph = GroupMph[group], MinRadius = GroupRadius[group], CostPerMeter = (forward + backward + (middle == TurnLane || middle == TurnBays ? 1 : 0)) * GroupLanePrice[group],
+                Median = middle == Grass || middle == Trees ? MedianWidth : middle == TurnBays ? NetworkBuilder.LaneW : 0, Planted = middle == Trees,
+                Mph = GroupMph[group], MinRadius = GroupRadius[group],
+                CostPerMeter = (forward + backward + (middle == TurnLane || middle == TurnBays ? 1 : middle == Grass ? 0.5 : middle == Trees ? 0.75 : 0)) * GroupLanePrice[group],
             };
             made[id] = one;
             return one;
@@ -129,32 +133,49 @@ namespace Traffic.Sim
 
         /// <summary>
         /// The roads on offer, in the order the toolbar shows them. A street and an avenue each
-        /// come as one lane one-way, two lanes one-way, one lane each way, and two lanes each
-        /// way with a painted line, a turning lane or a grass median between them, which is the
-        /// list the player asked for. A highway comes one-way with one to four lanes, and as two
-        /// lanes each way with a median. Everything else is made by changing a road's lanes.
+        /// come as one lane one-way, two lanes one-way, one lane each way and two lanes each
+        /// way; what lies between the two directions of the two-way ones is chosen separately,
+        /// for the whole class of road (ToolbarMiddles), and the road is then made with With.
+        /// A highway comes one-way with one to four lanes, and as two lanes each way with a
+        /// median. Everything else is made by changing a road's lanes.
         /// </summary>
         public static RoadType[] Toolbar
         {
             get
             {
                 if (toolbar != null) return toolbar;
-                string[] ids = { "s1", "s1x2", "s2", "s4", "s4t", "s4m", "a1", "a1x2", "a2p", "a4p", "a4t", "a4", "h1", "h2", "h3", "h4", "h4d" };
+                string[] ids = { "s1", "s1x2", "s2", "s4", "a1", "a1x2", "a2p", "a4p", "h1", "h2", "h3", "h4", "h4d" };
                 toolbar = new RoadType[ids.Length];
                 for (int i = 0; i < ids.Length; i++) toolbar[i] = ById(ids[i]);
                 return toolbar;
             }
         }
 
+        /// <summary>What the toolbar offers to put between the two directions of a street or an avenue, in the order it lists them, and what it calls each.</summary>
+        public static readonly int[] ToolbarMiddles = { Line, TurnLane, Grass, Trees };
+        public static readonly string[] MiddleNames = { "Painted line", "Turning lane", "Grass", "Trees" };
+
+        /// <summary>
+        /// The road the toolbar builds for one of its tiles, given what was chosen for the middle
+        /// of that class of road (an index into ToolbarMiddles). The choice only touches a
+        /// two-way street or avenue.
+        /// </summary>
+        public static RoadType Offered(int tile, int middle)
+        {
+            RoadType t = Toolbar[tile];
+            if (t.OneWay || t.Group == Highway) return t;
+            return With(t, t.Forward, t.Backward, ToolbarMiddles[Math.Max(0, Math.Min(middle, ToolbarMiddles.Length - 1))]);
+        }
+
         public static RoadType ById(string id)
         {
             foreach (RoadType t in All) if (t.Id == id) return t;
-            // A made-up road: G, its class, and its lanes each way, with -m for a median, -t for a turning lane and -b for a median with left-turn lanes.
+            // A made-up road: G, its class, and its lanes each way, with -m for a median, -t for a turning lane, -b for a median with left-turn lanes and -r for a median with trees.
             string[] f = id.Split('-');
             int group, forward, backward;
             if (f.Length < 3 || f[0].Length != 2 || f[0][0] != 'G' || !int.TryParse(f[0].Substring(1), out group) || !int.TryParse(f[1], out forward) || !int.TryParse(f[2], out backward)) return null;
             if (group < 0 || group > Highway || forward < 1 || forward > MostLanes || backward < 0 || backward > MostLanes) return null;
-            return With(new RoadType { Group = group }, forward, backward, f.Length > 3 && f[3] == "m" ? Grass : f.Length > 3 && f[3] == "t" ? TurnLane : f.Length > 3 && f[3] == "b" ? TurnBays : Line);
+            return With(new RoadType { Group = group }, forward, backward, f.Length > 3 && f[3] == "m" ? Grass : f.Length > 3 && f[3] == "t" ? TurnLane : f.Length > 3 && f[3] == "b" ? TurnBays : f.Length > 3 && f[3] == "r" ? Trees : Line);
         }
 
         /// <summary>
@@ -576,7 +597,13 @@ namespace Traffic.Sim
         /// asked for: a road that would cross too close beside a corner, a junction or the end of
         /// a road for a junction of its own to fit goes through that point instead.
         /// </summary>
-        public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through, int level, out Vec[] line, out List<Vec> meets)
+        /// <remarks>
+        /// laneFrom says the road is built on from one lane of the road that ends at p, and laneTo
+        /// that it is brought in to one lane of the road that starts at q: the number of the lane,
+        /// 0 at the left of its traffic (see EditSegment.LaneAtA). The road then starts or ends
+        /// where that lane is, and the other lanes are left to be built on in their turn.
+        /// </remarks>
+        public string TryAdd(Vec p, Vec q, RoadType type, bool commit, Vec? through, int level, out Vec[] line, out List<Vec> meets, int laneFrom = -1, int laneTo = -1)
         {
             line = null;
             meets = null;
@@ -588,7 +615,7 @@ namespace Traffic.Sim
             {
                 EditableMap attempt = Clone();
                 // Make sure the result can actually be built before accepting it.
-                string problem = attempt.Add(p, q, type, through, level, beside) ?? attempt.Unbuildable(this);
+                string problem = attempt.Add(p, q, type, through, level, beside, laneFrom, laneTo) ?? attempt.Unbuildable(this);
                 if (problem == null)
                 {
                     work = attempt;
@@ -605,6 +632,13 @@ namespace Traffic.Sim
                 Vec[] part = work.Trace(work.Segments[i]);
                 for (int k = along.Count == 0 ? 0 : 1; k < part.Length; k++) along.Add(part[k]);
                 if (i + 1 < work.Segments.Count) meets.Add(work.Nodes[work.Segments[i].B]);
+            }
+            // A road built on from a lane starts where the lane is, to one side of the point its road ends at.
+            if (work.laid > 0)
+            {
+                EditSegment head = work.Segments[work.Segments.Count - work.laid], tail = work.Segments[work.Segments.Count - 1];
+                Vec offFrom = work.OffAt(head, head.A), offTo = work.OffAt(tail, tail.B);
+                if (offFrom.X != 0 || offFrom.Y != 0 || offTo.X != 0 || offTo.Y != 0) along = new List<Vec>(Displaced(along.ToArray(), offFrom, offTo));
             }
             line = along.ToArray();
             if (commit)
@@ -1256,7 +1290,7 @@ namespace Traffic.Sim
             {
                 if (!run.Pieces.Contains(under)) continue;
                 int now = under.Type.Middle;
-                int middle = there ? (now == RoadType.Grass || now == RoadType.TurnBays ? RoadType.TurnBays : RoadType.TurnLane) : now == RoadType.TurnBays ? RoadType.Grass : RoadType.Line;
+                int middle = there ? (now == RoadType.Grass || now == RoadType.Trees || now == RoadType.TurnBays ? RoadType.TurnBays : RoadType.TurnLane) : now == RoadType.TurnBays ? RoadType.Grass : RoadType.Line;
                 RoadType changed = RoadType.With(under.Type, under.Type.Forward, under.Type.Backward, middle);
                 foreach (EditSegment piece in run.Pieces)
                 {
@@ -1316,6 +1350,13 @@ namespace Traffic.Sim
                         if (!s.Type.OneWay || !DeadEndAt(node)) continue;
                         faults.Add(new Fault { At = Nodes[node], What = s.B == node ? "A one-way road stops here, so its traffic has nowhere to go. Carry it on to another road, or to the edge of the map."
                             : "A one-way road starts here from nothing, so no traffic can use it. Start it from another road, or from the edge of the map." });
+                        found[node] = true;
+                        continue;
+                    }
+                    // Where roads are being built on from the lanes of another, the lanes not yet built on show as open: that is
+                    // work in hand, not a mistake.
+                    if (SplitAt(node) != null)
+                    {
                         found[node] = true;
                         continue;
                     }
@@ -1554,7 +1595,7 @@ namespace Traffic.Sim
             public Vec At;
         }
 
-        private string Add(Vec p, Vec q, RoadType type, Vec? through, int level, double beside = 0)
+        private string Add(Vec p, Vec q, RoadType type, Vec? through, int level, double beside = 0, int laneFrom = -1, int laneTo = -1)
         {
             string error;
             laid = 0;
@@ -1675,6 +1716,23 @@ namespace Traffic.Sim
                 laid++;
             }
             if (laid == 0) return "There is already a road there.";
+            // Built on from a lane, or brought in to one: the piece at that end remembers which lane. It only holds
+            // where the two roads can carry traffic on from one to the other.
+            EditSegment head = Segments[Segments.Count - laid], tail = Segments[Segments.Count - 1];
+            if (laneFrom >= 0 && head.A == a && Dist(Nodes[a], p) < 1)
+            {
+                head.LaneAtA = laneFrom + 1;
+                if (SplitAt(a) == null) head.LaneAtA = 0;
+            }
+            if (laneTo >= 0 && tail.B == b && Dist(Nodes[b], q) < 1)
+            {
+                tail.LaneAtB = laneTo + 1;
+                if (SplitAt(b) == null) tail.LaneAtB = 0;
+            }
+            // A road run to a point where others were already built on from lanes, with no lane picked, takes a lane
+            // that is still open: better that than undoing the others' places and putting up a traffic light.
+            if (head.A == a && head.LaneAtA == 0) TakeOpenLane(head, a);
+            if (tail.B == b && tail.LaneAtB == 0) TakeOpenLane(tail, b);
             // A piece that carries on from a road with a speed limit of its own posted is under the same limit.
             for (int i = Segments.Count - laid; i < Segments.Count; i++)
             {
@@ -1706,6 +1764,21 @@ namespace Traffic.Sim
             var headings = new List<double>();
             foreach (EditSegment s in Segments) if (s.A == node || s.B == node) headings.Add(HeadingFrom(s, node));
             if (headings.Count > MaxArms) return "No more than " + MaxArms + " roads can meet at one point.";
+            // Roads built on from the lanes of another lie side by side where they start, each at its own lane, so
+            // they may set off as close together as they like, as long as two do not take the very same way from the same lane.
+            SplitJoin split = SplitAt(node);
+            if (split != null)
+            {
+                foreach (Branch one in split.Branches)
+                {
+                    foreach (Branch other in split.Branches)
+                    {
+                        if (one == other || one.Out != other.Out || one.First >= other.First + other.Lanes || other.First >= one.First + one.Lanes) continue;
+                        if (Math.Abs(Wrap(HeadingFrom(one.Road, node) - HeadingFrom(other.Road, node))) < ForkAngle) return "Too close together: the roads need to part a little more widely.";
+                    }
+                }
+                return null;
+            }
             // A one-way road may run in alongside another road, or peel off it: that is a merge, not an intersection.
             if (JoinAt(node) != null) return null;
             // Where one-way roads split or come together they may lie much closer: the lanes just part, or close up.
@@ -1741,7 +1814,7 @@ namespace Traffic.Sim
         private bool FlowsThrough(int node)
         {
             int arriving;
-            if (JoinAt(node) != null || !Streams(node, out arriving)) return false;
+            if (JoinAt(node) != null || SplitAt(node) != null || !Streams(node, out arriving)) return false;
             int roads = RoadsAt(node).Count;
             return roads >= 3 && arriving > 0 && arriving < roads;
         }
@@ -1840,6 +1913,7 @@ namespace Traffic.Sim
             EditSegment s = work.Segments[seg];
             s.Type = type;
             if (type.OneWay) s.Extras.RemoveAll(x => !x.Forward);
+            work.CleanTies();
             if (s.Curved && TightestRadius(work.Trace(s)) < type.MinRadius) return "Its curve is too tight for that kind of road.";
             string problem = work.NodeProblem(s.A) ?? work.NodeProblem(s.B) ?? work.Unbuildable(this, "There is not room for that kind of road there.");
             if (problem != null) return problem;
@@ -2202,6 +2276,8 @@ namespace Traffic.Sim
             var here = new List<EditSegment>();
             foreach (EditSegment s in Segments) if (s.A == node || s.B == node) here.Add(s);
             if (here.Count != 3) return null;
+            // Roads built on from the lanes of another are joined lane to lane, not as a ramp.
+            if (SplitAt(node) != null) return null;
             // On a roundabout every way in is a give-way junction, never a merge.
             foreach (EditSegment s in here) if (s.Ring) return null;
             for (int i = 0; i < 3; i++)
@@ -2278,6 +2354,7 @@ namespace Traffic.Sim
             if (seg < 0 || Segments[seg].Locked) return false;
             Segments.RemoveAt(seg);
             DropUnusedNodes();
+            CleanTies();
             return true;
         }
 
@@ -2809,6 +2886,7 @@ namespace Traffic.Sim
             var inside = new bool[Nodes.Count];
             foreach (Run run in runs) foreach (int node in run.Joints) inside[node] = true;
             var joins = new Join[Nodes.Count];
+            var splits = new SplitJoin[Nodes.Count];
             var built = new int[Nodes.Count];
             // The sign each piece's traffic faces at each of its ends, where an intersection is run by signs.
             var signs = new Dictionary<EditSegment, Sign[]>();
@@ -2824,10 +2902,11 @@ namespace Traffic.Sim
                     fastest = Math.Max(fastest, s.Mph);
                 }
                 joins[i] = JoinAt(i);
+                splits[i] = SplitAt(i);
                 // On a roundabout nobody stops for a light or a sign: whoever is going round goes first.
                 bool onRing = false;
                 foreach (EditSegment s in Segments) if (s.Ring && (s.A == i || s.B == i)) onRing = true;
-                JunctionMode mode = arms <= 2 || joins[i] != null || onRing || FlowsThrough(i) ? JunctionMode.Free : ControlOf(i, fastest, signs);
+                JunctionMode mode = arms <= 2 || joins[i] != null || splits[i] != null || onRing || FlowsThrough(i) ? JunctionMode.Free : ControlOf(i, fastest, signs);
                 built[i] = b.AddNode(Nodes[i].X, Nodes[i].Y, mode);
                 if (arms == 1 && DeadEndAt(i)) b.DeadEnd(built[i]);
             }
@@ -2844,7 +2923,8 @@ namespace Traffic.Sim
                 int[] exitAtTo = exitRoads(joins[run.To], last), exitAtFrom = exitRoads(joins[run.From], first);
                 TrackSpec[] fwd = Tracks(withFirst ? type.Forward : type.Backward, joins[run.To], last, joins[run.From], first, length, exitAtTo);
                 // At a fork each lane is told which of the roads ahead it carries on along.
-                List<EditSegment>[] fork = type.OneWay && joins[run.To] == null ? ForkLanes(run.To, last) : null;
+                SplitJoin splitTo = splits[run.To], splitFrom = splits[run.From];
+                List<EditSegment>[] fork = type.OneWay && joins[run.To] == null && splitTo == null ? ForkLanes(run.To, last) : null;
                 for (int i = 0; fork != null && i < fwd.Length; i++)
                 {
                     if (fwd[i].Slot >= fork.Length || fwd[i].To != 1) continue;
@@ -2858,24 +2938,35 @@ namespace Traffic.Sim
                 fwd = Narrowed(fwd, run.To, last, length);
                 if (back != null) back = Narrowed(back, run.From, first, length);
                 if (type.OneWay) fwd = Widened(fwd, run.From, first, length);
+                // Where roads were built on from lanes, each lane is told the lane it carries on as, and the road lies beside the point, where its lanes are.
+                Vec offFrom = default(Vec), offTo = default(Vec);
+                fwd = AtSplit(fwd, splitTo, last, true, length, runs, ref offTo);
+                fwd = AtSplit(fwd, splitFrom, first, false, length, runs, ref offFrom);
+                if (back != null)
+                {
+                    back = AtSplit(back, splitFrom, first, true, length, runs, ref offFrom);
+                    back = AtSplit(back, splitTo, last, false, length, runs, ref offTo);
+                }
+                bool attached = offFrom.X != 0 || offFrom.Y != 0 || offTo.X != 0 || offTo.Y != 0;
+                Vec[] route = attached ? Displaced(run.Trace, offFrom, offTo) : run.Trace;
                 if (type.CenterLane || type.Bays)
                 {
                     // The turning lane is used at each end of the road by the traffic arriving there, where there is a left to take.
                     // In a median it is all there is of it: the builder stops the grass short to make room.
                     double share = Math.Min(70 / Math.Max(length, 1), 0.45);
-                    if (joins[run.To] == null && LeftAhead(run.To, last)) fwd = Plus(fwd, new TrackSpec(-1, 1 - share, 1, Turn.Left));
-                    if (joins[run.From] == null && LeftAhead(run.From, first)) back = Plus(back, new TrackSpec(-1, 1 - share, 1, Turn.Left));
+                    if (joins[run.To] == null && splitTo == null && LeftAhead(run.To, last)) fwd = Plus(fwd, new TrackSpec(-1, 1 - share, 1, Turn.Left));
+                    if (joins[run.From] == null && splitFrom == null && LeftAhead(run.From, first)) back = Plus(back, new TrackSpec(-1, 1 - share, 1, Turn.Left));
                 }
                 // Lanes the player has given their turns keep to them.
                 int lastPiece = run.Pieces.Count - 1;
-                Told(fwd, run.Turned[lastPiece] ? last.TurnsAtA : last.TurnsAtB);
-                if (back != null) Told(back, run.Turned[0] ? first.TurnsAtB : first.TurnsAtA);
+                if (splitTo == null) Told(fwd, run.Turned[lastPiece] ? last.TurnsAtA : last.TurnsAtB);
+                if (back != null && splitFrom == null) Told(back, run.Turned[0] ? first.TurnsAtB : first.TurnsAtA);
                 double speed = first.Mph * 0.44704;
                 bool rampAtFrom = joins[run.From] != null && joins[run.From].Ramp == first, rampAtTo = joins[run.To] != null && joins[run.To].Ramp == last;
                 if (rampAtFrom || rampAtTo)
                 {
                     // A ramp: bring each joining end in beside the lanes of the road it joins.
-                    var trace = (Vec[])run.Trace.Clone();
+                    var trace = (Vec[])route.Clone();
                     double shiftFrom = 0, shiftTo = 0;
                     if (rampAtTo) trace = BesideTheRoad(trace, Nodes[run.To], joins[run.To], type.Width, out shiftTo);
                     if (rampAtFrom)
@@ -2886,13 +2977,15 @@ namespace Traffic.Sim
                     }
                     b.AddRamp(built[run.From], built[run.To], fwd, trace, speed, type.Inner, rampAtFrom, shiftFrom, rampAtTo, shiftTo);
                 }
-                else if (run.Pieces.Count == 1 && !first.Curved) b.AddRoad(built[run.From], built[run.To], fwd, back, null, speed, 0, 0, false, type.Inner);
-                else b.AddCurvedRoad(built[run.From], built[run.To], fwd, back, run.Trace, speed, type.Inner);
+                else if (run.Pieces.Count == 1 && !first.Curved && !attached) b.AddRoad(built[run.From], built[run.To], fwd, back, null, speed, 0, 0, false, type.Inner);
+                else b.AddCurvedRoad(built[run.From], built[run.To], fwd, back, route, speed, type.Inner);
+                if (attached) b.Attach(offFrom, offTo);
                 Sign atFrom = SignOf(signs, first, run.From), atTo = SignOf(signs, last, run.To);
                 if (atFrom != Sign.None || atTo != Sign.None) b.Signs(atFrom, atTo);
                 if (NoRed(first, run.From) || NoRed(last, run.To)) b.NoTurnOnRed(NoRed(first, run.From), NoRed(last, run.To));
                 if (first.Level != 0) b.Raise(first.Level * LevelHeight, RampFor(first.Level));
                 if (type.CenterLane) b.PaveMiddle();
+                if (type.Planted) b.PlantMiddle();
             }
             World world = b.Build();
             // Keep the surroundings the same size however much has been drawn.
@@ -2910,41 +3003,23 @@ namespace Traffic.Sim
         /// Where a road carries on as a narrower one (an avenue becoming a street, say), the
         /// lanes the narrower road has no room for end a little before the place where they meet.
         /// Their traffic moves over in good time, as at any lane drop, instead of two lanes
-        /// squeezing into one in the bend itself.
+        /// squeezing into one in the bend itself. The lanes that carry on are the leftmost.
+        /// (A road built on from particular lanes is another matter: see SplitAt.)
         /// </summary>
         private TrackSpec[] Narrowed(TrackSpec[] tracks, int node, EditSegment arriving, double length)
         {
             List<EditSegment> here = RoadsAt(node);
-            if (here.Count != 2 || JoinAt(node) != null) return tracks;
+            if (here.Count != 2 || JoinAt(node) != null || SplitAt(node) != null) return tracks;
             EditSegment onward = here[0] == arriving ? here[1] : here[0];
             int room = onward.A == node ? onward.Type.Forward : onward.Type.Backward;
             if (room < 1) return tracks;
             double until = 1 - Math.Min(70 / Math.Max(length, 1), 0.45);
-            // The lanes that carry on are the leftmost, unless the narrower road was built on from one lane in particular.
-            int first = LaneTie(node, arriving.Type.Forward - room);
             var result = (TrackSpec[])tracks.Clone();
             for (int i = 0; i < result.Length; i++)
             {
-                if ((result[i].Slot < first || result[i].Slot >= first + room) && result[i].Slot >= 0 && result[i].To >= 1 && result[i].From < until - 0.2) result[i].To = until;
+                if (result[i].Slot >= room && result[i].To >= 1 && result[i].From < until - 0.2) result[i].To = until;
             }
             return result;
-        }
-
-        /// <summary>
-        /// Where two one-way roads meet end to end and one has more lanes than the other, the
-        /// number of the wider road's lane (0 at the left) that the narrower road's first lane
-        /// lines up with: what the player chose, kept within what there is room for, or 0.
-        /// </summary>
-        private int LaneTie(int node, int spare)
-        {
-            if (spare <= 0) return 0;
-            int tie = 0;
-            foreach (EditSegment s in RoadsAt(node))
-            {
-                if (!s.Type.OneWay) return 0;
-                tie = Math.Max(tie, s.A == node ? s.LaneAtA : s.LaneAtB);
-            }
-            return Math.Max(0, Math.Min(tie - 1, spare));
         }
 
         /// <summary>
@@ -2955,40 +3030,312 @@ namespace Traffic.Sim
         private TrackSpec[] Widened(TrackSpec[] tracks, int node, EditSegment leaving, double length)
         {
             List<EditSegment> here = RoadsAt(node);
-            if (here.Count != 2 || JoinAt(node) != null) return tracks;
+            if (here.Count != 2 || JoinAt(node) != null || SplitAt(node) != null) return tracks;
             EditSegment before = here[0] == leaving ? here[1] : here[0];
             if (!before.Type.OneWay || before.B != node || leaving.A != node) return tracks;
             int fed = before.Type.Forward, spare = leaving.Type.Forward - fed;
             if (spare <= 0) return tracks;
-            int first = LaneTie(node, spare);
             double from = Math.Min(14 / Math.Max(length, 1), 0.3);
             var result = (TrackSpec[])tracks.Clone();
             for (int i = 0; i < result.Length; i++)
             {
-                if ((result[i].Slot < first || result[i].Slot >= first + fed) && result[i].Slot >= 0 && result[i].From <= 0 && result[i].To > from + 0.2) result[i].From = from;
+                if (result[i].Slot >= fed && result[i].From <= 0 && result[i].To > from + 0.2) result[i].From = from;
+            }
+            return result;
+        }
+
+        // ---------------------------------------------------------------- roads built on from lanes
+
+        /// <summary>A one-way road built on from particular lanes of another road, at the point where the two meet end to end.</summary>
+        private sealed class Branch
+        {
+            public EditSegment Road;
+            /// <summary>True if it carries traffic away from the point; false if it brings traffic in.</summary>
+            public bool Out;
+            /// <summary>
+            /// The first lane of the other road that it is paired with, its own lane that is paired
+            /// with that one, and how many lanes are paired in a row. Lanes count from 0 at the left
+            /// of their traffic.
+            /// </summary>
+            public int First, Own, Lanes;
+            /// <summary>Where it meets the point, measured from the point itself: to one side of the middle of the other road, where its lanes are.</summary>
+            public Vec Off;
+        }
+
+        /// <summary>
+        /// A point where roads were built on from the lanes of one road: that road (the trunk),
+        /// and each road built on from it. No light and no signs: every lane carries straight on
+        /// as the lane it was joined to, as at a fork.
+        /// </summary>
+        private sealed class SplitJoin
+        {
+            public EditSegment Trunk;
+            public readonly List<Branch> Branches = new List<Branch>();
+        }
+
+        private static int TieAt(EditSegment s, int node)
+        {
+            return s.A == node ? s.LaneAtA : s.LaneAtB;
+        }
+
+        private static double Wrap(double a)
+        {
+            return Math.Atan2(Math.Sin(a), Math.Cos(a));
+        }
+
+        /// <summary>How far to either side of straight on a road built on from a lane may set off, where more than one is.</summary>
+        private const double SplitSpread = 75 * Math.PI / 180;
+
+        /// <summary>
+        /// The roads at a point, if they are one road and others built on from its lanes: every
+        /// road there but one says which lane it was built on from (EditSegment.LaneAtA), and
+        /// each of those is one-way and lies ahead of the traffic it takes on or behind the
+        /// traffic it brings. Null for any other meeting of roads, which is then a bend, an
+        /// intersection, a merge or a fork as before.
+        /// </summary>
+        private SplitJoin SplitAt(int node)
+        {
+            EditSegment trunk = null;
+            int count = 0, tied = 0;
+            foreach (EditSegment s in Segments)
+            {
+                if (s.A != node && s.B != node) continue;
+                count++;
+                if (TieAt(s, node) != 0) tied++;
+                else trunk = s;
+            }
+            if (tied == 0 || tied != count - 1) return null;
+            List<EditSegment> here = RoadsAt(node);
+            foreach (EditSegment s in here) if (s.Ring || s.A == s.B) return null;
+            // Two pieces of one kind of road are simply one road carrying on.
+            if (CarriesOn(here, node)) return null;
+            var split = new SplitJoin { Trunk = trunk };
+            foreach (EditSegment s in here)
+            {
+                if (s == trunk) continue;
+                Branch branch = BranchOf(node, trunk, s.Type, s.A == node, TieAt(s, node) - 1, HeadingFrom(s, node), count > 2);
+                if (branch == null) return null;
+                branch.Road = s;
+                split.Branches.Add(branch);
+            }
+            return split;
+        }
+
+        /// <summary>
+        /// How a one-way road of some kind would be joined to the lanes of the road that ends at
+        /// a point: one that leaves the point takes on the traffic arriving there, and one that
+        /// arrives feeds the traffic setting out. The lane given is the one picked: the first of
+        /// the other road's lanes it is joined to, or, if it has more lanes than that road has
+        /// going its way, the one of its own lanes that the other road's first lane meets.
+        /// Heading is the way the new road lies from the point. Null if the two cannot be joined so.
+        /// </summary>
+        private Branch BranchOf(int node, EditSegment trunk, RoadType type, bool leaves, int lane, double heading, bool fork)
+        {
+            if (!type.OneWay) return null;
+            int lanes = leaves ? (trunk.B == node ? trunk.Type.Forward : trunk.Type.Backward) : (trunk.A == node ? trunk.Type.Forward : trunk.Type.Backward);
+            if (trunk.Type.OneWay && (leaves ? trunk.B != node : trunk.A != node)) lanes = 0;
+            if (lanes < 1) return null;
+            // It has to lie ahead, not back alongside the road it is joined to.
+            double ahead = HeadingFrom(trunk, node) + Math.PI;
+            if (Math.Abs(Wrap(heading - ahead)) > (fork ? SplitSpread : Math.PI - MinAngle)) return null;
+            int own = type.Forward;
+            var branch = new Branch { Out = leaves };
+            if (own <= lanes)
+            {
+                branch.First = Math.Max(0, Math.Min(lane, lanes - own));
+                branch.Lanes = own;
+            }
+            else
+            {
+                branch.Own = Math.Max(0, Math.Min(lane, own - lanes));
+                branch.Lanes = lanes;
+            }
+            // Lanes lie to the right of the line their road is drawn along, as their traffic sees it.
+            double aside = trunk.Type.Inner + branch.First * NetworkBuilder.LaneW - (type.Inner + branch.Own * NetworkBuilder.LaneW);
+            double flow = leaves ? ahead : ahead + Math.PI;
+            branch.Off = new Vec(Math.Sin(flow) * aside, -Math.Cos(flow) * aside);
+            return branch;
+        }
+
+        /// <summary>Where a piece of road meets one of its ends, measured from the point itself: nothing, unless it was built on from a lane there.</summary>
+        private Vec OffAt(EditSegment s, int node)
+        {
+            SplitJoin split = TieAt(s, node) != 0 ? SplitAt(node) : null;
+            if (split != null) foreach (Branch branch in split.Branches) if (branch.Road == s) return branch.Off;
+            return default(Vec);
+        }
+
+        /// <summary>
+        /// Where a one-way road of some kind would start if it were built on from a lane at the
+        /// end of a road (or would end, brought in to one), measured from the point the road
+        /// ends at: see BranchOf. Nothing if it could not be joined to that lane.
+        /// </summary>
+        public Vec LaneOffset(Vec at, RoadType type, bool leaves, int lane, double heading)
+        {
+            Snap snap = SnapTo(at);
+            if (snap.Node < 0 || type == null) return default(Vec);
+            List<EditSegment> here = RoadsAt(snap.Node);
+            SplitJoin split = SplitAt(snap.Node);
+            EditSegment trunk = split != null ? split.Trunk : here.Count == 1 ? here[0] : null;
+            if (trunk == null) return default(Vec);
+            Branch branch = BranchOf(snap.Node, trunk, type, leaves, lane, heading, here.Count > 1);
+            return branch == null ? default(Vec) : branch.Off;
+        }
+
+        /// <summary>A traced line moved over, by one amount at its start and another at its end, and evenly from one to the other between.</summary>
+        public static Vec[] Displaced(Vec[] trace, Vec atStart, Vec atEnd)
+        {
+            double total = Math.Max(LengthOf(trace), 1e-6), along = 0;
+            var moved = new Vec[trace.Length];
+            for (int i = 0; i < trace.Length; i++)
+            {
+                if (i > 0) along += Dist(trace[i - 1], trace[i]);
+                double u = along / total;
+                moved[i] = new Vec(trace[i].X + atStart.X * (1 - u) + atEnd.X * u, trace[i].Y + atStart.Y * (1 - u) + atEnd.Y * u);
+            }
+            return moved;
+        }
+
+        /// <summary>
+        /// The lanes of one direction of a road, where the road ends at a point at which roads
+        /// were built on from lanes. A lane of the trunk that arrives there is told which road it
+        /// carries on along and as which lane; one that nothing was built on from ends a little
+        /// before, as at a lane drop, though its pavement runs on to the end of the road for
+        /// someone to build on from later. A lane of a road built on is told the trunk lane it
+        /// feeds, or starts a little way along if nothing feeds it. Also gives where the road
+        /// meets the point, if not at the point itself.
+        /// </summary>
+        private TrackSpec[] AtSplit(TrackSpec[] tracks, SplitJoin split, EditSegment piece, bool arriving, double length, List<Run> runs, ref Vec off)
+        {
+            if (split == null) return tracks;
+            var result = (TrackSpec[])tracks.Clone();
+            double until = 1 - Math.Min(70 / Math.Max(length, 1), 0.45), late = Math.Min(14 / Math.Max(length, 1), 0.3);
+            if (piece == split.Trunk)
+            {
+                if (!arriving || !split.Branches.Exists(b => b.Out)) return result;
+                for (int i = 0; i < result.Length; i++)
+                {
+                    int slot = result[i].Slot;
+                    if (slot < 0 || result[i].To < 1) continue;
+                    var onto = new List<int>();
+                    var into = new List<int>();
+                    foreach (Branch b in split.Branches)
+                    {
+                        if (!b.Out || slot < b.First || slot >= b.First + b.Lanes) continue;
+                        onto.Add(runs.FindIndex(r => r.Pieces.Contains(b.Road)));
+                        into.Add(b.Own + slot - b.First);
+                    }
+                    if (onto.Count > 0)
+                    {
+                        result[i].Turns = null;
+                        result[i].Onto = onto.ToArray();
+                        result[i].Into = into.ToArray();
+                    }
+                    else if (result[i].From < until - 0.2)
+                    {
+                        result[i].To = until;
+                        result[i].Stub = true;
+                    }
+                }
+                return result;
+            }
+            Branch branch = split.Branches.Find(b => b.Road == piece);
+            if (branch == null) return result;
+            off = branch.Off;
+            int trunk = runs.FindIndex(r => r.Pieces.Contains(split.Trunk));
+            for (int i = 0; i < result.Length; i++)
+            {
+                int slot = result[i].Slot;
+                if (slot < 0) continue;
+                bool paired = slot >= branch.Own && slot < branch.Own + branch.Lanes;
+                if (arriving && result[i].To >= 1)
+                {
+                    if (paired)
+                    {
+                        result[i].Turns = null;
+                        result[i].Onto = new[] { trunk };
+                        result[i].Into = new[] { branch.First + slot - branch.Own };
+                    }
+                    else if (result[i].From < until - 0.2) result[i].To = until;
+                }
+                else if (!arriving && !paired && result[i].From <= 0 && result[i].To > late + 0.2) result[i].From = late;
             }
             return result;
         }
 
         /// <summary>
-        /// Say which lane a road built on from another lines up with, at the place where the two
-        /// meet end to end (see EditSegment.LaneAtA): 0 for the wider road's leftmost lane.
-        /// It only matters where two one-way roads with different numbers of lanes meet. Returns
-        /// false if no two roads meet at that point.
+        /// Join a piece of road that has just been run to a point to a lane there, if roads were
+        /// already built on from lanes at that point and it can be: to the first lane nothing
+        /// has been built on from yet, or failing that the first of all.
+        /// </summary>
+        private void TakeOpenLane(EditSegment piece, int node)
+        {
+            bool tied = false;
+            EditSegment trunk = null;
+            int roads = 0;
+            foreach (EditSegment s in Segments)
+            {
+                if (s == piece || (s.A != node && s.B != node)) continue;
+                roads++;
+                if (TieAt(s, node) != 0) tied = true;
+                else trunk = s;
+            }
+            if (!tied || trunk == null || !piece.Type.OneWay) return;
+            bool leaves = piece.A == node;
+            int lanes = leaves ? (trunk.B == node ? trunk.Type.Forward : trunk.Type.Backward) : (trunk.A == node ? trunk.Type.Forward : trunk.Type.Backward);
+            int best = -1;
+            for (int pass = 0; pass < 2 && best < 0; pass++)
+            {
+                for (int lane = 0; lane < Math.Max(lanes, 1) && best < 0; lane++)
+                {
+                    if (leaves) piece.LaneAtA = lane + 1;
+                    else piece.LaneAtB = lane + 1;
+                    SplitJoin split = SplitAt(node);
+                    if (split == null) continue;
+                    Branch mine = split.Branches.Find(b => b.Road == piece);
+                    bool open = !split.Branches.Exists(b => b != mine && b.Out == mine.Out && b.First < mine.First + mine.Lanes && mine.First < b.First + b.Lanes);
+                    if (open || pass == 1) best = lane;
+                }
+            }
+            if (leaves) piece.LaneAtA = best + 1;
+            else piece.LaneAtB = best + 1;
+        }
+
+        /// <summary>Forget what lane a road was built on from wherever that no longer means anything: the road it was built on from has gone, or changed.</summary>
+        private void CleanTies()
+        {
+            for (int node = 0; node < Nodes.Count; node++)
+            {
+                bool any = false;
+                foreach (EditSegment s in Segments) if ((s.A == node && s.LaneAtA != 0) || (s.B == node && s.LaneAtB != 0)) any = true;
+                if (!any || SplitAt(node) != null) continue;
+                foreach (EditSegment s in Segments)
+                {
+                    if (s.A == node) s.LaneAtA = 0;
+                    if (s.B == node) s.LaneAtB = 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Say that the road drawn last at a point was built on from a lane of the other road
+        /// there: lane 0 is the leftmost of that road's lanes going the same way. Returns false,
+        /// and changes nothing, if the roads at that point cannot be joined lane to lane.
         /// </summary>
         public bool SetLaneTie(Vec at, int lane)
         {
             Snap snap = SnapTo(at);
             if (snap.Node < 0) return false;
-            List<EditSegment> here = RoadsAt(snap.Node);
-            if (here.Count != 2) return false;
-            foreach (EditSegment s in here)
-            {
-                // Kept on the road that leaves; the other's end there is cleared so the two cannot disagree.
-                if (s.A == snap.Node) s.LaneAtA = lane + 1;
-                if (s.B == snap.Node) s.LaneAtB = 0;
-            }
-            return true;
+            EditSegment newest = null;
+            foreach (EditSegment s in Segments) if (s.A == snap.Node || s.B == snap.Node) newest = s;
+            if (newest == null) return false;
+            int was = TieAt(newest, snap.Node);
+            if (newest.A == snap.Node) newest.LaneAtA = lane + 1;
+            else newest.LaneAtB = lane + 1;
+            if (SplitAt(snap.Node) != null) return true;
+            if (newest.A == snap.Node) newest.LaneAtA = was;
+            else newest.LaneAtB = was;
+            return false;
         }
 
         /// <summary>
@@ -3003,12 +3350,16 @@ namespace Traffic.Sim
             public bool Leaving;
             /// <summary>Which lane it is among those going its way, counting from 0 at the left of the traffic, and how many there are.</summary>
             public int Lane, Lanes;
+            /// <summary>The way out of its road through this end, and whether nothing at all has been built on from the end yet.</summary>
+            public double Outward;
+            public bool Open;
         }
 
         /// <summary>
-        /// Every lane at every open road end: a road end that nothing else is joined to and that
-        /// is not on the edge of the map. A road is built on from the lanes that leave, and
-        /// brought in to the lanes that set out.
+        /// Every lane that is still open to build on: at a road end that nothing else is joined
+        /// to (and that is not on the edge of the map), each of its lanes; and at a point where
+        /// roads were built on from some of a road's lanes, each of the lanes that are left. A
+        /// road is built on from the lanes that leave, and brought in to the lanes that set out.
         /// </summary>
         public List<LaneEnd> LaneEnds()
         {
@@ -3016,12 +3367,16 @@ namespace Traffic.Sim
             for (int node = 0; node < Nodes.Count; node++)
             {
                 List<EditSegment> here = RoadsAt(node);
-                if (here.Count != 1 || OnEdge(Nodes[node])) continue;
-                EditSegment s = here[0];
+                if (here.Count == 0) continue;
+                SplitJoin split = here.Count > 1 ? SplitAt(node) : null;
+                if (here.Count > 1 ? split == null : OnEdge(Nodes[node])) continue;
+                EditSegment s = split != null ? split.Trunk : here[0];
                 if (s.Ring || s.A == s.B) continue;
                 // The way out of the road through this end, and the lanes going each way past it.
                 double outward = HeadingFrom(s, node) + Math.PI;
                 int leaving = s.B == node ? s.Type.Forward : s.Type.Backward, setting = s.B == node ? s.Type.Backward : s.Type.Forward;
+                if (s.Type.OneWay && s.B != node) leaving = 0;
+                if (s.Type.OneWay && s.A != node) setting = 0;
                 for (int pass = 0; pass < 2; pass++)
                 {
                     bool leaves = pass == 0;
@@ -3029,12 +3384,14 @@ namespace Traffic.Sim
                     double way = leaves ? outward : outward + Math.PI;
                     for (int k = 0; k < count; k++)
                     {
+                        // A lane that a road has been built on from already is taken.
+                        if (split != null && split.Branches.Exists(b => b.Out == leaves && k >= b.First && k < b.First + b.Lanes)) continue;
                         // A lane lies to the right of the line its road is drawn along, as its traffic sees it.
                         double off = s.Type.Inner + (k + 0.5) * NetworkBuilder.LaneW;
                         ends.Add(new LaneEnd
                         {
                             At = new Vec(Nodes[node].X + Math.Sin(way) * off, Nodes[node].Y - Math.Cos(way) * off), Node = Nodes[node],
-                            Heading = way, Leaving = leaves, Lane = k, Lanes = count,
+                            Heading = way, Leaving = leaves, Lane = k, Lanes = count, Outward = outward, Open = split == null,
                         });
                     }
                 }
@@ -3081,8 +3438,8 @@ namespace Traffic.Sim
             Snap snap = SnapTo(at);
             if (snap.Node < 0) return 0;
             List<EditSegment> here = RoadsAt(snap.Node);
-            if (here.Count != 2 || !here[0].Type.OneWay || !here[1].Type.OneWay) return 0;
-            return LaneTie(snap.Node, Math.Abs(here[0].Type.Forward - here[1].Type.Forward));
+            SplitJoin split = here.Count == 2 ? SplitAt(snap.Node) : null;
+            return split == null ? 0 : Math.Max(split.Branches[0].First, split.Branches[0].Own);
         }
 
         private static TrackSpec[] Plus(TrackSpec[] tracks, TrackSpec one)

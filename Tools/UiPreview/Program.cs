@@ -135,7 +135,7 @@ internal static class Program
         {
             roads.Add(new DockRoad
             {
-                Group = RoadType.GroupNames[t.Group], Title = t.Name, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0, Turn = t.CenterLane, Bays = t.Bays,
+                Group = RoadType.GroupNames[t.Group], Title = t.Name, Forward = t.Forward, Backward = t.Backward, Median = t.Median > 0, Turn = t.CenterLane, Bays = t.Bays, Class = t.Group, Chooses = !t.OneWay && t.Group != RoadType.Highway,
                 Body = t.Mph + " mph.  $" + t.CostPerMeter.ToString(CultureInfo.InvariantCulture) + " a meter.  " + Math.Round(t.Width * 3.28084) + " ft wide.\n"
                     + (t.OneWay ? "Traffic runs the way you draw it." : t.CenterLane ? "A turning lane runs down the middle." : t.Median > 0 ? "A grass median divides the two directions." : "A double yellow line divides the two directions."),
             });
@@ -145,7 +145,8 @@ internal static class Program
         var states = new (string Name, Action<Dock> Set, DockKind Point, int Index)[]
         {
             ("Building, pointing at the wide avenue", d => { d.Building = true; d.Road = 0; d.CanUndo = true; d.Hint = "Click where the road starts."; }, DockKind.Road, 3),
-            ("Building on the block grid, pointing at the 330 ft grid", d => { d.Building = true; d.Road = 1; d.Grid = 330; d.SnapAngles = true; d.CanUndo = true; d.Hint = "Click where the road ends. Right-click to stop."; }, DockKind.Grid, 3),
+            ("Choosing what lies between the two directions of an avenue: the list open, trees chosen, pointing at grass", d => { d.Building = true; d.Road = 7; d.Middle[1] = 3; d.Middle[0] = 1; d.MiddleOpen = 1; d.CanUndo = true; d.Hint = "Click where the road starts."; }, DockKind.MiddleChoice, 2),
+            ("Building on the block grid, pointing at the 250 ft grid", d => { d.Building = true; d.Road = 1; d.Grid = 250; d.SnapAngles = true; d.CanUndo = true; d.Hint = "Click where the road ends. Right-click to stop."; }, DockKind.Grid, 4),
             ("Building a curve on a bridge, pointing at bridge level 2", d => { d.Building = true; d.Shape = 1; d.Road = 5; d.Height = 1; d.CanUndo = true; d.CanRedo = true; d.Hint = "Sweep the road round to where it should end, and click. Right-click to point it again."; }, DockKind.Shape, 1),
             ("Moving, pointing at the move tool", d => { d.Building = true; d.Tool = 3; d.CanUndo = true; d.Hint = "Drag a point to move it. Drag the middle of a road to bend it, or pull it back straight."; }, DockKind.Tool, 3),
             ("Bulldozing", d => { d.Building = true; d.Tool = 1; d.Hint = "Click a road to remove it."; }, DockKind.Tool, 1),
@@ -237,7 +238,22 @@ internal sealed class PenScene
     {
         Func<Vec, string> at = p => N(w / 2 + (p.X - Center.X) * Zoom) + "," + N(h / 2 - (p.Y - Center.Y) * Zoom);
         var svg = new StringBuilder("<svg xmlns='http://www.w3.org/2000/svg' width='" + w + "' height='" + h + "' style='border-radius:10px;background:#659d48'>");
-        foreach (EditSegment road in Pen.Map.Segments)
+        // The roads as the game will lay them: pavement, junctions and paint from the built network.
+        World built = null;
+        try { built = Pen.Map.Segments.Count > 0 ? Pen.Map.ToWorld() : null; } catch (Exception) { }
+        if (built != null)
+        {
+            Func<IEnumerable<Vec>, string> line = pts => string.Join(" ", System.Linq.Enumerable.Select(pts, at));
+            foreach (Strip strip in built.Surfaces) svg.Append("<polygon fill='#3a3c40' points='" + line(System.Linq.Enumerable.Concat(strip.Left, System.Linq.Enumerable.Reverse(strip.Right))) + "'/>");
+            foreach (Node node in built.Nodes) if (node.Box.Count > 2) svg.Append("<polygon fill='#3a3c40' points='" + line(node.Box) + "'/>");
+            foreach (Strip strip in built.Medians) svg.Append("<polygon fill='#7db862' points='" + line(System.Linq.Enumerable.Concat(strip.Left, System.Linq.Enumerable.Reverse(strip.Right))) + "'/>");
+            foreach (Marking m in built.Markings)
+            {
+                svg.Append("<polyline points='" + line(m.Pts) + "' fill='none' stroke='" + (m.Yellow ? "#efbd2e" : "#f1f1ec") + "' stroke-width='" + N(Math.Max(0.9, m.Width * 1.4 * Zoom)) + "'"
+                    + (m.DashOn > 0 ? " stroke-dasharray='" + N(m.DashOn * Zoom) + " " + N(m.DashOff * Zoom) + "'" : "") + "/>");
+            }
+        }
+        else foreach (EditSegment road in Pen.Map.Segments)
         {
             var pts = new StringBuilder();
             foreach (Vec p in Pen.Map.Trace(road)) pts.Append(at(p) + " ");
@@ -414,15 +430,15 @@ internal static class PenScenes
         Click(pen, 0, 10, px);
         add("Pointed too close beside a corner for a junction of its own: it joins at the corner", pen, 93.5, -70, 0, 0, z);
 
-        // A grid of half blocks (165 ft): streets laid along its lines, and the next one snapping to it.
-        const double g = 165 / 3.28084;
+        // A grid of blocks (250 ft): streets laid along its lines, and the next one snapping to it.
+        const double g = 250 / 3.28084;
         pen = New("s2", -2 * g, -g, 2 * g, -g, -2 * g, g, 2 * g, g, -g, -g, -g, g);
-        pen.Grid = 165;
+        pen.Grid = 250;
         Click(pen, g + 6, -g - 5, px);
         add("Grid on: the lines show on the ground, and the road being drawn lands where they cross", pen, g - 9, g + 12, 0, 0, z);
 
         pen = New("s1");
-        pen.Grid = 33;
+        pen.Grid = 25;
         Click(pen, -72, -31, px);
         add("The fine grid, for close work: a one-way street between two of its crossings", pen, 58, -27, 0, 0, z);
 
@@ -459,14 +475,37 @@ internal static class PenScenes
             for (int i = 0; i + 3 < road.Length; i += 4) p.Map.TryAdd(P(road[i], road[i + 1]), P(road[i + 2], road[i + 3]), RoadType.ById(kind), true);
             return p;
         };
-        pen = lanes("a1", "a4", new double[] { -200, 0, 40, 0 });
-        add("Every lane at a road end has its own arrow (lanes that leave) or will show a ring (lanes that set out)", pen, 90, 60, 0, 0, 2.6);
+        pen = lanes("a1", "a4", new double[] { -200, 0, 0, 0 });
+        add("A road end: an arrow on each lane that leaves, and a white ring beyond the end for the road as a whole", pen, 60, 60, 0, 0, 2.6);
 
-        pen = lanes("a1", "a1x2", new double[] { -200, 0, -20, 0 });
-        pen.Shape = RoadPen.Curve;
-        EditableMap.LaneEnd rightLane = pen.Map.LaneEnds().FindAll(e => e.Leaving && e.Node.X > -100)[1];
-        Click(pen, rightLane.At.X, rightLane.At.Y, 1 / 2.6);
-        add("Built on from the right lane's arrow with a one-lane road: that lane carries on", pen, 80, -45, 0, 0, 2.6);
+        // Each picture is drawn later, from the pen as it then stands, so each has a pen of its own.
+        Func<int, RoadPen> offLane = steps =>
+        {
+            RoadPen p = lanes("a1", "a4", new double[] { -200, 0, 0, 0 });
+            EditableMap.LaneEnd outer = p.Map.LaneEnds().FindAll(e => e.Leaving && e.Node.X > -100)[1];
+            if (steps >= 1) Click(p, outer.At.X, outer.At.Y, 1 / 2.6);
+            if (steps >= 2)
+            {
+                Click(p, 110, -40, 1 / 2.6);
+                p.Cancel();
+            }
+            if (steps >= 3) Click(p, 120, 45, 1 / 2.6);
+            return p;
+        };
+        add("Started on the outer lane's arrow with a one-lane road: it starts at that lane, not at the middle of the road", offLane(1), 110, -40, 0, 0, 2.6);
+        add("Built. The lanes nothing has been built on from keep their arrows", offLane(2), 60, 70, 0, 0, 2.6);
+        pen = offLane(3);
+        EditableMap.LaneEnd inner = pen.Map.LaneEnds().FindAll(e => !e.Leaving && e.Node.X > -100 && e.Node.X < 50)[0];
+        add("A road brought in to the ring on a lane that sets out", pen, inner.At.X, inner.At.Y, 0, 0, 2.6);
+
+        pen = lanes("a1", "a1x2", new double[] { -200, 0, 0, 0 });
+        EditableMap.LaneEnd right = pen.Map.LaneEnds().FindAll(e => e.Leaving && e.Node.X > -100)[1];
+        Click(pen, right.At.X, right.At.Y, 1 / 2.6);
+        Click(pen, 120, -6, 1 / 2.6);
+        pen.Cancel();
+        EditableMap.LaneEnd left = pen.Map.LaneEnds().Find(e => e.Leaving && e.Node.X > -100 && e.Node.X < 50);
+        Click(pen, left.At.X, left.At.Y, 1 / 2.6);
+        add("Two lanes one way, each carried on as a road of its own: a fork with no light", pen, 110, 45, 0, 0, 2.6);
 
         pen = lanes("a1", "a1x2", new double[] { -200, 0, 200, 0 });
         add("Partway along a road, the lane under the pointer shows its arrow", pen, -40, -1.6, 0, 0, 2.6);
