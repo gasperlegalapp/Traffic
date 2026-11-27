@@ -770,8 +770,19 @@ namespace Traffic.Sim
         private int RouteNext(Car car, Lane lane)
         {
             if (lane.Kind == LaneKind.Connector) return lane.Next;
-            if (lane.Connectors != null && lane.Id == car.Lane) return PlannedConn(car, lane).Id;
-            return -1;
+            if (lane.Connectors == null) return -1;
+            if (lane.Id == car.Lane) return PlannedConn(car, lane).Id;
+            // Further ahead than the junction the car has made its mind up about: known all the same where the lane has only
+            // one way on (a bend, or one lane carried on as a road of its own). Without this a driver could not see past
+            // the second of two joins a few meters apart, and ran into the back of whatever was waiting there.
+            int only = -1, ways = 0;
+            foreach (int c in lane.Connectors)
+            {
+                if (c < 0) continue;
+                only = c;
+                ways++;
+            }
+            return ways == 1 ? only : -1;
         }
 
         /// <summary>The lane and position a given distance ahead of the car along its route. False if the route ends first.</summary>
@@ -870,7 +881,8 @@ namespace Traffic.Sim
             {
                 double dist = lane.Length - car.S;
                 Lane cur = lane;
-                for (int depth = 0; depth < 3 && dist < Lookahead; depth++)
+                // As far as the driver can see, however many pieces of road that is: a road can be laid in pieces a few meters long.
+                for (int depth = 0; depth < 10 && dist < Lookahead; depth++)
                 {
                     int nid = RouteNext(car, cur);
                     if (nid < 0) break;
@@ -1196,6 +1208,12 @@ namespace Traffic.Sim
 
         // ---------------------------------------------------------------- intersection
 
+        /// <summary>
+        /// How hard a driver may fairly be made to brake by someone moving into the lane ahead of
+        /// them, m/s², doubled: a car joining leaves a gap of the difference in speed over this, in seconds.
+        /// </summary>
+        public const double JoinBraking = 5;
+
         /// <summary>Where, if anywhere, this car has to stop for the intersection.</summary>
         private bool JunctionStop(Car car, Lane lane, Derived d, double v0, out double stopDist, out Binding stopKind)
         {
@@ -1248,7 +1266,12 @@ namespace Traffic.Sim
                 Lane foeConn = Lanes[cz.Foe];
                 bool wait = false;
                 bool blocked = false;
-                double look = bySigns ? Math.Max(80, Lanes[foeConn.From].SpeedLimit * 7) : 80;
+                // Moving into the same lane as traffic that is not stopping (a ramp with no lane of its own to run on in, two
+                // roads closing up into one): whoever is coming will be going faster than this car for a while yet, and
+                // needs room to slow down behind it. So look further up the road, and leave a longer gap, the faster they come.
+                bool joining = Junctions[conn.Node].Mode == JunctionMode.Free && foeConn.Next == conn.Next && foeConn.From != conn.From;
+                double look = bySigns ? Math.Max(80, Lanes[foeConn.From].SpeedLimit * 7) : joining ? Math.Max(80, Lanes[foeConn.From].SpeedLimit * 7) : 80;
+                double mySpeedOut = Math.Min(vc, Math.Sqrt(car.V * car.V + 2 * d.A * Math.Max(cz.SOut - u, 0)));
                 ForFoes(foeConn, look, (foe, uf) =>
                 {
                     if (wait || foe == car) return;
@@ -1299,7 +1322,8 @@ namespace Traffic.Sim
                         return;
                     }
                     double fIn = DriverModel.TravelTime(cz.FoeIn - fFront, foe.V, fd.A, fvc);
-                    if (tIn - margin < fOut && fIn < tOut + margin)
+                    double room = joining ? Math.Max(0, Math.Max(foe.V, fvc * 0.8) - mySpeedOut) / JoinBraking : 0;
+                    if (tIn - margin < fOut && fIn < tOut + margin + room)
                     {
                         double fr = Rank(foe, foeConn, uf);
                         if (fr > myRank || (fr == myRank && (fIn < tIn || (fIn == tIn && foe.Id < car.Id))))

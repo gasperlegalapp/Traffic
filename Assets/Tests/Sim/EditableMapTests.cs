@@ -69,7 +69,7 @@ namespace Traffic.Tests
         {
             var map = new EditableMap();
             Assert.IsNull(map.TryAdd(P(0, 0), P(200, 0), 2, 40, true));
-            Assert.IsNotNull(map.TryAdd(P(300, 300), P(310, 300), 2, 40, true), "too short");
+            Assert.IsNotNull(map.TryAdd(P(300, 300), P(304, 300), 2, 40, true), "too short");
             Assert.IsNotNull(map.TryAdd(P(0, 0), P(200, 30), 2, 40, true), "too sharp an angle with the first road");
             Assert.IsNotNull(map.TryAdd(P(0, 0), P(200, 0), 2, 40, true), "already there");
             Assert.AreEqual(1, map.Segments.Count, "refused roads leave the map unchanged");
@@ -372,17 +372,20 @@ namespace Traffic.Tests
             World world = HighwayWithRamps().ToWorld();
             Assert.AreEqual(0, world.Nodes.Count(n => n.Controlled), "a merge has no lights or stop signs");
             Assert.AreEqual(2, world.Nodes.Count(n => n.Arms.Count == 3));
-            // Past the merge the highway has a third lane for a while, which then ends.
+            // Past the merge the highway has the two lanes it was drawn with, and no more: the game adds no lane the
+            // player did not ask for. (It used to add one for 150 m, and the player took that for the game building
+            // two lanes when one was picked.) The ramp's traffic moves into the outside lane, giving way.
             Node merge = world.Nodes.First(n => n.Arms.Count == 3 && n.Pos.X < 0);
             var leaving = world.Lanes.Where(l => l.Kind == LaneKind.Road && Math.Abs(l.Path.At(0).X - (merge.Pos.X + NetworkBuilder.FreeRadius)) < 1.5 && Math.Abs(l.Path.At(0).Y) < 12).ToList();
-            Assert.AreEqual(3, leaving.Count, "two through lanes and the lane the ramp brings");
-            Lane added = leaving.OrderBy(l => l.Path.At(0).Y).First();
-            Assert.IsNull(added.Connectors, "the added lane ends before the next junction");
-            Assert.AreEqual(1, added.Preds.Count, "only the ramp feeds the added lane");
+            Assert.AreEqual(2, leaving.Count, "the two through lanes, and nothing added");
+            Lane outside = leaving.OrderBy(l => l.Path.At(0).Y).First();
+            Assert.AreEqual(2, outside.Preds.Count, "the outside lane is fed by the lane behind it and by the ramp");
+            Lane rampConn = outside.Preds.Select(c => world.Lanes[c]).Single(c => world.Lanes[c.From].Path.At(0).Y < -50);
+            Assert.IsTrue(rampConn.GiveWay, "the ramp gives way");
             // The ramp comes in beside the highway's lanes, not into the middle of them.
-            Lane ramp = world.Lanes[world.Lanes[added.Preds[0]].From];
+            Lane ramp = world.Lanes[rampConn.From];
             PathPose end = ramp.Path.At(ramp.Length);
-            Assert.AreEqual(added.Path.At(0).Y, end.Y, 1.0, "the ramp should line up with the lane it feeds");
+            Assert.Less(end.Y, outside.Path.At(0).Y - NetworkBuilder.LaneW / 2, "the ramp arrives beside the outside lane");
             Assert.Less(Math.Abs(end.H), 0.3, "the ramp should arrive nearly alongside");
         }
 
@@ -2065,10 +2068,10 @@ namespace Traffic.Tests
                 World w = wider.ToWorld();
                 List<Lane> two = w.Lanes.Where(l => l.Kind == LaneKind.Road && l.Path.At(l.Length).X > 200).ToList();
                 Assert.AreEqual(2, two.Count);
-                Lane fed = two.Single(l => l.Path.At(0).X < 20), gained = two.Single(l => l.Path.At(0).X >= 20);
+                Lane fed = two.Single(l => l.Preds.Count > 0), gained = two.Single(l => l.Preds.Count == 0);
                 Assert.AreEqual(tie, fed.Slot, "the lane the single lane leads into");
                 Assert.AreEqual(1 - tie, gained.Slot);
-                Assert.Less(gained.Path.At(0).X, 60, "the new lane opens just past the join");
+                Assert.Less(gained.Path.At(0).X, 20, "the new lane starts with its road: the road is the width it was drawn, from end to end");
                 var run = new Simulation(w, 5);
                 run.ArrivalsPerMinute = 10;
                 bool used = false;
@@ -2152,6 +2155,79 @@ namespace Traffic.Tests
             // And taking away the road they were all built on from leaves plain road ends, with nothing remembered.
             Assert.IsTrue(map.RemoveNear(P(-250, 0)));
             Assert.IsFalse(map.Serialize().Contains("LA:") || map.Serialize().Contains("LB:"));
+        }
+
+        [Test]
+        public void RoadsThatPartAtAFewDegreesLeaveNoSpikeOfPavement()
+        {
+            // An avenue with a turning lane, and a road built on from each of the lanes that leave its end, one of them
+            // setting off only a few degrees from straight on. The corner between two edges that run nearly side by side
+            // was once drawn out to the far-off point where they would meet: the player saw it as a white line right across the avenue.
+            foreach (double rise in new[] { 5.0, 14, 30, -14 })
+            {
+                var map = new EditableMap { Bound = 600 };
+                Vec[] line;
+                List<Vec> meets;
+                Assert.IsNull(map.TryAdd(P(-300, 0), P(0, 0), RoadType.With(T("a4p"), 2, 2, RoadType.TurnLane), true));
+                Assert.IsNull(map.TryAdd(P(0, 0), P(200, rise), T("a1"), true, null, 0, out line, out meets, 0));
+                Assert.IsNull(map.TryAdd(P(0, 0), P(160, -60), T("a1"), true, null, 0, out line, out meets, 1));
+                Node join = map.ToWorld().Nodes.Single(n => n.Arms.Count == 3);
+                foreach (Vec v in join.Box) Assert.Less(Geo.Hypot(v.X - join.Pos.X, v.Y - join.Pos.Y), 25, "pavement at " + v.X + ", " + v.Y + " with a rise of " + rise);
+                foreach (Vec[] corner in join.Corners) foreach (Vec v in corner) Assert.Less(Geo.Hypot(v.X - join.Pos.X, v.Y - join.Pos.Y), 25, "curb with a rise of " + rise);
+            }
+        }
+
+        [Test]
+        public void ShortPiecesCanBeBuiltOneAfterAnother()
+        {
+            // Two lanes one way; a piece 12 m long built on from the left lane; two lanes built on from that, 48 m long; and
+            // a 12 m piece from the right lane of those. The player wants to work this finely. It used to be refused twice
+            // over: the end of a short piece fell back on the point it started from, and the junctions were "too close together".
+            var map = new EditableMap { Bound = 300 };
+            Vec[] line;
+            List<Vec> meets;
+            Assert.IsNull(map.TryAdd(P(-300, 0), P(0, 0), T("a1x2"), true));
+            Assert.IsNull(map.TryAdd(P(0, 0), P(12, 0), T("a1"), true, null, 0, out line, out meets, 0), "a 12 m piece");
+            Assert.AreEqual(12, map.Nodes[map.Segments[1].B].X, 0.01, "it ends where it was drawn to");
+            Assert.IsNull(map.TryAdd(P(12, 0), P(60, -8), T("a1x2"), true, null, 0, out line, out meets, 0), "two lanes built on from it");
+            Assert.IsNull(map.TryAdd(P(60, -8), P(72, -10), T("a1"), true, null, 0, out line, out meets, 1), "and another short piece");
+            Assert.IsNull(map.TryAdd(P(72, -10), P(300, -40), T("a1"), true), "carried on to the edge");
+            Assert.IsNotNull(map.TryAdd(P(200, 200), P(203, 200), T("a1"), true), "but not a piece shorter than a car");
+            World world = map.ToWorld();
+            Assert.IsTrue(world.Nodes.All(n => !n.Controlled));
+            foreach (Lane lane in world.Lanes) Assert.Greater(lane.Length, 1, "no lane of no length");
+            var sim = new Simulation(world, 3);
+            sim.ArrivalsPerMinute = 12;
+            Grid.Run(sim, 300, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 30, "traffic drives through the short pieces");
+            // An intersection with a light still keeps its room: a road cannot cross 10 m from another crossing.
+            var cross = new EditableMap();
+            Assert.IsNull(cross.TryAdd(P(-200, 0), P(200, 0), T("a4p"), true));
+            Assert.IsNull(cross.TryAdd(P(0, -200), P(0, 200), T("a4p"), true));
+            cross.TryAdd(P(30, -200), P(30, 200), T("a4p"), true);
+            foreach (Node a in cross.ToWorld().Nodes) foreach (Node b in cross.ToWorld().Nodes) if (a.Id != b.Id && a.Controlled && b.Controlled) Assert.Greater(Geo.Hypot(a.Pos.X - b.Pos.X, a.Pos.Y - b.Pos.Y), 30);
+        }
+
+        [Test]
+        public void ARoadHasOnlyTheLanesItWasDrawnWith()
+        {
+            // One lane one-way, with another one-lane road brought in alongside and one taken off. Whatever joins it, it stays one lane.
+            var map = new EditableMap();
+            Assert.IsNull(map.TryAdd(P(-500, 0), P(500, 0), T("a1"), true));
+            Assert.IsNull(map.TryAdd(P(-300, -120), P(-100, 0), T("a1"), true));
+            Assert.IsNull(map.TryAdd(P(150, 0), P(350, -120), T("a1"), true));
+            World world = map.ToWorld();
+            Assert.IsTrue(world.Nodes.All(n => !n.Controlled));
+            foreach (double x in new[] { -400.0, -60, 0, 100, 300 })
+            {
+                Assert.AreEqual(1, world.Lanes.Count(l => l.Kind == LaneKind.Road && Math.Abs(l.Path.At(l.Length / 2).Y) < 3 && l.Path.At(0).X < x && l.Path.At(l.Length).X > x), "lanes of the road at " + x);
+            }
+            var sim = new Simulation(world, 2);
+            sim.ArrivalsPerMinute = 10;
+            Grid.Run(sim, 400, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 30);
         }
 
         [Test]
@@ -2625,13 +2701,16 @@ namespace Traffic.Tests
         }
 
         [Test]
-        public void AOneWayRoadCannotEndInADeadEnd()
+        public void AOneWayRoadThatStopsIsUnfinishedNotAMistake()
         {
             var map = new EditableMap { Bound = 300 };
             Assert.IsNull(map.TryAdd(P(-300, 0), P(100, 0), T("s1"), true));
-            Assert.AreEqual(1, map.Faults().Count);
-            StringAssert.Contains("nowhere to go", map.Faults()[0].What);
-            map.ToWorld();
+            // It is unfinished, which is not a mistake: nothing is ringed, its lane has an arrow to build on from, and
+            // meanwhile its traffic just leaves at the end. (The player did not want unfinished roads marked as wrong.)
+            Assert.AreEqual(0, map.Faults().Count);
+            Assert.AreEqual(1, map.LaneEnds().Count(e => e.Leaving));
+            World stops = map.ToWorld();
+            Assert.IsTrue(stops.Lanes.Single(l => l.Kind == LaneKind.Road).IsExit);
             // Run on to the edge it is a through road, and nothing is wrong.
             Assert.IsNull(map.TryAdd(P(100, 0), P(300, 40), T("s1"), true));
             Assert.AreEqual(0, map.Faults().Count);

@@ -502,7 +502,7 @@ namespace Traffic.Ui
 
             bool lined;
             double line;
-            Vec end = OnRing(p, map.JoinPoint(Snapped(p, out lined, out line)));
+            Vec end = OnRing(p, map.JoinPoint(Snapped(p, out lined, out line), hasStart ? start : (Vec?)null));
             if (!hasStart)
             {
                 start = end;
@@ -968,10 +968,22 @@ namespace Traffic.Ui
             heading = 0;
             p = ToEdge(p);
             // From far out a road is only a few pixels wide, so reach for it by what the eye sees as near.
+            // A short piece can be drawn: the far end is not pulled back to the point the road starts from, or on to the
+            // end of the road it leaves, once it is a short piece's length away.
+            bool clear = hasStart && Dist(p, start) >= EditableMap.MinPiece;
             int node = map.NodeAt(p, NodeReach);
+            if (node >= 0 && clear && Dist(map.Nodes[node], start) < 0.01)
+            {
+                node = -1;
+                for (int i = 0; i < map.Nodes.Count; i++)
+                {
+                    if (Dist(map.Nodes[i], start) < 0.01 || Dist(map.Nodes[i], p) >= NodeReach) continue;
+                    if (node < 0 || Dist(map.Nodes[i], p) < Dist(map.Nodes[node], p)) node = i;
+                }
+            }
             if (node >= 0) return map.Nodes[node];
             Vec on;
-            if (map.NearestSegment(p, RoadReach, out on) >= 0)
+            if (map.NearestSegment(p, RoadReach, out on) >= 0 && !(clear && Dist(on, start) < 0.5))
             {
                 // On a road. With a grid, at the place where the road meets the grid, if it runs through one close by.
                 Vec there;
@@ -1393,7 +1405,7 @@ namespace Traffic.Ui
         {
             bool lined;
             double line;
-            Vec end = OnRing(pointer, map.JoinPoint(Snapped(pointer, out lined, out line)));
+            Vec end = OnRing(pointer, map.JoinPoint(Snapped(pointer, out lined, out line), hasStart ? start : (Vec?)null));
             Vec overWhole;
             if (WholeEndAt(pointer, out overWhole)) end = overWhole;
             Snap snap = map.SnapTo(end);

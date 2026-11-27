@@ -71,6 +71,8 @@ namespace Traffic.Sim
         private const double BridgeHeight = 6.5;
         /// <summary>How far the stop lines sit from the center where roads split or join without a light.</summary>
         public const double FreeRadius = 8;
+        /// <summary>The least road there can be between two places that are not intersections, and how small such a place can be squeezed.</summary>
+        public const double ShortRoad = 3.5, SoftRadius = 1.2;
 
         private sealed class RoadSpec
         {
@@ -92,6 +94,8 @@ namespace Traffic.Sim
             public bool PavedMiddle;
             /// <summary>The strip of ground down the middle has a row of trees along it.</summary>
             public bool Planted;
+            /// <summary>The least road there has to be between the junctions at its two ends.</summary>
+            public double Between = 15;
             /// <summary>The sign its traffic faces on arriving at each end.</summary>
             public Sign SignA, SignB;
             /// <summary>Its traffic may not turn on red on arriving at each end.</summary>
@@ -333,6 +337,48 @@ namespace Traffic.Sim
                 world.Nodes.Add(new Node { Id = i, Pos = nodePos[i], Hub = nodePos[i], Radius = radius[i], DefaultMode = nodeMode[i], DeadEnd = ends == 1 && deadEnds.Contains(i) });
                 extent = Math.Max(extent, Math.Max(Math.Abs(nodePos[i].X), Math.Abs(nodePos[i].Y)));
             }
+            // A short piece of road is allowed between places that need no room of their own: a bend, or a point where
+            // roads were built on from lanes. Those give up their own length to it, down to almost nothing, so that
+            // the player can lay pieces as small as they like. An intersection with a light or signs keeps its size,
+            // and the 15 m of road it needs to queue on.
+            var soft = new bool[nodePos.Count];
+            var firm = new bool[nodePos.Count];
+            var owned = new bool[nodePos.Count];
+            foreach (RoadSpec r in roads)
+            {
+                if (r.OwnA) owned[r.A] = true;
+                if (r.OwnB) owned[r.B] = true;
+            }
+            for (int i = 0; i < nodePos.Count; i++)
+            {
+                int ends = EndsAt(i);
+                firm[i] = ends > 2 && nodeMode[i] != JunctionMode.Free;
+                soft[i] = nodeMode[i] == JunctionMode.Free && !owned[i] && (ends == 2 || (ends > 2 && rampAt[i]));
+            }
+            for (int pass = 0; pass < 3; pass++)
+            {
+                foreach (RoadSpec r in roads)
+                {
+                    if (r.A == r.B) continue;
+                    r.Between = firm[r.A] || firm[r.B] ? 15 : ShortRoad;
+                    double length = 0;
+                    Vec last = new Vec(nodePos[r.A].X + r.OffA.X, nodePos[r.A].Y + r.OffA.Y);
+                    foreach (Vec v in r.Via)
+                    {
+                        length += Geo.Hypot(v.X - last.X, v.Y - last.Y);
+                        last = v;
+                    }
+                    length += Geo.Hypot(nodePos[r.B].X + r.OffB.X - last.X, nodePos[r.B].Y + r.OffB.Y - last.Y);
+                    double over = radius[r.A] + radius[r.B] + r.Between + 0.5 - length;
+                    double give = (soft[r.A] ? Math.Max(radius[r.A] - SoftRadius, 0) : 0) + (soft[r.B] ? Math.Max(radius[r.B] - SoftRadius, 0) : 0);
+                    if (over <= 0 || give <= 0) continue;
+                    double share = Math.Min(over / give, 1);
+                    if (soft[r.A]) radius[r.A] -= share * Math.Max(radius[r.A] - SoftRadius, 0);
+                    if (soft[r.B]) radius[r.B] -= share * Math.Max(radius[r.B] - SoftRadius, 0);
+                }
+            }
+            for (int i = 0; i < nodePos.Count; i++) world.Nodes[i].Radius = radius[i];
+
             // At a dead end the lanes stop a little short of the end of the pavement, to leave room to turn round in,
             // where the road is long enough to give that up; if it is not, the turn is made just beyond the end.
             foreach (RoadSpec r in roads)
@@ -402,7 +448,7 @@ namespace Traffic.Sim
                 line.Add(new Vec(b.X - bx * radius[r.B] + by * r.ShiftB, b.Y - by * radius[r.B] - bx * r.ShiftB));
                 // Resample to about a meter between points.
                 var path = new LanePath(line);
-                if (path.Length < 15) throw new InvalidOperationException("Two intersections are too close together for the road between them.");
+                if (path.Length < r.Between - 1e-6) throw new InvalidOperationException("Two intersections are too close together for the road between them.");
                 int n = (int)Math.Ceiling(path.Length);
                 var center = new List<Vec>();
                 for (int i = 0; i <= n; i++)
@@ -864,12 +910,22 @@ namespace Traffic.Sim
                     if ((int)o.Turn < (int)c.Turn) splitsLeft = true;
                     if ((int)o.Turn > (int)c.Turn) splitsRight = true;
                 }
+                // Where two paths close up into one lane (a ramp with no lane of its own to run on in), no line is painted
+                // between them either: each keeps only the line on its own outside.
+                bool joinedOnLeft = false, joinedOnRight = false;
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.Next != c.Next || o.From == c.From) continue;
+                    PathPose mine = c.Path.At(0), theirs = o.Path.At(0);
+                    if (Math.Cos(mine.H) * (theirs.Y - mine.Y) - Math.Sin(mine.H) * (theirs.X - mine.X) > 0) joinedOnLeft = true;
+                    else joinedOnRight = true;
+                }
                 Vec[] pts = c.Path.Pts;
-                if (splitsLeft) { }
+                if (splitsLeft || joinedOnLeft) { }
                 else if (leftNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2), Width = 0.14, DashOn = DashOn, DashOff = DashOff });
                 else if (leftmost) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.16), Width = 0.12, Yellow = true });
                 else world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.2), Width = 0.14 });
-                if (!rightNeighbor && !splitsRight) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, LaneW / 2 - 0.25), Width = 0.14 });
+                if (!rightNeighbor && !splitsRight && !joinedOnRight) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, LaneW / 2 - 0.25), Width = 0.14 });
             }
         }
 
@@ -1235,9 +1291,14 @@ namespace Traffic.Sim
                 double d2x = Math.Cos(arms[j].Angle), d2y = Math.Sin(arms[j].Angle);
                 double cross = d1x * d2y - d1y * d2x;
                 var corner = new List<Vec> { p };
-                if (Math.Abs(cross) >= 0.05) // otherwise the two edges run nearly side by side: join them straight
+                // Where the two edges would meet, measured along each from its own end. Edges that run nearly side by side meet
+                // far away or not at all, and a corner drawn out to there would be a long spike of pavement and curb lying
+                // along the road (the player saw one as a white line across an avenue): those are joined straight.
+                double t = Math.Abs(cross) < 0.05 ? double.MaxValue : ((q.X - p.X) * d2y - (q.Y - p.Y) * d2x) / cross;
+                double other = Math.Abs(cross) < 0.05 ? double.MaxValue : ((q.X - p.X) * d1y - (q.Y - p.Y) * d1x) / cross;
+                double reach = Math.Max(node.Radius, 6) * 2.5;
+                if (Math.Abs(t) <= reach && Math.Abs(other) <= reach)
                 {
-                    double t = ((q.X - p.X) * d2y - (q.Y - p.Y) * d2x) / cross;
                     var c = new Vec(p.X + d1x * t, p.Y + d1y * t);
                     for (int k = 1; k < 8; k++)
                     {

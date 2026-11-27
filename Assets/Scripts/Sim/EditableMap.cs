@@ -548,6 +548,42 @@ namespace Traffic.Sim
             return new Snap { Point = p, Node = -1, Segment = -1 };
         }
 
+        /// <summary>The shortest piece of road that can be drawn: a point this far or further from where a road starts is a place of its own.</summary>
+        public const double MinPiece = 6;
+
+        /// <summary>
+        /// What a point would land on, for the far end of a road that starts at a point of the
+        /// map: as SnapTo, except that it is not pulled back to the point the road starts from,
+        /// or on to the end of a road there, once it is a short piece's length away. That is what
+        /// lets a piece much shorter than the reach of a click be drawn.
+        /// </summary>
+        public Snap SnapAway(Vec p, int from)
+        {
+            Snap snap = SnapTo(p);
+            if (from < 0 || from >= Nodes.Count || Dist(p, Nodes[from]) < MinPiece) return snap;
+            if (snap.Node == from)
+            {
+                // The next nearest point, if one is in reach.
+                int node = -1;
+                double best = SnapNode;
+                for (int i = 0; i < Nodes.Count; i++)
+                {
+                    double d = Dist(Nodes[i], p);
+                    if (i == from || d >= best) continue;
+                    best = d;
+                    node = i;
+                }
+                if (node >= 0) return new Snap { Point = Nodes[node], Node = node, Segment = -1 };
+                Vec on;
+                double t;
+                int seg = NearestSegment(p, SnapRoad, out on, out t);
+                snap = seg >= 0 ? new Snap { Point = on, Node = -1, Segment = seg, T = t } : new Snap { Point = p, Node = -1, Segment = -1 };
+            }
+            // Landing on the very end of a road that ends where this one starts is landing back on the start.
+            if (snap.Segment >= 0 && Dist(snap.Point, Nodes[from]) < 0.5) snap = new Snap { Point = p, Node = -1, Segment = -1 };
+            return snap;
+        }
+
         /// <summary>The road nearest a point, if within reach, and the closest spot on it.</summary>
         public int NearestSegment(Vec p, double reach, out Vec on)
         {
@@ -1347,10 +1383,7 @@ namespace Traffic.Sim
                     {
                         // A road end with nothing joined to it is the edge of the map, where traffic comes and goes, or a
                         // dead end, where it turns round: which a one-way road gives it no way to do.
-                        if (!s.Type.OneWay || !DeadEndAt(node)) continue;
-                        faults.Add(new Fault { At = Nodes[node], What = s.B == node ? "A one-way road stops here, so its traffic has nowhere to go. Carry it on to another road, or to the edge of the map."
-                            : "A one-way road starts here from nothing, so no traffic can use it. Start it from another road, or from the edge of the map." });
-                        found[node] = true;
+                        // It is unfinished, which is no mistake: its lanes show their arrows, to be built on from.
                         continue;
                     }
                     // Where roads are being built on from the lanes of another, the lanes not yet built on show as open: that is
@@ -1929,7 +1962,7 @@ namespace Traffic.Sim
         private int Resolve(Vec p, out string error, double beside = 0, RoadType type = null, Snap? farEnd = null)
         {
             error = null;
-            Snap snap = SnapTo(p);
+            Snap snap = farEnd.HasValue && farEnd.Value.Node >= 0 ? SnapAway(p, farEnd.Value.Node) : SnapTo(p);
             if (snap.Node >= 0) return snap.Node;
             if (snap.Segment < 0 && type != null)
             {
@@ -2701,9 +2734,9 @@ namespace Traffic.Sim
         /// close to a junction, or to the end of the road, for a junction of its own to fit
         /// there is moved to that junction or road end; any other point is left where it is.
         /// </summary>
-        public Vec JoinPoint(Vec p)
+        public Vec JoinPoint(Vec p, Vec? from = null)
         {
-            Snap snap = SnapTo(p);
+            Snap snap = from.HasValue ? SnapAway(p, NodeAt(from.Value, 0.01)) : SnapTo(p);
             if (snap.Node >= 0 || snap.Segment < 0) return snap.Point;
             EditSegment on = Segments[snap.Segment];
             foreach (Run run in Runs())
@@ -3209,7 +3242,7 @@ namespace Traffic.Sim
         {
             if (split == null) return tracks;
             var result = (TrackSpec[])tracks.Clone();
-            double until = 1 - Math.Min(70 / Math.Max(length, 1), 0.45), late = Math.Min(14 / Math.Max(length, 1), 0.3);
+            double until = 1 - Math.Min(70 / Math.Max(length, 1), 0.45);
             if (piece == split.Trunk)
             {
                 if (!arriving || !split.Branches.Exists(b => b.Out)) return result;
@@ -3231,10 +3264,28 @@ namespace Traffic.Sim
                         result[i].Onto = onto.ToArray();
                         result[i].Into = into.ToArray();
                     }
-                    else if (result[i].From < until - 0.2)
+                    else if (result[i].From < until - 0.2 && length * (1 - until) >= 45)
                     {
                         result[i].To = until;
                         result[i].Stub = true;
+                    }
+                    else
+                    {
+                        // On a short road there is no room to move over before the end. The lane runs to the end, and its
+                        // traffic closes up there with the lane beside it, giving way, into the nearest road that was built on.
+                        Branch near = null;
+                        int apart = int.MaxValue;
+                        foreach (Branch b in split.Branches)
+                        {
+                            if (!b.Out) continue;
+                            int gap = slot < b.First ? b.First - slot : slot - (b.First + b.Lanes - 1);
+                            if (gap >= apart) continue;
+                            apart = gap;
+                            near = b;
+                        }
+                        result[i].Turns = null;
+                        result[i].Onto = new[] { runs.FindIndex(r => r.Pieces.Contains(near.Road)) };
+                        result[i].Into = new[] { near.Own + Math.Max(0, Math.Min(slot - near.First, near.Lanes - 1)) };
                     }
                 }
                 return result;
@@ -3258,7 +3309,7 @@ namespace Traffic.Sim
                     }
                     else if (result[i].From < until - 0.2) result[i].To = until;
                 }
-                else if (!arriving && !paired && result[i].From <= 0 && result[i].To > late + 0.2) result[i].From = late;
+                // A lane nothing feeds simply starts with its road, empty: the road is the width it was drawn, from end to end.
             }
             return result;
         }
@@ -3966,11 +4017,9 @@ namespace Traffic.Sim
                 else if (exit != null) tracks.Add(new TrackSpec(i) { Onto = i == count - 1 ? exit : new[] { exit[0] } });
                 else tracks.Add(new TrackSpec(i, 0, 1, Turn.Straight));
             }
-            if (behind != null && behind.Merge && atBehind == behind.Down)
-            {
-                double until = Math.Min(0.75, 150 / Math.Max(length, 1));
-                for (int i = 0; i < behind.Ramp.Type.Forward; i++) tracks.Add(new TrackSpec(count + i, 0, until));
-            }
+            // Past a merge the road used to gain a lane for each lane of the ramp, for 150 m. The player did not ask for
+            // those lanes and did not want them: a road has the lanes it was drawn with, and the ramp's traffic gives way
+            // and moves into the outside lane. A lane for it to run on in is theirs to add, with the lane tool.
             return tracks.ToArray();
         }
 
