@@ -932,6 +932,7 @@ namespace Traffic.Lab
                     if (e.button == 0)
                     {
                         if (grabbing) GrabDrop();
+                        else if (building && !overUi) EditLift(pixel);
                         grabbing = false;
                     }
                     else if (e.button == 1)

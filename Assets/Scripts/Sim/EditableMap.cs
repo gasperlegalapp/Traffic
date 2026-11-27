@@ -1756,16 +1756,20 @@ namespace Traffic.Sim
             {
                 head.LaneAtA = laneFrom + 1;
                 if (SplitAt(a) == null) head.LaneAtA = 0;
+                else WiderIsTrunk(a, head);
             }
             if (laneTo >= 0 && tail.B == b && Dist(Nodes[b], q) < 1)
             {
                 tail.LaneAtB = laneTo + 1;
                 if (SplitAt(b) == null) tail.LaneAtB = 0;
+                else WiderIsTrunk(b, tail);
             }
             // A road run to a point where others were already built on from lanes, with no lane picked, takes a lane
             // that is still open: better that than undoing the others' places and putting up a traffic light.
             if (head.A == a && head.LaneAtA == 0) TakeOpenLane(head, a);
             if (tail.B == b && tail.LaneAtB == 0) TakeOpenLane(tail, b);
+            Uncross(a);
+            Uncross(b);
             // A piece that carries on from a road with a speed limit of its own posted is under the same limit.
             for (int i = Segments.Count - laid; i < Segments.Count; i++)
             {
@@ -2487,8 +2491,25 @@ namespace Traffic.Sim
             return sameWay || x.Type.Forward == x.Type.Backward;
         }
 
-        /// <summary>Every road on the map, as runs of pieces.</summary>
+        /// <summary>
+        /// Every road on the map, as runs of pieces. Where two pieces of one road meet in a corner
+        /// that there is no room to round off, the road is not refused: the two are simply two
+        /// roads that meet there in a bend, as a street and an avenue would. (Such a corner used
+        /// to be refused as too sharp, which the player met again and again once pieces could be short.)
+        /// </summary>
         private List<Run> Runs()
+        {
+            var cut = new HashSet<int>();
+            while (true)
+            {
+                List<Run> runs = Runs(cut);
+                int before = cut.Count;
+                foreach (Run run in runs) for (int j = 0; j < run.Joints.Count; j++) if (run.Sharp[j]) cut.Add(run.Joints[j]);
+                if (cut.Count == before) return runs;
+            }
+        }
+
+        private List<Run> Runs(HashSet<int> cut)
         {
             var at = new List<EditSegment>[Nodes.Count];
             for (int i = 0; i < at.Length; i++) at[i] = new List<EditSegment>();
@@ -2498,7 +2519,7 @@ namespace Traffic.Sim
                 at[s.B].Add(s);
             }
             var joint = new bool[Nodes.Count];
-            for (int i = 0; i < joint.Length; i++) joint[i] = CarriesOn(at[i], i);
+            for (int i = 0; i < joint.Length; i++) joint[i] = !cut.Contains(i) && CarriesOn(at[i], i);
 
             var runs = new List<Run>();
             var done = new HashSet<EditSegment>();
@@ -3312,6 +3333,82 @@ namespace Traffic.Sim
                 // A lane nothing feeds simply starts with its road, empty: the road is the width it was drawn, from end to end.
             }
             return result;
+        }
+
+        /// <summary>
+        /// A road with more lanes has just been built on from the end of a narrower one (or run
+        /// in to the start of one), with nothing else there. Turn the two about: the wider road is
+        /// the one whose lanes are joined to, and the narrower one is joined to one of them. That
+        /// leaves the wider road's other lanes open, so that a second road can be brought in to
+        /// the lane beside the first, or taken off it, which is how two single lanes come back
+        /// together as two lanes side by side. (The player tried exactly that, and the second
+        /// road was squeezed into the same lane as the first.) The point moves over to the middle
+        /// of the wider road, so that nothing that was already built shifts.
+        /// </summary>
+        private void WiderIsTrunk(int node, EditSegment wider)
+        {
+            List<EditSegment> here = RoadsAt(node);
+            SplitJoin split = SplitAt(node);
+            if (here.Count != 2 || split == null || split.Branches.Count != 1 || split.Branches[0].Road != wider) return;
+            Branch was = split.Branches[0];
+            if (was.Lanes >= wider.Type.Forward) return;
+            EditSegment narrow = split.Trunk;
+            if (!narrow.Type.OneWay) return;
+            Vec at = Nodes[node];
+            int widerTie = TieAt(wider, node), narrowTie = TieAt(narrow, node);
+            Action<EditSegment, int> tie = (s, value) =>
+            {
+                if (s.A == node) s.LaneAtA = value;
+                else s.LaneAtB = value;
+            };
+            tie(wider, 0);
+            tie(narrow, was.Own + 1);
+            SplitJoin now = SplitAt(node);
+            if (now == null || now.Trunk != wider)
+            {
+                tie(wider, widerTie);
+                tie(narrow, narrowTie);
+                return;
+            }
+            // Twice over, since moving the point turns the wider road a little, and with it the way "beside it" lies.
+            for (int pass = 0; pass < 2; pass++)
+            {
+                Vec off = SplitAt(node).Branches[0].Off;
+                Shift(node, new Vec(at.X - off.X, at.Y - off.Y));
+            }
+        }
+
+        /// <summary>
+        /// Deal the lanes of a trunk out again among the roads built on from it, so that the road
+        /// that lies furthest to the left has the leftmost of the lanes they hold, and so on
+        /// across: then no two of their paths cross. It is done for the roads that leave and
+        /// again for the roads that arrive, and only when those all have the same number of
+        /// lanes, which is nearly always one. Without it the second of two roads brought together
+        /// took whichever lane was left, and could end up crossing over the first.
+        /// </summary>
+        private void Uncross(int node)
+        {
+            SplitJoin split = SplitAt(node);
+            if (split == null || split.Branches.Count < 2) return;
+            double ahead = HeadingFrom(split.Trunk, node) + Math.PI;
+            foreach (bool leaves in new[] { true, false })
+            {
+                List<Branch> some = split.Branches.FindAll(b => b.Out == leaves && b.Own == 0);
+                if (some.Count < 2 || some.Exists(b => b.Lanes != some[0].Lanes)) continue;
+                var lanes = new List<int>();
+                foreach (Branch b in some) lanes.Add(b.First);
+                lanes.Sort();
+                // Leftmost first. A road that leaves lies to the left when it turns left of straight on; one that arrives,
+                // when the way back along it lies to the right of straight back (it comes in from the left).
+                Func<Branch, double> across = b => Wrap(HeadingFrom(b.Road, node) - ahead) * (leaves ? -1 : 1);
+                some.Sort((x, y) => across(x).CompareTo(across(y)));
+                for (int i = 0; i < some.Count; i++)
+                {
+                    EditSegment road = some[i].Road;
+                    if (road.A == node) road.LaneAtA = lanes[i] + 1;
+                    else road.LaneAtB = lanes[i] + 1;
+                }
+            }
         }
 
         /// <summary>

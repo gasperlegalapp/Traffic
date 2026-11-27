@@ -958,41 +958,46 @@ namespace Traffic.Tests
         }
 
         [Test]
-        public void ACornerWithNoRoomToRoundItIsRefused()
+        public void ACornerWithNoRoomToRoundItIsABendNotARefusal()
         {
             // A street turns a square corner with very little either side of it.
             var map = new EditableMap();
             Assert.IsNull(map.TryAdd(P(0, 0), P(18, 0), T("s2"), true), "a short stretch on its own is fine");
             Assert.IsNull(map.TryAdd(P(18, 0), P(18, 18), T("s2"), true), "and so is a square corner on to another");
             Assert.AreEqual(0, map.SharpCorners().Count);
-            // A wide avenue cannot make two square corners 50 ft apart: its inside edge would have nothing to turn round.
+            // A wide avenue making two square corners 50 ft apart has no room to round either. It used to be refused as
+            // too sharp a corner, which the player kept running into once pieces could be short. Now the pieces are
+            // simply roads that meet in a bend there, as a street and an avenue would.
             var wide = new EditableMap();
             Assert.IsNull(wide.TryAdd(P(0, 0), P(60, 0), T("a4"), true));
             Assert.IsNull(wide.TryAdd(P(60, 0), P(60, 15), T("a4"), true));
-            string refused = wide.TryAdd(P(60, 15), P(120, 15), T("a4"), true);
-            Assert.IsNotNull(refused);
-            StringAssert.Contains("corner", refused);
-            Assert.IsNull(wide.TryAdd(P(60, 15), P(60, 60), T("a4"), true), "carrying straight on is fine");
-            // A highway is swept round, and needs far more room for the same turn.
+            Assert.IsNull(wide.TryAdd(P(60, 15), P(120, 15), T("a4"), true));
+            Assert.AreEqual(0, wide.SharpCorners().Count);
+            World zigzag = wide.ToWorld();
+            Assert.AreEqual(2, zigzag.Nodes.Count(n => n.Arms.Count == 2), "two bends");
+            Assert.IsTrue(zigzag.Nodes.All(n => !n.Controlled));
+            // A highway is swept round where there is room, and where there is not it bends too. Traffic slows for it.
             var fast = new EditableMap();
-            Assert.IsNull(fast.TryAdd(P(0, 0), P(45, 0), T("h2"), true));
-            refused = fast.TryAdd(P(45, 0), P(45, 45), T("h2"), true);
-            Assert.IsNotNull(refused);
-            StringAssert.Contains("sharp", refused);
-            Assert.IsNull(fast.TryAdd(P(45, 0), P(140, 20), T("h2"), true));
+            Assert.IsNull(fast.TryAdd(P(-400, 0), P(45, 0), T("h2"), true));
+            Assert.IsNull(fast.TryAdd(P(45, 0), P(45, 400), T("h2"), true));
+            var sim = new Simulation(fast.ToWorld(), 3);
+            sim.ArrivalsPerMinute = 14;
+            Grid.Run(sim, 300, () => { foreach (Car c in sim.Cars) c.Drv.Compliance = 1; });
+            Assert.AreEqual(0, sim.Crashes);
+            Assert.Greater(sim.Left, 60);
         }
 
         [Test]
-        public void MovingAPointCannotMakeACornerTooSharp()
+        public void MovingAPointMayMakeACornerSharp()
         {
             var map = new EditableMap();
             Assert.IsNull(map.TryAdd(P(-100, 0), P(0, 0), T("h2"), true));
             Assert.IsNull(map.TryAdd(P(0, 0), P(100, 20), T("h2"), true));
             int far = map.NodeAt(P(100, 20), 5);
-            string refused = map.TryMove(far, P(10, 25), true);
-            Assert.IsNotNull(refused, "a highway turning most of a square corner in 90 ft");
-            StringAssert.Contains("sharp", refused);
+            Assert.IsNull(map.TryMove(far, P(10, 25), true), "a highway turning most of a square corner in 90 ft: a bend, where it used to be refused");
+            Assert.AreEqual(1, map.ToWorld().Nodes.Count(n => n.Arms.Count == 2));
             Assert.IsNull(map.TryMove(far, P(20, 30), true), "with a little more there is just room to sweep round");
+            Assert.AreEqual(0, map.ToWorld().Nodes.Count(n => n.Arms.Count == 2), "and it is one road again");
             Assert.IsNull(map.TryMove(far, P(90, 60), true));
 
             // A street's corner can be pulled almost anywhere.
@@ -1354,7 +1359,7 @@ namespace Traffic.Tests
             // Where it cannot go through the corner either (it would run in beside the other side), it says so plainly.
             string refused = Block("s2").TryAdd(P(-143, 0), P(-143, 90), T("s2"), true);
             Assert.IsNotNull(refused);
-            StringAssert.Contains("corner", refused);
+            StringAssert.Contains("room", refused);
             // A little further along there is room.
             Assert.IsNull(Block("s2").TryAdd(P(-135, 0), P(-135, 90), T("s2"), true));
         }

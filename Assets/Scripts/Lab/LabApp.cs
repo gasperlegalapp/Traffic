@@ -331,6 +331,13 @@ namespace Traffic.Lab
             if (changed) DrawingChanged(before);
         }
 
+        /// <summary>The left button came up over the ground while building: the pen may read a press that was pulled sideways as a different thing from a click.</summary>
+        private void EditLift(Vector2 pixel)
+        {
+            Vec p;
+            if (GroundAt(pixel, out p)) pen.Lift(p);
+        }
+
         /// <summary>
         /// The button went down on the ground while building. True if the move tool took hold
         /// of a point or a road there, so that dragging moves that and not the view.

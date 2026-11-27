@@ -507,6 +507,40 @@ internal static class PenScenes
         Click(pen, left.At.X, left.At.Y, 1 / 2.6);
         add("Two lanes one way, each carried on as a road of its own: a fork with no light", pen, 110, 45, 0, 0, 2.6);
 
+        // Two lanes split apart and brought back together, lane for lane.
+        Func<int, RoadPen> rejoin = steps =>
+        {
+            RoadPen p = lanes("a1", "a1x2", new double[] { -200, 0, -80, 0 });
+            List<EditableMap.LaneEnd> ends = p.Map.LaneEnds().FindAll(e => e.Leaving && e.Node.X > -100);
+            Click(p, ends[0].At.X, ends[0].At.Y, 1 / 2.6);
+            Click(p, -20, 30, 1 / 2.6);
+            Click(p, 40, 30, 1 / 2.6);
+            Click(p, 90, 3, 1 / 2.6);
+            p.Cancel();
+            Click(p, ends[1].At.X, ends[1].At.Y, 1 / 2.6);
+            Click(p, -20, -30, 1 / 2.6);
+            Click(p, 40, -30, 1 / 2.6);
+            p.Cancel();
+            if (steps < 1) return p;
+            p.Type = RoadType.ById("a1x2");
+            EditableMap.LaneEnd upper = p.Map.LaneEnds().Find(e => e.Leaving && e.Node.X > 60);
+            Click(p, upper.At.X, upper.At.Y, 1 / 2.6);
+            if (steps < 2) return p;
+            Click(p, 200, 3, 1 / 2.6);
+            p.Cancel();
+            p.Type = RoadType.ById("a1");
+            EditableMap.LaneEnd lower = p.Map.LaneEnds().Find(e => e.Leaving && e.Node.Y < -20);
+            Click(p, lower.At.X, lower.At.Y, 1 / 2.6);
+            if (steps < 3) return p;
+            Click(p, 88, 0, 1 / 2.6);
+            p.Cancel();
+            return p;
+        };
+        add("Two lanes split into two roads. A plus stands each side of every open end", rejoin(0), 20, 70, 0, 0, 2.6);
+        add("Two lanes drawn on from the end of the upper one: the tag says what is in hand", rejoin(1), 190, 3, 50, 0, 2.6);
+        add("The lower one brought in: it goes to the lane that is still open", rejoin(2), 88, -1, 50, 0, 2.6);
+        add("Built: each road has its own lane, and nothing crosses", rejoin(3), 20, 70, 50, 0, 2.6);
+
         pen = lanes("a1", "a1x2", new double[] { -200, 0, 200, 0 });
         add("Partway along a road, the lane under the pointer shows its arrow", pen, -40, -1.6, 0, 0, 2.6);
 

@@ -282,6 +282,18 @@ namespace Traffic.Ui
             Disc(at, radius * 0.3, hot ? LaneBlue : White);
         }
 
+        /// <summary>The mark beside an open road end for carrying the road on one lane wider on that side: a plus on a white disc, blue under the pointer.</summary>
+        public void Plus(Vec at, double radius, bool hot)
+        {
+            if (hot) radius *= 1.15;
+            Disc(at, radius + Math.Min(AtLeast(0.3, 1.4), 0.3), hot ? White : LaneBlue);
+            Disc(at, radius, hot ? LaneBlue : White);
+            double arm = radius * 0.58, thick = radius * 0.3;
+            uint ink = hot ? White : LaneBlue;
+            Stroke(new[] { new Vec(at.X - arm, at.Y), new Vec(at.X + arm, at.Y) }, thick, ink);
+            Stroke(new[] { new Vec(at.X, at.Y - arm), new Vec(at.X, at.Y + arm) }, thick, ink);
+        }
+
         /// <summary>The mark on a lane that a road can be brought in to: a broken blue ring.</summary>
         public void Socket(Vec at, bool hot)
         {
