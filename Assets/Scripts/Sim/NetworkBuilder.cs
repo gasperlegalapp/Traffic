@@ -1,0 +1,1324 @@
+using System;
+using System.Collections.Generic;
+
+namespace Traffic.Sim
+{
+    /// <summary>
+    /// One lane of a road, for part or all of its length. From and To are
+    /// positions along the road: 0 to 1 is a fraction of its length, and a
+    /// negative From counts back in meters from the far end (a turn pocket).
+    /// </summary>
+    public struct TrackSpec
+    {
+        public int Slot;
+        public double From;
+        public double To;
+        /// <summary>Turns allowed from this lane at the far end. Null means work it out.</summary>
+        public Turn[] Turns;
+        /// <summary>
+        /// The roads this lane may carry on along at the far end, by the order the roads were
+        /// added (0 for the first). Null means work it out. Naming the roads is surer than naming
+        /// turns where two ways on are nearly alike, as at a fork.
+        /// </summary>
+        public int[] Onto;
+        /// <summary>
+        /// For each of those roads, the slot of the lane there that this lane leads into, or -1
+        /// to leave it to be worked out. Null means work them all out. This is how one lane of
+        /// a road is carried on as a road of its own.
+        /// </summary>
+        public int[] Into;
+        /// <summary>
+        /// A lane that ends early though its pavement and paint run on to the end of the road:
+        /// the lane of an unfinished road end that nothing has been built on from yet.
+        /// </summary>
+        public bool Stub;
+
+        public TrackSpec(int slot, double from = 0, double to = 1, params Turn[] turns)
+        {
+            Slot = slot;
+            From = from;
+            To = to;
+            Turns = turns != null && turns.Length > 0 ? turns : null;
+            Onto = null;
+            Into = null;
+            Stub = false;
+        }
+    }
+
+    /// <summary>
+    /// Builds a road network from intersections joined by straight roads. Each
+    /// direction of a road is a set of lanes in numbered slots (0 next to the
+    /// centerline); lanes can start late or end early. The builder works out the
+    /// paths through each intersection, the pavement and the paint.
+    /// </summary>
+    public sealed class NetworkBuilder
+    {
+        /// <summary>A standard 12-foot US lane.</summary>
+        public const double LaneW = 3.66;
+        /// <summary>Lane changes are not allowed this close to a stop line.</summary>
+        public const double SolidLine = 20;
+        private const double Taper = 18;
+        private const double CornerRadius = 5;
+        /// <summary>25 mph: the default, for a side street.</summary>
+        public const double CitySpeed = 11.2;
+        /// <summary>35 mph: a main street, or a ramp.</summary>
+        public const double ArterialSpeed = 15.6;
+        /// <summary>65 mph: an urban interstate.</summary>
+        public const double HighwaySpeed = 29.1;
+        /// <summary>US lane lines: a 10-foot dash and a 30-foot gap.</summary>
+        private const double DashOn = 3.05, DashOff = 9.15;
+        /// <summary>How high a bridge stands over the road beneath it.</summary>
+        private const double BridgeHeight = 6.5;
+        /// <summary>How far the stop lines sit from the center where roads split or join without a light.</summary>
+        public const double FreeRadius = 8;
+        /// <summary>The least road there can be between two places that are not intersections, and how small such a place can be squeezed.</summary>
+        public const double ShortRoad = 3.5, SoftRadius = 1.2;
+
+        private sealed class RoadSpec
+        {
+            public int A, B;
+            public TrackSpec[] Fwd, Back;
+            public Vec[] Via;
+            public double Speed;
+            public double ShiftA, ShiftB;
+            /// <summary>Where the road meets each node, measured from the node itself: nothing, for a road that meets it in the middle.</summary>
+            public Vec OffA, OffB;
+            public bool Bridge;
+            /// <summary>Height in the middle (negative for a tunnel) and how long each end takes to get there.</summary>
+            public double Height, RampLen;
+            public bool Traced;
+            /// <summary>For a traced road: this end keeps the direction of the trace's own last points, and is not trimmed.</summary>
+            public bool OwnA, OwnB;
+            public double Inner;
+            /// <summary>The gap between the two directions is pavement, a lane of its own, and not a strip of ground.</summary>
+            public bool PavedMiddle;
+            /// <summary>The strip of ground down the middle has a row of trees along it.</summary>
+            public bool Planted;
+            /// <summary>The least road there has to be between the junctions at its two ends.</summary>
+            public double Between = 15;
+            /// <summary>The sign its traffic faces on arriving at each end.</summary>
+            public Sign SignA, SignB;
+            /// <summary>Its traffic may not turn on red on arriving at each end.</summary>
+            public bool NoRedA, NoRedB;
+        }
+
+        private readonly List<Vec> nodePos = new List<Vec>();
+        private readonly List<JunctionMode> nodeMode = new List<JunctionMode>();
+        private readonly List<RoadSpec> roads = new List<RoadSpec>();
+        private readonly List<int[]> uTurns = new List<int[]>();
+
+        private World world;
+        private readonly Dictionary<int, Turn[]> explicitTurns = new Dictionary<int, Turn[]>();
+        private readonly Dictionary<int, int[]> explicitRoads = new Dictionary<int, int[]>();
+        private readonly Dictionary<int, int[]> explicitSlots = new Dictionary<int, int[]>();
+
+        public int AddNode(double x, double y, JunctionMode mode)
+        {
+            nodePos.Add(new Vec(x, y));
+            nodeMode.Add(mode);
+            return nodePos.Count - 1;
+        }
+
+        /// <summary>A road from node a to node b. fwd are the lanes going a to b, back the lanes going b to a.</summary>
+        /// <summary>
+        /// Either set of lanes may be empty for a one-way road. via are points the centerline passes
+        /// through between the two nodes, for a curved road; a and b may then be the same node.
+        /// speed is the limit in meters per second. shiftA and shiftB move the road sideways where it
+        /// meets each node, to the right of travel from a to b, so that a ramp can leave from or
+        /// join at the outside lane of a highway instead of its centerline.
+        /// </summary>
+        /// <remarks>A bridge rises over whatever it crosses; traffic on it and under it does not interact.</remarks>
+        /// <remarks>
+        /// Inner moves every lane sideways from the centerline. Half the width of a median puts a
+        /// strip of ground between the two directions. On a one-way road, minus half the road's
+        /// width centers the lanes on the line instead of laying them all to its right.
+        /// </remarks>
+        public void AddRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] via = null, double speed = CitySpeed, double shiftA = 0, double shiftB = 0, bool bridge = false, double inner = 0)
+        {
+            roads.Add(new RoadSpec
+            {
+                A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = via ?? new Vec[0], Speed = speed, ShiftA = shiftA, ShiftB = shiftB, Bridge = bridge, Inner = inner,
+            });
+        }
+
+        /// <summary>
+        /// A curved road whose centerline is traced by points running all the way from node a to
+        /// node b. The builder drops the points that fall inside either intersection and aims the
+        /// road's ends at the curve, so the caller does not need to know how big they are.
+        /// </summary>
+        public void AddCurvedRoad(int a, int b, TrackSpec[] fwd, TrackSpec[] back, Vec[] trace, double speed, double inner = 0)
+        {
+            roads.Add(new RoadSpec { A = a, B = b, Fwd = fwd ?? new TrackSpec[0], Back = back ?? new TrackSpec[0], Via = trace, Speed = speed, Traced = true, Inner = inner });
+        }
+
+        /// <summary>
+        /// A traced road one or both of whose ends are a ramp: it joins or leaves another road
+        /// alongside it. At such an end the trace stops just short of where the ramp should
+        /// attach and already points the way the ramp should run there; a shift moves the
+        /// attachment sideways to the outside of the other road's lanes (see AddRoad).
+        /// </summary>
+        public void AddRamp(int a, int b, TrackSpec[] fwd, Vec[] trace, double speed, double inner, bool rampAtA, double shiftA, bool rampAtB, double shiftB)
+        {
+            roads.Add(new RoadSpec
+            {
+                A = a, B = b, Fwd = fwd, Back = new TrackSpec[0], Via = trace, Speed = speed, Traced = true, Inner = inner,
+                OwnA = rampAtA, ShiftA = rampAtA ? shiftA : 0, OwnB = rampAtB, ShiftB = rampAtB ? shiftB : 0,
+            });
+        }
+
+        /// <summary>
+        /// Lift the road just added on to a bridge, or sink it into a tunnel (a negative height).
+        /// It leaves the ground at each end over a ramp of the given length and is level between.
+        /// Traffic on it does not meet the traffic it passes over or under.
+        /// </summary>
+        public void Raise(double height, double ramp)
+        {
+            RoadSpec r = roads[roads.Count - 1];
+            r.Height = height;
+            r.RampLen = ramp;
+        }
+
+        /// <summary>
+        /// The road just added does not meet its nodes in the middle: each of its ends lies this
+        /// far from the node it runs to. That is how a road built on from one lane of another
+        /// starts where that lane is, and not at the middle of the whole road. The line it was
+        /// given should already run between the two places.
+        /// </summary>
+        public void Attach(Vec offFirst, Vec offSecond)
+        {
+            RoadSpec r = roads[roads.Count - 1];
+            r.OffA = offFirst;
+            r.OffB = offSecond;
+        }
+
+        private readonly HashSet<int> deadEnds = new HashSet<int>();
+
+        /// <summary>
+        /// Make a node with one road a dead end and not the edge of the map: the road simply
+        /// stops there, and traffic that drives in turns round across the middle of the road
+        /// and comes back out.
+        /// </summary>
+        public void DeadEnd(int node)
+        {
+            deadEnds.Add(node);
+        }
+
+        /// <summary>How far a vehicle pulls forward before it swings round to go back the way it came.</summary>
+        private const double PullForward = 2.5;
+
+        /// <summary>
+        /// The road just added has a lane down its middle, in the gap its lanes leave between the
+        /// two directions (an inner of half a lane): it is paved, not laid out as a median. Lanes
+        /// in that gap are slot -1 of either direction.
+        /// </summary>
+        public void PaveMiddle()
+        {
+            roads[roads.Count - 1].PavedMiddle = true;
+        }
+
+        /// <summary>The median of the road just added has a row of trees along it.</summary>
+        public void PlantMiddle()
+        {
+            roads[roads.Count - 1].Planted = true;
+        }
+
+        /// <summary>
+        /// Put a sign in front of the traffic of the road just added, where it arrives at its
+        /// first node and at its second. They only count at a node whose mode is Signs.
+        /// </summary>
+        public void Signs(Sign atFirst, Sign atSecond)
+        {
+            roads[roads.Count - 1].SignA = atFirst;
+            roads[roads.Count - 1].SignB = atSecond;
+        }
+
+        /// <summary>Forbid the traffic of the road just added to turn on a red light, where it arrives at its first node and at its second.</summary>
+        public void NoTurnOnRed(bool atFirst, bool atSecond)
+        {
+            roads[roads.Count - 1].NoRedA = atFirst;
+            roads[roads.Count - 1].NoRedB = atSecond;
+        }
+
+        /// <summary>Allow U-turns at a node for traffic arriving from a neighboring node.</summary>
+        public void AllowUTurn(int node, int arrivingFrom)
+        {
+            uTurns.Add(new[] { node, arrivingFrom });
+        }
+
+        private static double Resolve(double v, double length)
+        {
+            return v < 0 ? length + v : v <= 1 ? v * length : v;
+        }
+
+        private static int MaxSlot(TrackSpec[] tracks, bool atEnd)
+        {
+            int max = -1;
+            foreach (TrackSpec t in tracks)
+            {
+                bool touches = atEnd ? t.To == 1 : t.From == 0;
+                if (touches) max = Math.Max(max, t.Slot);
+            }
+            return max;
+        }
+
+        public World Build()
+        {
+            world = new World { LaneWidth = LaneW };
+            double extent = 0;
+
+            // How far each intersection's stop lines sit from its center.
+            var radius = new double[nodePos.Count];
+            // For each node, the direction and half-width of every road end that meets it.
+            var endsAt = new List<double[]>[nodePos.Count];
+            // A node where a ramp attaches, and the widest road end at each node.
+            var rampAt = new bool[nodePos.Count];
+            var widest = new double[nodePos.Count];
+            for (int i = 0; i < radius.Length; i++)
+            {
+                radius[i] = 12;
+                endsAt[i] = new List<double[]>();
+            }
+            foreach (RoadSpec r in roads)
+            {
+                int atA = Math.Max(MaxSlot(r.Back, true), MaxSlot(r.Fwd, false)) + 1;
+                int atB = Math.Max(MaxSlot(r.Fwd, true), MaxSlot(r.Back, false)) + 1;
+                // How far the road reaches to either side of its centerline at each end.
+                double halfA = atA * LaneW + r.Inner, halfB = atB * LaneW + r.Inner;
+                radius[r.A] = Math.Max(radius[r.A], halfA + CornerRadius);
+                radius[r.B] = Math.Max(radius[r.B], halfB + CornerRadius);
+                widest[r.A] = Math.Max(widest[r.A], halfA);
+                widest[r.B] = Math.Max(widest[r.B], halfB);
+                if (r.OwnA || r.ShiftA != 0 || r.OffA.X != 0 || r.OffA.Y != 0) rampAt[r.A] = true;
+                if (r.OwnB || r.ShiftB != 0 || r.OffB.X != 0 || r.OffB.Y != 0) rampAt[r.B] = true;
+
+                // Roughly which way the road leaves each node: for a traced curve, toward where it is a little way out.
+                Vec a = nodePos[r.A], b = nodePos[r.B];
+                Vec fromA = b, fromB = a;
+                if (r.Traced)
+                {
+                    foreach (Vec v in r.Via) if (Geo.Hypot(v.X - a.X, v.Y - a.Y) > 15) { fromA = v; break; }
+                    for (int i = r.Via.Length - 1; i >= 0; i--) if (Geo.Hypot(r.Via[i].X - b.X, r.Via[i].Y - b.Y) > 15) { fromB = r.Via[i]; break; }
+                    endsAt[r.A].Add(new[] { Math.Atan2(fromA.Y - a.Y, fromA.X - a.X), halfA });
+                    endsAt[r.B].Add(new[] { Math.Atan2(fromB.Y - b.Y, fromB.X - b.X), halfB });
+                }
+                else if (r.Via.Length >= 2)
+                {
+                    int m = r.Via.Length;
+                    endsAt[r.A].Add(new[] { Math.Atan2(r.Via[1].Y - r.Via[0].Y, r.Via[1].X - r.Via[0].X), halfA });
+                    endsAt[r.B].Add(new[] { Math.Atan2(r.Via[m - 2].Y - r.Via[m - 1].Y, r.Via[m - 2].X - r.Via[m - 1].X), halfB });
+                }
+                else
+                {
+                    endsAt[r.A].Add(new[] { Math.Atan2(b.Y - a.Y, b.X - a.X), halfA });
+                    endsAt[r.B].Add(new[] { Math.Atan2(a.Y - b.Y, a.X - b.X), halfB });
+                }
+            }
+            for (int i = 0; i < nodePos.Count; i++)
+            {
+                int ends = EndsAt(i);
+                if (ends == 1) radius[i] = 0; // the edge of the map
+                else if (nodeMode[i] == JunctionMode.Free && rampAt[i]) radius[i] = FreeRadius; // a ramp leaving or joining, or a road built on from a lane
+                else
+                {
+                    // A junction with no light or signs (a way on to a roundabout) is kept as small as its roads allow.
+                    if (ends > 2 && nodeMode[i] == JunctionMode.Free) radius[i] = Math.Max(FreeRadius, widest[i] + CornerRadius);
+                    // Roads that meet at a narrow angle need a bigger intersection, so that they
+                    // have come apart by the time they reach their stop lines.
+                    List<double[]> around = endsAt[i];
+                    around.Sort((x, y) => x[0].CompareTo(y[0]));
+                    for (int k = 0; k < around.Count; k++)
+                    {
+                        double[] one = around[k], next = around[(k + 1) % around.Count];
+                        double between = next[0] - one[0];
+                        if (between <= 0) between += 2 * Math.PI;
+                        if (between < Math.PI) radius[i] = Math.Max(radius[i], (one[1] + next[1] + 1) / (2 * Math.Sin(between / 2)));
+                    }
+                }
+                world.Nodes.Add(new Node { Id = i, Pos = nodePos[i], Hub = nodePos[i], Radius = radius[i], DefaultMode = nodeMode[i], DeadEnd = ends == 1 && deadEnds.Contains(i) });
+                extent = Math.Max(extent, Math.Max(Math.Abs(nodePos[i].X), Math.Abs(nodePos[i].Y)));
+            }
+            // A short piece of road is allowed between places that need no room of their own: a bend, or a point where
+            // roads were built on from lanes. Those give up their own length to it, down to almost nothing, so that
+            // the player can lay pieces as small as they like. An intersection with a light or signs keeps its size,
+            // and the 15 m of road it needs to queue on.
+            var soft = new bool[nodePos.Count];
+            var firm = new bool[nodePos.Count];
+            var owned = new bool[nodePos.Count];
+            foreach (RoadSpec r in roads)
+            {
+                if (r.OwnA) owned[r.A] = true;
+                if (r.OwnB) owned[r.B] = true;
+            }
+            for (int i = 0; i < nodePos.Count; i++)
+            {
+                int ends = EndsAt(i);
+                firm[i] = ends > 2 && nodeMode[i] != JunctionMode.Free;
+                soft[i] = nodeMode[i] == JunctionMode.Free && !owned[i] && (ends == 2 || (ends > 2 && rampAt[i]));
+            }
+            for (int pass = 0; pass < 3; pass++)
+            {
+                foreach (RoadSpec r in roads)
+                {
+                    if (r.A == r.B) continue;
+                    r.Between = firm[r.A] || firm[r.B] ? 15 : ShortRoad;
+                    double length = 0;
+                    Vec last = new Vec(nodePos[r.A].X + r.OffA.X, nodePos[r.A].Y + r.OffA.Y);
+                    foreach (Vec v in r.Via)
+                    {
+                        length += Geo.Hypot(v.X - last.X, v.Y - last.Y);
+                        last = v;
+                    }
+                    length += Geo.Hypot(nodePos[r.B].X + r.OffB.X - last.X, nodePos[r.B].Y + r.OffB.Y - last.Y);
+                    double over = radius[r.A] + radius[r.B] + r.Between + 0.5 - length;
+                    double give = (soft[r.A] ? Math.Max(radius[r.A] - SoftRadius, 0) : 0) + (soft[r.B] ? Math.Max(radius[r.B] - SoftRadius, 0) : 0);
+                    if (over <= 0 || give <= 0) continue;
+                    double share = Math.Min(over / give, 1);
+                    if (soft[r.A]) radius[r.A] -= share * Math.Max(radius[r.A] - SoftRadius, 0);
+                    if (soft[r.B]) radius[r.B] -= share * Math.Max(radius[r.B] - SoftRadius, 0);
+                }
+            }
+            for (int i = 0; i < nodePos.Count; i++) world.Nodes[i].Radius = radius[i];
+
+            // At a dead end the lanes stop a little short of the end of the pavement, to leave room to turn round in,
+            // where the road is long enough to give that up; if it is not, the turn is made just beyond the end.
+            foreach (RoadSpec r in roads)
+            {
+                foreach (bool atA in new[] { true, false })
+                {
+                    Node end = world.Nodes[atA ? r.A : r.B], other = world.Nodes[atA ? r.B : r.A];
+                    if (!end.DeadEnd) continue;
+                    double length = 0;
+                    Vec last = nodePos[r.A];
+                    foreach (Vec v in r.Via)
+                    {
+                        length += Geo.Hypot(v.X - last.X, v.Y - last.Y);
+                        last = v;
+                    }
+                    length += Geo.Hypot(nodePos[r.B].X - last.X, nodePos[r.B].Y - last.Y);
+                    double room = Math.Max(widest[end.Id] - LaneW / 2, LaneW / 2) + PullForward + 0.8;
+                    // Nothing turns round at the end of a one-way road, so its lanes run right to the end.
+                    if (r.Fwd.Length == 0 || r.Back.Length == 0) room = 0;
+                    end.Radius = radius[end.Id] = Geo.Clamp(length - radius[other.Id] - 22, 0, room);
+                }
+            }
+
+            // No two junctions may overlap, whether or not a road joins them. (The check on the length of the road
+            // between two junctions does not catch this: when both are large the road comes out long again, back to front.)
+            for (int i = 0; i < nodePos.Count; i++)
+            {
+                if (EndsAt(i) < 2) continue;
+                for (int k = i + 1; k < nodePos.Count; k++)
+                {
+                    if (EndsAt(k) < 2) continue;
+                    if (Geo.Hypot(nodePos[i].X - nodePos[k].X, nodePos[i].Y - nodePos[k].Y) < radius[i] + radius[k]) throw new InvalidOperationException("Two intersections are too close together: one would lie inside the other.");
+                }
+            }
+
+            foreach (RoadSpec r in roads)
+            {
+                Vec a = new Vec(nodePos[r.A].X + r.OffA.X, nodePos[r.A].Y + r.OffA.Y);
+                Vec b = new Vec(nodePos[r.B].X + r.OffB.X, nodePos[r.B].Y + r.OffB.Y);
+                // A straight road runs node to node. A curved one leaves a in the direction its via
+                // points start out in, and arrives at b in the direction they end in.
+                Vec[] via = r.Via;
+                if (r.Traced)
+                {
+                    // Keep only the part of the trace that lies clear of both intersections.
+                    var kept = new List<Vec>();
+                    foreach (Vec v in via)
+                    {
+                        bool clearOfA = r.OwnA || Geo.Hypot(v.X - a.X, v.Y - a.Y) > radius[r.A] + 3;
+                        bool clearOfB = r.OwnB || Geo.Hypot(v.X - b.X, v.Y - b.Y) > radius[r.B] + 3;
+                        if (clearOfA && clearOfB) kept.Add(v);
+                    }
+                    via = kept.ToArray();
+                }
+                int m = via.Length;
+                // A traced road aims straight from each node at the nearest point kept; any other
+                // curved road sets its own direction with its first and last two points.
+                bool ownA = m >= 2 && (!r.Traced || r.OwnA), ownB = m >= 2 && (!r.Traced || r.OwnB);
+                Vec from0 = ownA ? via[0] : a, from1 = ownA ? via[1] : m >= 1 ? via[0] : b;
+                Vec to0 = ownB ? via[m - 2] : m >= 1 ? via[m - 1] : a, to1 = ownB ? via[m - 1] : b;
+                double la = Geo.Hypot(from1.X - from0.X, from1.Y - from0.Y);
+                double lb = Geo.Hypot(to1.X - to0.X, to1.Y - to0.Y);
+                double ax = (from1.X - from0.X) / la, ay = (from1.Y - from0.Y) / la;
+                double bx = (to1.X - to0.X) / lb, by = (to1.Y - to0.Y) / lb;
+                var line = new List<Vec> { new Vec(a.X + ax * radius[r.A] + ay * r.ShiftA, a.Y + ay * radius[r.A] - ax * r.ShiftA) };
+                line.AddRange(via);
+                line.Add(new Vec(b.X - bx * radius[r.B] + by * r.ShiftB, b.Y - by * radius[r.B] - bx * r.ShiftB));
+                // Resample to about a meter between points.
+                var path = new LanePath(line);
+                if (path.Length < r.Between - 1e-6) throw new InvalidOperationException("Two intersections are too close together for the road between them.");
+                int n = (int)Math.Ceiling(path.Length);
+                var center = new List<Vec>();
+                for (int i = 0; i <= n; i++)
+                {
+                    Vec p = path.At(path.Length * i / n).Point;
+                    center.Add(p);
+                    extent = Math.Max(extent, Math.Max(Math.Abs(p.X), Math.Abs(p.Y)));
+                }
+                var reversed = new List<Vec>(center);
+                reversed.Reverse();
+
+                Approach armA = AddArm(r.A, Math.Atan2(ay, ax), r.B);
+                Approach armB = AddArm(r.B, Math.Atan2(-by, -bx), r.A);
+                armA.Road = armB.Road = roads.IndexOf(r);
+                armA.Sign = r.SignA;
+                armB.Sign = r.SignB;
+                armA.NoTurnOnRed = r.NoRedA;
+                armB.NoTurnOnRed = r.NoRedB;
+                armA.Shift = r.ShiftA + r.OffA.X * ay - r.OffA.Y * ax;
+                armB.Shift = -r.ShiftB - r.OffB.X * by + r.OffB.Y * bx;
+                armA.Mouth = line[0];
+                armB.Mouth = line[line.Count - 1];
+                armA.Inner = armB.Inner = r.Inner;
+                double peak = r.Bridge ? BridgeHeight : r.Height;
+                int laneBefore = world.Lanes.Count;
+                BuildDirection(center, r.Fwd, armB, armA, r.Speed, peak, r.Inner, r.RampLen);
+                BuildDirection(reversed, r.Back, armA, armB, r.Speed, peak, r.Inner, r.RampLen);
+                // Each lane knows its road, and how many lanes run the length of it (a turning lane down the middle counts as one).
+                int through = r.PavedMiddle ? 1 : 0;
+                foreach (TrackSpec t in r.Fwd) if (t.Slot >= 0 && t.From <= 0 && t.To >= 1) through++;
+                foreach (TrackSpec t in r.Back) if (t.Slot >= 0 && t.From <= 0 && t.To >= 1) through++;
+                for (int i = laneBefore; i < world.Lanes.Count; i++)
+                {
+                    world.Lanes[i].Road = roads.IndexOf(r);
+                    world.Lanes[i].RoadLanes = through;
+                }
+                // A divided road has a strip of ground down the middle, a little narrower than the gap between its yellow lines.
+                if (r.Inner > 0.5 && r.Fwd.Length > 0 && r.Back.Length > 0 && !r.PavedMiddle)
+                {
+                    // Where a lane for turning left lies in the gap on the way into an intersection (slot -1 of either
+                    // direction), the median stops short of where the road starts to widen for it.
+                    double from = 0, to = path.Length;
+                    foreach (TrackSpec t in r.Fwd) if (t.Slot < 0) to = Math.Min(to, Resolve(t.From, path.Length) - Taper);
+                    foreach (TrackSpec t in r.Back) if (t.Slot < 0) from = Math.Max(from, path.Length - Resolve(t.From, path.Length) + Taper);
+                    int first = (int)Math.Ceiling(from / path.Length * n), last = (int)Math.Floor(to / path.Length * n);
+                    if (last - first >= 8)
+                    {
+                        List<Vec> part = center.GetRange(first, last - first + 1);
+                        double[] lift = Lift(center, peak, r.RampLen), heights = null;
+                        if (lift != null)
+                        {
+                            heights = new double[part.Count];
+                            Array.Copy(lift, first, heights, 0, heights.Length);
+                        }
+                        world.Medians.Add(new Strip { Left = Geo.Offset(part, -(r.Inner - 0.3)), Right = Geo.Offset(part, r.Inner - 0.3), Peak = peak, Heights = heights, Planted = r.Planted });
+                    }
+                }
+            }
+            world.Extent = extent + 30;
+
+            foreach (Node node in world.Nodes) BuildNode(node);
+            return world;
+        }
+
+        private Approach AddArm(int node, double angle, int otherNode)
+        {
+            Node n = world.Nodes[node];
+            var arm = new Approach
+            {
+                Node = node,
+                Arm = n.Arms.Count,
+                Angle = angle,
+                Street = Math.Abs(Math.Cos(angle)) > Math.Abs(Math.Sin(angle)) ? 1 : 0,
+            };
+            foreach (int[] u in uTurns) if (u[0] == node && u[1] == otherNode) arm.AllowUTurn = true;
+            n.Arms.Add(arm);
+            return arm;
+        }
+
+        // ------------------------------------------------------------ roads
+
+        /// <summary>The height of a bridge or tunnel at each point along its centerline. Null on the ground.</summary>
+        private static double[] Lift(List<Vec> center, double peak, double ramp)
+        {
+            if (peak == 0) return null;
+            var along = new double[center.Count];
+            for (int i = 1; i < center.Count; i++) along[i] = along[i - 1] + Geo.Hypot(center[i].X - center[i - 1].X, center[i].Y - center[i - 1].Y);
+            var lift = new double[center.Count];
+            for (int i = 0; i < lift.Length; i++) lift[i] = peak * Geo.Rise(along[i], along[along.Length - 1], ramp);
+            return lift;
+        }
+
+        private void BuildDirection(List<Vec> center, TrackSpec[] specs, Approach to, Approach from, double speed, double peak, double inner, double ramp)
+        {
+            if (specs.Length == 0) return;
+            int n = center.Count - 1;
+            var st = new double[n + 1];
+            for (int i = 1; i <= n; i++) st[i] = st[i - 1] + Geo.Hypot(center[i].X - center[i - 1].X, center[i].Y - center[i - 1].Y);
+            double len = st[n];
+            Vec p1 = center[n];
+
+            var sorted = new List<TrackSpec>(specs);
+            sorted.Sort((x, y) => x.Slot != y.Slot ? x.Slot.CompareTo(y.Slot) : x.From.CompareTo(y.From));
+            int count = sorted.Count;
+            var lanes = new Lane[count];
+            var fromSt = new double[count];
+            var toSt = new double[count];
+            int maxSlot = 0, minSlot = 0;
+            int maxReaching = 0;
+            for (int k = 0; k < count; k++)
+            {
+                TrackSpec spec = sorted[k];
+                fromSt[k] = Resolve(spec.From, len);
+                toSt[k] = Resolve(spec.To, len);
+                maxSlot = Math.Max(maxSlot, spec.Slot);
+                minSlot = Math.Min(minSlot, spec.Slot);
+                Vec[] offset = Geo.Offset(center, (spec.Slot + 0.5) * LaneW + inner);
+                var pts = new List<Vec>();
+                for (int i = 0; i <= n; i++) if (st[i] >= fromSt[k] - 1e-6 && st[i] <= toSt[k] + 1e-6) pts.Add(offset[i]);
+                var path = new LanePath(pts);
+                var lane = new Lane
+                {
+                    Id = world.Lanes.Count,
+                    Kind = LaneKind.Road,
+                    Path = path,
+                    Length = path.Length,
+                    SpeedLimit = speed,
+                    Peak = peak,
+                    Ramp = ramp,
+                    Slot = spec.Slot,
+                    ApproachNode = to.Node,
+                    ApproachArm = to.Arm,
+                };
+                world.Lanes.Add(lane);
+                lanes[k] = lane;
+                if (toSt[k] >= len - 1e-6)
+                {
+                    lane.Node = to.Node;
+                    lane.Arm = to.Arm;
+                    lane.Connectors = new[] { -1, -1, -1, -1 };
+                    to.Inbound.Add(lane.Id);
+                    maxReaching = Math.Max(maxReaching, spec.Slot);
+                    if (spec.Turns != null) explicitTurns[lane.Id] = spec.Turns;
+                    if (spec.Onto != null) explicitRoads[lane.Id] = spec.Onto;
+                    if (spec.Onto != null && spec.Into != null) explicitSlots[lane.Id] = spec.Into;
+                }
+                if (fromSt[k] <= 1e-6) from.Outbound.Add(lane.Id);
+            }
+
+            // Neighbors, and which way a lane that ends has to merge.
+            for (int i = 0; i < count; i++)
+            {
+                for (int k = 0; k < count; k++)
+                {
+                    if (sorted[k].Slot != sorted[i].Slot + 1) continue;
+                    if (fromSt[i] < toSt[k] && fromSt[k] < toSt[i])
+                    {
+                        lanes[i].Rights.Add(lanes[k].Id);
+                        lanes[k].Lefts.Add(lanes[i].Id);
+                    }
+                }
+            }
+            for (int i = 0; i < count; i++)
+            {
+                if (lanes[i].Connectors != null) continue;
+                lanes[i].MergeSide = 1;
+                for (int k = 0; k < count; k++)
+                {
+                    bool carriesOn = fromSt[k] <= toSt[i] && toSt[k] > toSt[i];
+                    if (carriesOn && sorted[k].Slot == sorted[i].Slot - 1) lanes[i].MergeSide = -1;
+                }
+            }
+
+            double h = Math.Atan2(p1.Y - center[n - 1].Y, p1.X - center[n - 1].X);
+            double rx = Math.Sin(h);
+            double ry = -Math.Cos(h);
+            to.H = h;
+            double postOff = (maxReaching + 1) * LaneW + inner + 1.6;
+            to.Post = new Vec(p1.X + rx * postOff, p1.Y + ry * postOff);
+
+            // Pavement and paint. The road narrows gradually past the end of a lane.
+            double Cover(int k, double s)
+            {
+                if (s < fromSt[k]) return fromSt[k] > 1e-6 ? Geo.Clamp(1 - (fromSt[k] - s) / Taper, 0, 1) : 0;
+                if (s > toSt[k]) return sorted[k].Stub ? 1 : toSt[k] < len - 1e-6 ? Geo.Clamp(1 - (s - toSt[k]) / Taper, 0, 1) : 0;
+                return 1;
+            }
+            var right = new double[n + 1];
+            var left = new double[n + 1];
+            for (int i = 0; i <= n; i++)
+            {
+                double r = 0;
+                double l = double.PositiveInfinity;
+                for (int k = 0; k < count; k++)
+                {
+                    double c = Cover(k, st[i]);
+                    if (c <= 0) continue;
+                    r = Math.Max(r, (sorted[k].Slot + c) * LaneW);
+                    l = Math.Min(l, (sorted[k].Slot + 1 - c) * LaneW);
+                }
+                right[i] = r + inner;
+                left[i] = (double.IsInfinity(l) ? 0 : l) + inner;
+            }
+            to.InLeft = left[n];
+            to.InRight = right[n];
+            from.OutLeft = left[0];
+            from.OutRight = right[0];
+            // Pavement runs from the centerline out, or, on a road centered on its line, from the left edge of its lanes.
+            double[] lift = Lift(center, peak, ramp);
+            world.Surfaces.Add(new Strip { Left = inner < 0 ? Geo.Offset(center, i => left[i]) : center.ToArray(), Right = Geo.Offset(center, i => right[i]), Peak = peak, Heights = lift, Speed = speed, LeftIsEdge = inner < 0 });
+            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => right[i] - 0.25), Width = 0.14, Peak = peak, Heights = lift });
+            world.Markings.Add(new Marking { Pts = Geo.Offset(center, i => left[i] + 0.16), Width = 0.12, Yellow = true, Peak = peak, Heights = lift });
+
+            bool controlled = EndsAt(to.Node) > 2 && nodeMode[to.Node] != JunctionMode.Free;
+            for (int slot = minSlot; slot < maxSlot; slot++)
+            {
+                Vec[] divider = Geo.Offset(center, (slot + 1) * LaneW + inner);
+                int runStart = -1;
+                for (int i = 0; i <= n + 1; i++)
+                {
+                    bool both = i <= n && Occupied(sorted, fromSt, toSt, slot, st[i]) && Occupied(sorted, fromSt, toSt, slot + 1, st[i]);
+                    if (both && runStart < 0) runStart = i;
+                    if (!both && runStart >= 0)
+                    {
+                        int runEnd = i - 1;
+                        int solidFrom = runEnd + 1;
+                        if (runEnd == n && controlled)
+                        {
+                            solidFrom = runStart;
+                            while (solidFrom < runEnd && st[solidFrom] < len - SolidLine) solidFrom++;
+                        }
+                        AddLine(divider, runStart, Math.Min(solidFrom, runEnd), true, lift, peak);
+                        AddLine(divider, solidFrom, runEnd, false, lift, peak);
+                        runStart = -1;
+                    }
+                }
+            }
+        }
+
+        /// <summary>How many road ends meet at a node. A loop that starts and ends there counts twice.</summary>
+        private int EndsAt(int node)
+        {
+            int count = 0;
+            foreach (RoadSpec r in roads)
+            {
+                if (r.A == node) count++;
+                if (r.B == node) count++;
+            }
+            return count;
+        }
+
+        private static bool Occupied(List<TrackSpec> specs, double[] fromSt, double[] toSt, int slot, double s)
+        {
+            for (int k = 0; k < specs.Count; k++)
+            {
+                if (specs[k].Slot == slot && s >= fromSt[k] - 1e-6 && (s <= toSt[k] + 1e-6 || specs[k].Stub)) return true;
+            }
+            return false;
+        }
+
+        private void AddLine(Vec[] pts, int from, int to, bool dashed, double[] lift, double peak)
+        {
+            if (to - from < 1) return;
+            var part = new Vec[to - from + 1];
+            Array.Copy(pts, from, part, 0, part.Length);
+            double[] heights = null;
+            if (lift != null)
+            {
+                heights = new double[part.Length];
+                Array.Copy(lift, from, heights, 0, heights.Length);
+            }
+            world.Markings.Add(new Marking { Pts = part, Width = 0.14, DashOn = dashed ? DashOn : 0, DashOff = dashed ? DashOff : 0, Peak = peak, Heights = heights });
+        }
+
+        // ------------------------------------------------------------ intersections
+
+        private static double Wrap(double a)
+        {
+            while (a > Math.PI) a -= 2 * Math.PI;
+            while (a < -Math.PI) a += 2 * Math.PI;
+            return a;
+        }
+
+        private void BuildNode(Node node)
+        {
+            if (node.DeadEnd)
+            {
+                BuildRoadEnd(node);
+                return;
+            }
+            if (node.Terminal)
+            {
+                // The edge of the map: arriving lanes run off it, leaving lanes bring new vehicles in.
+                Approach edge = node.Arms[0];
+                foreach (int id in edge.Inbound)
+                {
+                    world.Lanes[id].Connectors = null;
+                    world.Lanes[id].IsExit = true;
+                }
+                foreach (int id in edge.Outbound) world.Lanes[id].IsEntry = true;
+                if (edge.Outbound.Count > 0) world.Entries.Add(edge);
+                return;
+            }
+
+            AssignStreets(node);
+
+            var conns = new List<Lane>();
+            foreach (Approach arm in node.Arms)
+            {
+                if (arm.Inbound.Count == 0) continue; // nothing arrives on this arm
+
+                // Which arm each turn leads to. The way most nearly straight on is "straight";
+                // anything else is a left or a right, however slight.
+                var target = new int[Lane.Turns];
+                var bend = new double[Lane.Turns];
+                for (int t = 0; t < Lane.Turns; t++) target[t] = -1;
+                double heading = arm.Angle + Math.PI;
+                Approach straight = null;
+                foreach (Approach other in node.Arms)
+                {
+                    if (other == arm || other.Outbound.Count == 0) continue;
+                    double d = Math.Abs(Wrap(other.Angle - heading));
+                    bool ahead = node.Arms.Count == 2 || d < Math.PI / 4; // with two arms it is a bend in the road, not a turn
+                    if (ahead && (straight == null || d < Math.Abs(Wrap(straight.Angle - heading)))) straight = other;
+                }
+                foreach (Approach other in node.Arms)
+                {
+                    if (other == arm || other.Outbound.Count == 0) continue;
+                    double d = Wrap(other.Angle - heading);
+                    Turn turn = other == straight ? Turn.Straight : d > 0 ? Turn.Left : Turn.Right;
+                    if (target[(int)turn] < 0)
+                    {
+                        target[(int)turn] = other.Arm;
+                        bend[(int)turn] = d;
+                    }
+                }
+                if (arm.AllowUTurn && node.Controlled) target[(int)Turn.UTurn] = arm.Arm;
+
+                bool anyWayOut = false;
+                for (int t = 0; t < Lane.Turns; t++) if (target[t] >= 0) anyWayOut = true;
+                if (!anyWayOut)
+                {
+                    // A road that leads here with nowhere to go on: treat it as leaving the map.
+                    foreach (int id in arm.Inbound)
+                    {
+                        world.Lanes[id].Connectors = null;
+                        world.Lanes[id].IsExit = true;
+                    }
+                    continue;
+                }
+
+                List<Turn>[] sets = AssignTurns(arm, target);
+
+                for (int t = 0; t < Lane.Turns; t++)
+                {
+                    if (target[t] < 0) continue;
+                    var turn = (Turn)t;
+                    var src = new List<int>();
+                    for (int i = 0; i < arm.Inbound.Count; i++) if (sets[i].Contains(turn)) src.Add(arm.Inbound[i]);
+                    List<int> outs = node.Arms[target[t]].Outbound;
+                    for (int k = 0; k < src.Count; k++)
+                    {
+                        // Where more lanes arrive than leave, the extra ones share a lane on the far side
+                        // and take turns going into it.
+                        int to;
+                        if (turn == Turn.UTurn)
+                        {
+                            if (k > 0) break;
+                            to = outs[outs.Count - 1];
+                        }
+                        else if (turn == Turn.Right || (turn == Turn.Straight && node.Arms.Count > 2 && (bend[t] < -0.1 || arm.Shift < -0.1))) to = outs[Math.Max(0, outs.Count - src.Count + k)]; // joining from the right: keep right
+                        else to = outs[Math.Min(k, outs.Count - 1)];
+                        // A lane that was told which lane of that road it leads into goes there.
+                        int[] onto, into;
+                        if (explicitRoads.TryGetValue(src[k], out onto) && explicitSlots.TryGetValue(src[k], out into))
+                        {
+                            int which = Array.IndexOf(onto, node.Arms[target[t]].Road);
+                            if (which >= 0 && which < into.Length && into[which] >= 0)
+                            {
+                                foreach (int o in outs) if (world.Lanes[o].Slot == into[which]) to = o;
+                            }
+                        }
+                        conns.Add(Connect(node, src[k], to, turn));
+                    }
+                }
+
+                // Record what the approach offers, and which way to move for each turn.
+                var offered = new bool[Lane.Turns];
+                foreach (int id in arm.Inbound) for (int t = 0; t < Lane.Turns; t++) if (world.Lanes[id].Connectors[t] >= 0) offered[t] = true;
+                foreach (Lane lane in world.Lanes)
+                {
+                    if (lane.Kind != LaneKind.Road || lane.ApproachNode != node.Id || lane.ApproachArm != arm.Arm) continue;
+                    lane.ApproachTurns = offered;
+                    for (int t = 0; t < Lane.Turns; t++)
+                    {
+                        int min = int.MaxValue, max = int.MinValue;
+                        foreach (int id in arm.Inbound)
+                        {
+                            if (world.Lanes[id].Connectors[t] < 0) continue;
+                            min = Math.Min(min, world.Lanes[id].Slot);
+                            max = Math.Max(max, world.Lanes[id].Slot);
+                        }
+                        lane.TurnSide[t] = min == int.MaxValue ? 0 : lane.Slot < min ? 1 : lane.Slot > max ? -1 : 0;
+                    }
+                }
+
+                if (!node.Controlled) continue;
+                for (int i = 0; i < arm.Inbound.Count; i++)
+                {
+                    Lane lane = world.Lanes[arm.Inbound[i]];
+                    PathPose end = lane.Path.At(lane.Length);
+                    double rx = Math.Sin(end.H) * (LaneW / 2 - 0.15);
+                    double ry = -Math.Cos(end.H) * (LaneW / 2 - 0.15);
+                    world.StopLines.Add(new StopLine { Lane = lane.Id, A = new Vec(end.X - rx, end.Y - ry), B = new Vec(end.X + rx, end.Y + ry), H = end.H });
+                    var turns = new bool[Lane.Turns];
+                    for (int t = 0; t < Lane.Turns; t++) turns[t] = lane.Connectors[t] >= 0;
+                    world.Arrows.Add(new ArrowMark { At = end, Turns = turns, NoUTurn = i == 0 && turns[(int)Turn.Left] && !arm.AllowUTurn });
+                }
+            }
+            Connectors.Link(conns);
+            if (!node.Controlled) MarkGiveWay(conns);
+            BuildBox(node);
+            if (node.Arms.Count == 2) PaintBend(node);
+            else if (!node.Controlled) PaintJunction(conns);
+        }
+
+        /// <summary>
+        /// Carry the lane lines through a place where a ramp leaves or joins: a dashed line
+        /// between lanes that run on side by side, and solid lines along the outside of each
+        /// stream, which meet in a point where the ramp splits off or comes in.
+        /// </summary>
+        private void PaintJunction(List<Lane> conns)
+        {
+            foreach (Lane c in conns)
+            {
+                Lane from = world.Lanes[c.From];
+                Lane to = world.Lanes[c.Next];
+                bool leftNeighbor = false, rightNeighbor = false;
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.FromArm != c.FromArm) continue;
+                    Lane oFrom = world.Lanes[o.From];
+                    Lane oTo = world.Lanes[o.Next];
+                    if (oTo.ApproachNode != to.ApproachNode || oTo.ApproachArm != to.ApproachArm) continue;
+                    if (oFrom.Slot == from.Slot - 1 && oTo.Slot == to.Slot - 1) leftNeighbor = true;
+                    if (oFrom.Slot == from.Slot + 1 && oTo.Slot == to.Slot + 1) rightNeighbor = true;
+                }
+                // The leftmost lane of the road it joins gets a yellow left edge, like the road itself.
+                bool leftmost = true;
+                foreach (Lane o in world.Lanes)
+                {
+                    if (o.Kind == LaneKind.Road && o.ApproachNode == to.ApproachNode && o.ApproachArm == to.ApproachArm && o.Preds.Count > 0 && o.Slot < to.Slot) leftmost = false;
+                }
+                // Where one lane splits two ways (an exit), no line is painted across the opening between them.
+                bool splitsLeft = false, splitsRight = false;
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.From != c.From || o.Turn == Turn.UTurn || c.Turn == Turn.UTurn) continue;
+                    if ((int)o.Turn < (int)c.Turn) splitsLeft = true;
+                    if ((int)o.Turn > (int)c.Turn) splitsRight = true;
+                }
+                // Where two paths close up into one lane (a ramp with no lane of its own to run on in), no line is painted
+                // between them either: each keeps only the line on its own outside.
+                bool joinedOnLeft = false, joinedOnRight = false;
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.Next != c.Next || o.From == c.From) continue;
+                    PathPose mine = c.Path.At(0), theirs = o.Path.At(0);
+                    if (Math.Cos(mine.H) * (theirs.Y - mine.Y) - Math.Sin(mine.H) * (theirs.X - mine.X) > 0) joinedOnLeft = true;
+                    else joinedOnRight = true;
+                }
+                Vec[] pts = c.Path.Pts;
+                if (splitsLeft || joinedOnLeft) { }
+                else if (leftNeighbor) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2), Width = 0.14, DashOn = DashOn, DashOff = DashOff });
+                else if (leftmost) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.16), Width = 0.12, Yellow = true });
+                else world.Markings.Add(new Marking { Pts = Geo.Offset(pts, -LaneW / 2 + 0.2), Width = 0.14 });
+                if (!rightNeighbor && !splitsRight && !joinedOnRight) world.Markings.Add(new Marking { Pts = Geo.Offset(pts, LaneW / 2 - 0.25), Width = 0.14 });
+            }
+        }
+
+        /// <summary>
+        /// Decide which arms of an intersection share a green. A road that runs straight through
+        /// (two arms nearly opposite each other) is a street, and so is whatever crosses or joins
+        /// it. Where no road runs straight through, the arms lying along the most north-south one
+        /// are one street and those across it are the other.
+        /// </summary>
+        private static void AssignStreets(Node node)
+        {
+            int count = node.Arms.Count, first = 0;
+            double best = -1;
+            for (int i = 0; i < count; i++)
+            {
+                if (Math.Abs(Math.Sin(node.Arms[i].Angle)) <= best) continue;
+                best = Math.Abs(Math.Sin(node.Arms[i].Angle));
+                first = i;
+            }
+            double axis = node.Arms[first].Angle;
+            foreach (Approach arm in node.Arms) arm.Street = Math.Abs(Math.Cos(arm.Angle - axis)) >= Math.Cos(Math.PI / 4) - 1e-9 ? 0 : 1;
+            if (count < 3 || count > 4) return;
+
+            // Sorting by direction alone goes wrong where two roads cross at a slant: under 45 degrees it would put
+            // both in one street, and give them green together. So pair up the arms that are each other's far side.
+            var road = new int[count];
+            for (int i = 0; i < count; i++) road[i] = -1;
+            int roads = 0;
+            while (true)
+            {
+                int one = -1, other = -1;
+                double widest = Math.PI - 25 * Math.PI / 180;
+                for (int i = 0; i < count; i++)
+                {
+                    for (int k = i + 1; k < count; k++)
+                    {
+                        double apart = Math.Abs(Wrap(node.Arms[i].Angle - node.Arms[k].Angle));
+                        if (road[i] >= 0 || road[k] >= 0 || apart <= widest) continue;
+                        widest = apart;
+                        one = i;
+                        other = k;
+                    }
+                }
+                if (one < 0) break;
+                road[one] = road[other] = roads++;
+            }
+            if (roads == 0) return;
+            // The street that goes first is still the one the most north-south arm is on.
+            for (int i = 0; i < count; i++) node.Arms[i].Street = road[i] == road[first] ? 0 : 1;
+        }
+
+        /// <summary>
+        /// A line round a bend, for traffic that arrives on one arm and leaves on the other: it
+        /// starts offIn to the right of the arriving road's centerline and ends offOut to the
+        /// right of the leaving road's centerline.
+        /// </summary>
+        private static Vec[] BendCurve(Node node, Approach arm, Approach other, double offIn, double offOut)
+        {
+            // Each road's own line, which is not always through the node: a road built on from a lane meets it to one side.
+            double hIn = arm.H, hOut = other.Angle;
+            double inX = arm.Mouth.X, inY = arm.Mouth.Y;
+            double outX = other.Mouth.X, outY = other.Mouth.Y;
+            var a = new PathPose { X = inX + Math.Sin(hIn) * offIn, Y = inY - Math.Cos(hIn) * offIn, H = hIn };
+            var b = new PathPose { X = outX + Math.Sin(hOut) * offOut, Y = outY - Math.Cos(hOut) * offOut, H = hOut };
+            double chord = Geo.Hypot(b.X - a.X, b.Y - a.Y);
+            return Geo.Bezier(a, b, 0.5523 * chord / Math.Sqrt(2));
+        }
+
+        /// <summary>Carry the edge lines, the center line and the lane lines round a bend.</summary>
+        private void PaintBend(Node node)
+        {
+            foreach (Approach arm in node.Arms)
+            {
+                // Traffic arrives on this arm and leaves on the other one.
+                Approach other = node.Arms[1 - arm.Arm];
+                if (arm.Inbound.Count == 0 || other.Outbound.Count == 0) continue;
+                world.Markings.Add(new Marking { Pts = BendCurve(node, arm, other, arm.InRight - 0.25, other.OutRight - 0.25), Width = 0.14 });
+                world.Markings.Add(new Marking { Pts = BendCurve(node, arm, other, arm.InLeft + 0.16, other.OutLeft + 0.16), Width = 0.12, Yellow = true });
+                // A solid line between lanes that go round side by side: no lane changes in the bend.
+                for (int i = 0; i + 1 < arm.Inbound.Count; i++)
+                {
+                    Lane inner = world.Lanes[arm.Inbound[i]];
+                    Lane outer = world.Lanes[arm.Inbound[i + 1]];
+                    int innerConn = inner.Connectors[(int)Turn.Straight];
+                    int outerConn = outer.Connectors[(int)Turn.Straight];
+                    if (innerConn < 0 || outerConn < 0) continue;
+                    Lane innerOut = world.Lanes[world.Lanes[innerConn].Next];
+                    Lane outerOut = world.Lanes[world.Lanes[outerConn].Next];
+                    if (outer.Slot != inner.Slot + 1 || outerOut.Slot != innerOut.Slot + 1) continue;
+                    world.Markings.Add(new Marking { Pts = BendCurve(node, arm, other, outer.Slot * LaneW + arm.Inner, outerOut.Slot * LaneW + other.Inner), Width = 0.14 });
+                }
+            }
+        }
+
+        /// <summary>
+        /// The pavement of a bend, where one road carries on as another: each side of it follows
+        /// the same curve as the lines painted round it, so the paint always lies on the pavement
+        /// and the pavement does not stick out past it. False if no traffic goes round the bend,
+        /// when the plain outline has to do.
+        /// </summary>
+        private bool BuildBend(Node node)
+        {
+            Approach a = node.Arms[0], b = node.Arms[1];
+            bool ab = a.Inbound.Count > 0 && b.Outbound.Count > 0, ba = b.Inbound.Count > 0 && a.Outbound.Count > 0;
+            if (!ab && !ba) return false;
+            // Each side runs with the pavement on its left: the right-hand edge of the traffic going that
+            // way round, or, where none does (a one-way road), the left-hand edge of the traffic coming the other way.
+            Vec[] one = ab ? BendCurve(node, a, b, a.InRight, b.OutRight) : BendCurve(node, b, a, b.InLeft, a.OutLeft);
+            Vec[] two = ba ? BendCurve(node, b, a, b.InRight, a.OutRight) : BendCurve(node, a, b, a.InLeft, b.OutLeft);
+            if (!ab) Array.Reverse(one);
+            if (!ba) Array.Reverse(two);
+            node.Box.AddRange(one);
+            node.Box.AddRange(two);
+            node.Corners.Add(one);
+            node.Corners.Add(two);
+            // The point where the roads meet can lie outside a narrow road's bend: the middle of the bend never does.
+            Vec p = one[one.Length / 2], q = two[two.Length / 2];
+            node.Hub = new Vec((p.X + q.X) / 2, (p.Y + q.Y) / 2);
+            return true;
+        }
+
+        /// <summary>Decide which turns each arriving lane may make.</summary>
+        private List<Turn>[] AssignTurns(Approach arm, int[] target)
+        {
+            int n = arm.Inbound.Count;
+            bool hasL = target[(int)Turn.Left] >= 0;
+            bool hasS = target[(int)Turn.Straight] >= 0;
+            bool hasR = target[(int)Turn.Right] >= 0;
+            bool hasU = target[(int)Turn.UTurn] >= 0;
+            var sets = new List<Turn>[n];
+            for (int i = 0; i < n; i++)
+            {
+                var set = new List<Turn>();
+                sets[i] = set;
+                Turn[] given;
+                if (explicitTurns.TryGetValue(arm.Inbound[i], out given))
+                {
+                    foreach (Turn t in given) if (target[(int)t] >= 0) set.Add(t);
+                    if (set.Count > 0) continue;
+                }
+                int[] onto;
+                if (explicitRoads.TryGetValue(arm.Inbound[i], out onto))
+                {
+                    // Whichever turns lead onto the roads it was given.
+                    List<Approach> arms = world.Nodes[arm.Node].Arms;
+                    for (int t = 0; t < Lane.Turns; t++) if (target[t] >= 0 && Array.IndexOf(onto, arms[target[t]].Road) >= 0) set.Add((Turn)t);
+                    if (set.Count > 0) continue;
+                }
+                bool first = i == 0;
+                bool last = i == n - 1;
+                if (n == 1)
+                {
+                    if (hasL) set.Add(Turn.Left);
+                    if (hasS) set.Add(Turn.Straight);
+                    if (hasR) set.Add(Turn.Right);
+                }
+                else if (!hasS)
+                {
+                    // The stem of a T: left lanes turn left, right lanes turn right.
+                    bool leftHalf = hasL && (!hasR || i < (n + 1) / 2);
+                    set.Add(leftHalf ? Turn.Left : Turn.Right);
+                }
+                else
+                {
+                    if (first && hasL) set.Add(Turn.Left);
+                    if (last && hasR) set.Add(Turn.Right);
+                    bool leftOnly = first && hasL && n >= 3;
+                    bool rightOnly = last && hasR && n >= 4;
+                    if (!leftOnly && !rightOnly) set.Add(Turn.Straight);
+                }
+                if (first && hasU && set.Contains(Turn.Left)) set.Add(Turn.UTurn);
+            }
+            if (n > 0 && hasU && !sets[0].Contains(Turn.UTurn) && sets[0].Contains(Turn.Left)) sets[0].Add(Turn.UTurn);
+            return sets;
+        }
+
+        /// <summary>
+        /// A dead end: the road just stops. Whatever drives up to the end pulls forward, swings
+        /// round to the left across the middle of the road and goes back the way it came, each
+        /// lane into the lane it mirrors, so the paths lie one inside the next and none cross.
+        /// The pavement runs on past the lane ends far enough to turn on.
+        /// </summary>
+        private void BuildRoadEnd(Node node)
+        {
+            Approach arm = node.Arms[0];
+            int pairs = Math.Min(arm.Inbound.Count, arm.Outbound.Count);
+            if (pairs == 0)
+            {
+                // A one-way road: nothing can turn round. What arrives is let off the map, as at any road with nowhere to go on.
+                foreach (int id in arm.Inbound)
+                {
+                    world.Lanes[id].Connectors = null;
+                    world.Lanes[id].IsExit = true;
+                }
+                return;
+            }
+            var conns = new List<Lane>();
+            double widestTurn = 0;
+            for (int k = 0; k < arm.Inbound.Count; k++)
+            {
+                Lane lane = world.Lanes[arm.Inbound[k]], home = world.Lanes[arm.Outbound[Math.Min(k, pairs - 1)]];
+                PathPose a = lane.Path.At(lane.Length);
+                Vec b = home.Path.At(0).Point;
+                widestTurn = Math.Max(widestTurn, Geo.Hypot(b.X - a.X, b.Y - a.Y) / 2);
+                // Going straight on is all there is to do here, so it counts as that, and a truck can do it too.
+                conns.Add(Connect(node, lane.Id, home.Id, Turn.Straight, SwingRound(a, b)));
+            }
+            Connectors.Link(conns);
+            var offered = new bool[Lane.Turns];
+            offered[(int)Turn.Straight] = true;
+            foreach (Lane lane in world.Lanes) if (lane.Kind == LaneKind.Road && lane.ApproachNode == node.Id) lane.ApproachTurns = offered;
+
+            // The pavement: straight on from the edges of the road, as far as the widest turn reaches. Its far side is the end of the road.
+            Lane first = world.Lanes[arm.Inbound[0]], back = world.Lanes[arm.Outbound[0]];
+            PathPose from = first.Path.At(first.Length);
+            Vec to = back.Path.At(0).Point;
+            double gap = Math.Max(Geo.Hypot(to.X - from.X, to.Y - from.Y), 1e-6);
+            double fx = Math.Cos(from.H), fy = Math.Sin(from.H), lx = (to.X - from.X) / gap, ly = (to.Y - from.Y) / gap;
+            double ox = (from.X + to.X) / 2, oy = (from.Y + to.Y) / 2;
+            double edge = Math.Max((MaxLaneSlot(arm.Inbound) + 1) * LaneW + arm.Inner, (MaxLaneSlot(arm.Outbound) + 1) * LaneW + arm.Inner);
+            double far = PullForward + widestTurn + 0.8;
+            Func<double, double, Vec> at = (along, left) => new Vec(ox + fx * along + lx * left, oy + fy * along + ly * left);
+            node.Box.Add(at(0, -edge));
+            node.Box.Add(at(far, -edge));
+            node.Box.Add(at(far, edge));
+            node.Box.Add(at(0, edge));
+
+            // The paint runs on to the very end, so the road looks like a road that simply has not been carried on yet:
+            // the edge lines, the yellow line down the middle, and the lines between lanes.
+            Action<double, bool, bool> stripe = (left, yellow, dashed) => world.Markings.Add(new Marking
+            {
+                Pts = new[] { at(0, left), at(far, left) }, Width = yellow ? 0.12 : 0.14, Yellow = yellow, DashOn = dashed ? DashOn : 0, DashOff = dashed ? DashOff : 0,
+            });
+            stripe(-(arm.InRight - 0.25), false, false);
+            stripe(-(arm.InLeft + 0.16), true, false);
+            stripe(arm.OutLeft + 0.16, true, false);
+            stripe(arm.OutRight - 0.25, false, false);
+            for (int k = 0; k + 1 < arm.Inbound.Count; k++) stripe(-((world.Lanes[arm.Inbound[k]].Slot + 1) * LaneW + arm.Inner), false, true);
+            for (int k = 0; k + 1 < arm.Outbound.Count; k++) stripe((world.Lanes[arm.Outbound[k]].Slot + 1) * LaneW + arm.Inner, false, true);
+        }
+
+        /// <summary>
+        /// Where two or more paths through a junction with no light or signs end in the same
+        /// lane, one has the right of way and the rest give way to it: the one that bends least,
+        /// and of two that bend alike, the one from the lane nearer the middle of its road.
+        /// </summary>
+        private void MarkGiveWay(List<Lane> conns)
+        {
+            Func<Lane, double> bend = c =>
+            {
+                Lane from = world.Lanes[c.From], to = world.Lanes[c.Next];
+                return Math.Abs(Wrap(to.Path.At(0).H - from.Path.At(from.Length).H));
+            };
+            foreach (Lane c in conns)
+            {
+                foreach (Lane o in conns)
+                {
+                    if (o == c || o.Next != c.Next || o.From == c.From) continue;
+                    double mine = bend(c), other = bend(o);
+                    if (mine > other + 0.02 || (Math.Abs(mine - other) <= 0.02 && world.Lanes[c.From].Slot > world.Lanes[o.From].Slot)) c.GiveWay = true;
+                }
+            }
+        }
+
+        /// <summary>The path of a turn right round: pull forward, swing round to the left on a half circle, and come back to the lane alongside.</summary>
+        private static List<Vec> SwingRound(PathPose a, Vec b)
+        {
+            double r = Geo.Hypot(b.X - a.X, b.Y - a.Y) / 2;
+            double fx = Math.Cos(a.H), fy = Math.Sin(a.H);
+            double cx = a.X + fx * PullForward - fy * r;
+            double cy = a.Y + fy * PullForward + fx * r;
+            var pts = new List<Vec> { a.Point };
+            for (int i = 0; i <= 16; i++)
+            {
+                double ang = a.H - Math.PI / 2 + Math.PI * i / 16;
+                pts.Add(new Vec(cx + r * Math.Cos(ang), cy + r * Math.Sin(ang)));
+            }
+            pts.Add(b);
+            return pts;
+        }
+
+        private Lane Connect(Node node, int fromId, int toId, Turn turn, List<Vec> along = null)
+        {
+            Lane from = world.Lanes[fromId];
+            Lane to = world.Lanes[toId];
+            PathPose a = from.Path.At(from.Length);
+            PathPose b = to.Path.At(0);
+            double chord = Geo.Hypot(b.X - a.X, b.Y - a.Y);
+            var pts = new List<Vec>();
+            if (along != null) pts.AddRange(along);
+            else if (turn == Turn.UTurn) pts.AddRange(SwingRound(a, b.Point));
+            else if (Math.Abs(Wrap(b.H - a.H)) < 0.05)
+            {
+                double sideways = Math.Abs(Math.Cos(a.H) * (b.Y - a.Y) - Math.Sin(a.H) * (b.X - a.X));
+                if (sideways < 0.1)
+                {
+                    pts.Add(a.Point);
+                    pts.Add(b.Point);
+                }
+                else pts.AddRange(Geo.Bezier(a, b, chord * 0.4));
+            }
+            else pts.AddRange(Geo.Bezier(a, b, 0.5523 * chord / Math.Sqrt(2)));
+
+            var path = new LanePath(pts);
+            var lane = new Lane
+            {
+                Id = world.Lanes.Count,
+                Kind = LaneKind.Connector,
+                Path = path,
+                Length = path.Length,
+                SpeedLimit = Math.Min(from.SpeedLimit, to.SpeedLimit),
+                Node = node.Id,
+                From = fromId,
+                Next = toId,
+                Turn = turn,
+                FromArm = from.Arm,
+            };
+            lane.Preds.Add(fromId);
+            world.Lanes.Add(lane);
+            from.Connectors[(int)turn] = lane.Id;
+            to.Preds.Add(lane.Id);
+            return lane;
+        }
+
+        /// <summary>The outline of the pavement inside an intersection, with rounded corners between roads.</summary>
+        private void BuildBox(Node node)
+        {
+            var arms = new List<Approach>(node.Arms);
+            arms.Sort((x, y) => Wrap(x.Angle).CompareTo(Wrap(y.Angle)));
+            int n = arms.Count;
+            var cw = new Vec[n];
+            var ccw = new Vec[n];
+            for (int i = 0; i < n; i++)
+            {
+                Approach arm = arms[i];
+                double dx = Math.Cos(arm.Angle), dy = Math.Sin(arm.Angle);
+                double wIn = arm.Inbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Inbound) + 1) * LaneW + arm.Inner;
+                double wOut = arm.Outbound.Count == 0 ? 0 : (MaxLaneSlot(arm.Outbound) + 1) * LaneW + arm.Inner;
+                if (arm.Inner < 0)
+                {
+                    // A one-way road centered on its line reaches as far to its left as to its right.
+                    wIn = Math.Max(wIn, -arm.Inner);
+                    wOut = Math.Max(wOut, -arm.Inner);
+                }
+                double toCw = wOut + arm.Shift;
+                double toCcw = wIn - arm.Shift;
+                arm.EdgeCw = toCw;
+                arm.EdgeCcw = toCcw;
+                // Measured from the road's own line where it meets the junction, which is to one side of the node for a ramp or a road built on from a lane.
+                cw[i] = new Vec(arm.Mouth.X + dy * wOut, arm.Mouth.Y - dx * wOut);
+                ccw[i] = new Vec(arm.Mouth.X - dy * wIn, arm.Mouth.Y + dx * wIn);
+            }
+            if (n == 2 && BuildBend(node)) return;
+            for (int i = 0; i < n; i++)
+            {
+                int j = (i + 1) % n;
+                node.Box.Add(cw[i]);
+                node.Box.Add(ccw[i]);
+                if (n < 2) continue;
+                Vec p = ccw[i];
+                Vec q = cw[j];
+                double d1x = Math.Cos(arms[i].Angle), d1y = Math.Sin(arms[i].Angle);
+                double d2x = Math.Cos(arms[j].Angle), d2y = Math.Sin(arms[j].Angle);
+                double cross = d1x * d2y - d1y * d2x;
+                var corner = new List<Vec> { p };
+                // Where the two edges would meet, measured along each from its own end. Edges that run nearly side by side meet
+                // far away or not at all, and a corner drawn out to there would be a long spike of pavement and curb lying
+                // along the road (the player saw one as a white line across an avenue): those are joined straight.
+                double t = Math.Abs(cross) < 0.05 ? double.MaxValue : ((q.X - p.X) * d2y - (q.Y - p.Y) * d2x) / cross;
+                double other = Math.Abs(cross) < 0.05 ? double.MaxValue : ((q.X - p.X) * d1y - (q.Y - p.Y) * d1x) / cross;
+                double reach = Math.Max(node.Radius, 6) * 2.5;
+                if (Math.Abs(t) <= reach && Math.Abs(other) <= reach)
+                {
+                    var c = new Vec(p.X + d1x * t, p.Y + d1y * t);
+                    for (int k = 1; k < 8; k++)
+                    {
+                        double u = k / 8.0;
+                        double w0 = (1 - u) * (1 - u), w1 = 2 * u * (1 - u), w2 = u * u;
+                        var pt = new Vec(w0 * p.X + w1 * c.X + w2 * q.X, w0 * p.Y + w1 * c.Y + w2 * q.Y);
+                        node.Box.Add(pt);
+                        corner.Add(pt);
+                    }
+                }
+                corner.Add(q);
+                if (Geo.Hypot(q.X - p.X, q.Y - p.Y) > 0.2) node.Corners.Add(corner.ToArray());
+            }
+        }
+
+        private int MaxLaneSlot(List<int> ids)
+        {
+            int max = 0;
+            foreach (int id in ids) max = Math.Max(max, world.Lanes[id].Slot);
+            return max;
+        }
+    }
+}
